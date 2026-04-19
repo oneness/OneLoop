@@ -46,9 +46,19 @@ impl Tool for ReadTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        if !path.exists() {
-            return Err(anyhow!("file does not exist: {}", path.display()));
-        }
+        let path = if path.exists() {
+            path
+        } else {
+            // Try common extensions if the bare name doesn't exist
+            let candidates = [".rs", ".ts", ".js", ".json", ".toml", ".md", ".yaml", ".yml"];
+            candidates
+                .iter()
+                .find_map(|ext| {
+                    let candidate = path.with_extension(&ext[1..]);
+                    if candidate.exists() { Some(candidate) } else { None }
+                })
+                .ok_or_else(|| anyhow!("file does not exist: {}", path.display()))?
+        };
 
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read file: {}", path.display()))?;
