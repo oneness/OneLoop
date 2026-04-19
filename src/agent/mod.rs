@@ -12,6 +12,28 @@ use crate::{
 
 use self::context::AgentContext;
 
+const SPINNER_FRAMES: &[&str] = &[
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+];
+
+fn start_spinner(label: &str) -> tokio::task::JoinHandle<()> {
+    let label = label.to_string();
+    tokio::spawn(async move {
+        let mut i = 0;
+        loop {
+            let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
+            eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            i += 1;
+        }
+    })
+}
+
+fn stop_spinner(handle: tokio::task::JoinHandle<()>) {
+    handle.abort();
+    eprint!("\x1b[2K\r");
+}
+
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     match name {
         "bash" => {
@@ -68,7 +90,7 @@ impl Agent {
         };
 
         for _ in 0..8 {
-            eprint!("\x1b[90m...\x1b[0m\r");
+            let spinner = start_spinner("thinking...");
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
@@ -76,10 +98,10 @@ impl Agent {
             };
 
             let response = self.provider_registry.complete(request).await?;
+            stop_spinner(spinner);
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
-                eprint!("\x1b[2K\r");
                 println!("{}", response.content);
             }
 
@@ -95,12 +117,14 @@ impl Agent {
                 )?;
 
                 let tool_label = format_tool_call(&tool_call.name, &tool_call.arguments);
-                eprint!("\x1b[2K\r\x1b[90m  → {}\x1b[0m\r", tool_label);
+                let spinner = start_spinner(&tool_label);
 
                 let result = self
                     .tool_registry
                     .execute(&tool_call.name, tool_call.arguments.clone(), &ctx)
                     .await?;
+
+                stop_spinner(spinner);
 
                 self.session.push_tool_result(
                     tool_call.id,

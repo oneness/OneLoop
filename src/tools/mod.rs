@@ -50,13 +50,6 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| tool.name()).collect()
     }
 
-    pub fn descriptions(&self) -> Vec<(&'static str, &'static str)> {
-        self.tools
-            .iter()
-            .map(|tool| (tool.name(), tool.description()))
-            .collect()
-    }
-
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .iter()
