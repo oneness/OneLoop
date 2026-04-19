@@ -11,15 +11,16 @@ A tiny, extensible coding agent.
 - terminal first
 - easy to shape to a workflow
 
-## Initial scope
+## Scope
 
 oneloop starts small:
 
-- one provider
+- multiple providers (Z.AI, Anthropic, mock fallback)
 - four tools: read, write, edit, bash
-- linear session model
+- linear append-only session model
 - AGENTS.md context loading
-- interactive CLI first
+- interactive CLI with animated spinner
+- date-based session persistence
 
 Everything else is a later layer:
 
@@ -30,44 +31,69 @@ Everything else is a later layer:
 - session branching
 - compaction
 
+## Usage
+
+### Interactive mode
+
+```bash
+./ol
+```
+
+Starts an interactive REPL. Type your message and press Enter. Ctrl+D to exit.
+
+### One-shot mode
+
+```bash
+./ol "your prompt here"
+```
+
+Runs a single prompt and exits.
+
+### Login
+
+```bash
+./ol login zai
+./ol login anthropic
+```
+
+Stores API keys in `~/.oneloop/auth.json`.
+
+`./ol` is a thin wrapper that runs oneloop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
+
+## Current behavior
+
+- sessions are persisted as JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`
+- an animated braille spinner shows progress while thinking and during tool execution
+- tool results show ✓/✗ with line and byte counts
+- `read` and `bash` truncate large output before it goes back into the model context
+- `AGENTS.md` in the current project directory is loaded as the system prompt
+- `oneloop login zai` stores a Z.AI API key in `~/.oneloop/auth.json`
+- `oneloop login anthropic` stores an Anthropic API key in `~/.oneloop/auth.json`
+
+## Provider selection
+
+Default order:
+
+1. Z.AI (if credentials available)
+2. Anthropic (if credentials available)
+3. mock fallback
+
+Override with environment variables:
+
+- `ONELOOP_PROVIDER=zai|anthropic|mock` — force a specific provider
+- `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-5`)
+- `ONELOOP_ZAI_BASE_URL` — Z.AI base URL override (defaults to `https://api.z.ai/api/coding/paas/v4`)
+
+Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`ZAI_API_KEY`, `ANTHROPIC_API_KEY`).
+
+## Important note on Anthropic login
+
+oneloop does **not** implement `claude.ai` subscription login.
+Anthropic's official docs state that third-party developers are not allowed to offer `claude.ai` login for their own products unless specially approved. So oneloop currently supports Anthropic API-key auth only.
+
 ## Development
 
 ```bash
 nix develop
 cargo check
 ```
-
-## One-loop iteration
-
-Use the helper script:
-
-```bash
-./loop "your prompt here"
-```
-
-`./loop` starts from a fresh session each time by deleting `.oneloop/` before running.
-That keeps the iteration loop tight and avoids stale session state while developing the agent.
-
-`./loop` is purely agent-driven: you talk to the agent in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
-
-## Current behavior
-
-- prompts are persisted to `.oneloop/session.jsonl`
-- assistant responses are persisted to `.oneloop/session.jsonl`
-- tool calls and tool results are persisted to `.oneloop/session.jsonl`
-- `read`, `write`, `edit`, and `bash` are available as built-in tools the model can choose to use
-- `read` and `bash` truncate large output before it goes back into the model context
-- for normal prompts, the provider can return tool calls and oneloop will execute them in a loop
-- `AGENTS.md` in the current project directory is loaded as the system prompt
-- `oneloop login zai` stores a Z.AI API key in `~/.oneloop/auth.json`
-- `oneloop login anthropic` stores an Anthropic API key in `~/.oneloop/auth.json`
-- if Z.AI credentials are available, oneloop prefers Z.AI
-- otherwise if Anthropic credentials are available, oneloop uses Anthropic
-- otherwise it falls back to the mock provider
-- you can override provider selection with `ONELOOP_PROVIDER=zai|anthropic|mock`
-- Z.AI defaults to the coding endpoint: `https://api.z.ai/api/coding/paas/v4`
-
-## Important note on Anthropic login
-
-oneloop does **not** implement `claude.ai` subscription login.
-Anthropic's official docs state that third-party developers are not allowed to offer `claude.ai` login for their own products unless specially approved. So oneloop currently supports Anthropic API-key auth only.
