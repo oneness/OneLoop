@@ -12,6 +12,36 @@ use crate::{
 
 use self::{context::AgentContext, messages::Message};
 
+fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
+    match name {
+        "bash" => {
+            let cmd = arguments.get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("bash: {}", cmd)
+        }
+        "read" => {
+            let path = arguments.get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("read: {}", path)
+        }
+        "write" => {
+            let path = arguments.get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("write: {}", path)
+        }
+        "edit" => {
+            let path = arguments.get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("edit: {}", path)
+        }
+        _ => name.to_string(),
+    }
+}
+
 pub struct Agent {
     config: Config,
     provider_registry: ProviderRegistry,
@@ -38,6 +68,7 @@ impl Agent {
         };
 
         for _ in 0..8 {
+            eprint!("\x1b[90m...\x1b[0m\r");
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
@@ -48,6 +79,7 @@ impl Agent {
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
+                eprint!("\x1b[2K\r");
                 println!("{}", response.content);
             }
 
@@ -62,6 +94,9 @@ impl Agent {
                     tool_call.arguments.clone(),
                 )?;
 
+                let tool_label = format_tool_call(&tool_call.name, &tool_call.arguments);
+                eprint!("\x1b[2K\r\x1b[90m  → {}\x1b[0m\r", tool_label);
+
                 let result = self
                     .tool_registry
                     .execute(&tool_call.name, tool_call.arguments.clone(), &ctx)
@@ -74,7 +109,16 @@ impl Agent {
                     result.is_error,
                 )?;
 
-                println!("{}", result.content);
+                if result.is_error {
+                    eprint!("\x1b[2K\r");
+                    println!("\x1b[31m  ✗ {}\x1b[0m", tool_label);
+                    println!("{}", result.content);
+                } else {
+                    let lines = result.content.lines().count();
+                    let bytes = result.content.len();
+                    eprint!("\x1b[2K\r");
+                    println!("\x1b[90m  ✓ {} ({} lines, {} bytes)\x1b[0m", tool_label, lines, bytes);
+                }
             }
         }
 
