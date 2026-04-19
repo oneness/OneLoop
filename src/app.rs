@@ -1,3 +1,5 @@
+use std::io::{self, Write as IoWrite};
+
 use anyhow::Result;
 
 use crate::{agent::Agent, config::Config, providers::ProviderRegistry, tools::ToolRegistry};
@@ -19,19 +21,30 @@ impl App {
         match prompt {
             Some(prompt) => agent.run_once(prompt).await,
             None => {
-                let prompt_templates = crate::ext::prompts::discover_prompt_templates();
-                let skills = crate::ext::skills::discover_skills();
-
                 println!("oneloop");
-                println!();
                 println!("{}", agent.summary());
-                println!("prompt_templates: {}", prompt_templates.len());
-                println!("skills: {}", skills.len());
                 println!();
-                println!("usage:");
-                println!("  oneloop login anthropic");
-                println!("  oneloop \"your prompt\"");
-                println!("  oneloop \"read Cargo.toml\"");
+                println!("interactive mode — type your message, Ctrl+D to exit");
+                println!();
+
+                loop {
+                    print!("> ");
+                    io::stdout().flush()?;
+
+                    let mut input = String::new();
+                    match io::stdin().read_line(&mut input) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let line = input.trim().to_string();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            agent.run_once(line).await?;
+                            println!();
+                        }
+                    }
+                }
+
                 Ok(())
             }
         }
