@@ -3,6 +3,7 @@ pub mod messages;
 pub mod session;
 
 use anyhow::Result;
+use std::env;
 
 use crate::{
     config::Config,
@@ -90,7 +91,10 @@ impl Agent {
         };
 
         let mut iteration = 0;
-        let max_iterations = 8;
+        let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
 
         loop {
             iteration += 1;
