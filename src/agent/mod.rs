@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::{
     config::Config,
     providers::{ProviderRegistry, ProviderRequest},
-    tools::ToolRegistry,
+    tools::{ToolRegistry, ToolResult},
 };
 
 use self::context::AgentContext;
@@ -119,10 +119,17 @@ impl Agent {
                 let tool_label = format_tool_call(&tool_call.name, &tool_call.arguments);
                 let spinner = start_spinner(&tool_label);
 
-                let result = self
+                let result = match self
                     .tool_registry
                     .execute(&tool_call.name, tool_call.arguments.clone(), &ctx)
-                    .await?;
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(e) => ToolResult {
+                        content: format!("Tool execution failed: {e:#}"),
+                        is_error: true,
+                    },
+                };
 
                 stop_spinner(spinner);
 

@@ -1,6 +1,6 @@
 use std::fs;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,19 +46,16 @@ impl Tool for ReadTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        let path = if path.exists() {
-            path
-        } else {
-            // Try common extensions if the bare name doesn't exist
-            let candidates = [".rs", ".ts", ".js", ".json", ".toml", ".md", ".yaml", ".yml"];
-            candidates
-                .iter()
-                .find_map(|ext| {
-                    let candidate = path.with_extension(&ext[1..]);
-                    if candidate.exists() { Some(candidate) } else { None }
-                })
-                .ok_or_else(|| anyhow!("file does not exist: {}", path.display()))?
-        };
+        if !path.exists() {
+            return Ok(ToolResult {
+                content: format!(
+                    "file not found: {}\nUse `bash` with `find` or `grep` to search for it, e.g.: find . -name \"*{}*\" -type f",
+                    path.display(),
+                    path.file_name().map(|f| f.to_string_lossy()).unwrap_or_default()
+                ),
+                is_error: true,
+            });
+        }
 
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read file: {}", path.display()))?;

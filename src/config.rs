@@ -8,7 +8,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = env::var("ONELOOP_ORIGINAL_DIR")
+            .map(PathBuf::from)
+            .or_else(|_| env::current_dir())
+            .unwrap_or_else(|_| PathBuf::from("."));
         let system_prompt = load_agents_md(&cwd);
         Self { cwd, system_prompt }
     }
