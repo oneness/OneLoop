@@ -89,7 +89,16 @@ impl Agent {
             cwd: self.config.cwd.clone(),
         };
 
-        for _ in 0..8 {
+        let mut iteration = 0;
+        let max_iterations = 8;
+
+        loop {
+            iteration += 1;
+            if iteration > max_iterations {
+                println!("\x1b[33m  ⚠ reached max iterations ({max_iterations})\x1b[0m");
+                break;
+            }
+
             let spinner = start_spinner("thinking...");
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
@@ -97,12 +106,24 @@ impl Agent {
                 tools: self.tool_registry.definitions(),
             };
 
-            let response = self.provider_registry.complete(request).await?;
+            let response = match self.provider_registry.complete(request).await {
+                Ok(response) => response,
+                Err(e) => {
+                    stop_spinner(spinner);
+                    println!("\x1b[31m  ✗ provider error: {e:#}\x1b[0m");
+                    break;
+                }
+            };
             stop_spinner(spinner);
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
                 println!("{}", response.content);
+            } else if response.tool_calls.is_empty() {
+                // Model returned nothing — no text, no tool calls
+                let msg = "I wasn't able to generate a response. Please try again or rephrase.";
+                self.session.push_assistant(msg.to_string())?;
+                println!("{}", msg);
             }
 
             if response.tool_calls.is_empty() {
