@@ -1,5 +1,5 @@
-pub const DEFAULT_MAX_BYTES: usize = 32 * 1024;
-pub const DEFAULT_MAX_LINES: usize = 200;
+pub const DEFAULT_MAX_BYTES: usize = 128 * 1024;
+pub const DEFAULT_MAX_LINES: usize = 1000;
 
 #[derive(Debug, Clone)]
 pub struct TruncationResult {
