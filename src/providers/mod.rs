@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
 use crate::{
     agent::messages::{Message, ToolCall},
     auth::{resolve_anthropic_api_key, resolve_zai_api_key},
@@ -28,6 +27,7 @@ pub struct ProviderResponse {
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
+    fn model(&self) -> String;
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse>;
 }
 
@@ -37,6 +37,10 @@ pub struct MockProvider;
 impl Provider for MockProvider {
     fn name(&self) -> &'static str {
         "mock"
+    }
+
+    fn model(&self) -> String {
+        "mock".to_string()
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
@@ -143,6 +147,10 @@ impl Provider for AnthropicProvider {
         "anthropic"
     }
 
+    fn model(&self) -> String {
+        self.model.clone()
+    }
+
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
         let body = AnthropicRequest {
             model: self.model.clone(),
@@ -238,6 +246,10 @@ impl ZaiProvider {
 impl Provider for ZaiProvider {
     fn name(&self) -> &'static str {
         "zai"
+    }
+
+    fn model(&self) -> String {
+        self.model.clone()
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
@@ -575,6 +587,10 @@ impl ProviderRegistry {
 
     pub fn active_name(&self) -> &'static str {
         self.active.name()
+    }
+
+    pub fn active_model(&self) -> String {
+        self.active.model()
     }
 
     pub async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {

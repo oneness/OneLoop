@@ -10,7 +10,7 @@ use crate::{
     tools::ToolRegistry,
 };
 
-use self::{context::AgentContext, messages::Message};
+use self::context::AgentContext;
 
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     match name {
@@ -128,43 +128,23 @@ impl Agent {
     pub fn summary(&self) -> String {
         let message_count = self.session.messages().len();
         let provider = self.provider_registry.active_name();
+        let provider_model = self.provider_registry.active_model();
         let tools = self.tool_registry.names().join(", ");
-        let tool_descriptions = self
-            .tool_registry
-            .descriptions()
-            .into_iter()
-            .map(|(name, description)| format!("  - {name}: {description}"))
-            .collect::<Vec<_>>()
-            .join("\n");
         let has_system = self
             .config
             .system_prompt
             .as_ref()
             .is_some_and(|text| !text.trim().is_empty());
-        let roles = self
-            .session
-            .messages()
-            .iter()
-            .map(|message| match message {
-                Message::System(_) => "system",
-                Message::User(_) => "user",
-                Message::Assistant(_) => "assistant",
-                Message::ToolCall(_) => "tool_call",
-                Message::ToolResult(_) => "tool_result",
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+
+        let session_info = if message_count > 0 {
+            format!("session: {} ({} messages)", self.session.path().display(), message_count)
+        } else {
+            format!("session: {} (new)", self.session.path().display())
+        };
 
         format!(
-            "cwd: {}\nsession: {}\nprovider: {}\ntools: {}\n{}\nsystem_prompt_loaded: {}\nmessage_count: {}\nmessage_roles: {}",
-            self.config.cwd.display(),
-            self.session.path().display(),
-            provider,
-            tools,
-            tool_descriptions,
-            has_system,
-            message_count,
-            roles,
+            "provider: {provider} ({provider_model})\ntools: {tools}\n{session_info}\nsystem_prompt: {}",
+            if has_system { "loaded" } else { "none" },
         )
     }
 }
