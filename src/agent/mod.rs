@@ -83,7 +83,7 @@ impl Agent {
         })
     }
 
-    pub async fn run_once(&mut self, prompt: String) -> Result<()> {
+    pub async fn run_once_with(&mut self, prompt: String, provider_override: Option<&str>) -> Result<()> {
         self.session.push_user(prompt)?;
 
         let ctx = AgentContext {
@@ -110,7 +110,7 @@ impl Agent {
                 tools: self.tool_registry.definitions(),
             };
 
-            let response = match self.provider_registry.complete(request).await {
+            let response = match self.provider_registry.complete_with(provider_override, request).await {
                 Ok(response) => response,
                 Err(e) => {
                     stop_spinner(spinner);
@@ -185,6 +185,7 @@ impl Agent {
         let message_count = self.session.messages().len();
         let provider = self.provider_registry.active_name();
         let provider_model = self.provider_registry.active_model();
+        let all_providers = self.provider_registry.available_providers().join(", ");
         let tools = self.tool_registry.names().join(", ");
         let has_system = self
             .config
@@ -199,7 +200,7 @@ impl Agent {
         };
 
         format!(
-            "provider: {provider} ({provider_model})\ntools: {tools}\n{session_info}\nsystem_prompt: {}",
+            "provider: {provider} ({provider_model})\navailable: {all_providers}\ntools: {tools}\n{session_info}\nsystem_prompt: {}\nhint: prefix with @provider (e.g. @anthropic) to route to a specific provider",
             if has_system { "loaded" } else { "none" },
         )
     }

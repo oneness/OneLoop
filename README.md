@@ -15,7 +15,7 @@ A tiny, extensible coding agent.
 
 oneloop starts small:
 
-- multiple providers (Z.AI, Anthropic, mock fallback)
+- multiple providers (Z.AI, OpenAI, Anthropic, mock fallback)
 - four tools: read, write, edit, bash
 - linear append-only session model
 - AGENTS.md context loading
@@ -53,6 +53,7 @@ Runs a single prompt and exits.
 
 ```bash
 ./ol login zai
+./ol login openai
 ./ol login anthropic
 ```
 
@@ -68,6 +69,7 @@ Stores API keys in `~/.oneloop/auth.json`.
 - `read` and `bash` truncate large output before it goes back into the model context
 - `AGENTS.md` in the current project directory is loaded as the system prompt
 - `oneloop login zai` stores a Z.AI API key in `~/.oneloop/auth.json`
+- `oneloop login openai` stores an OpenAI API key in `~/.oneloop/auth.json`
 - `oneloop login anthropic` stores an Anthropic API key in `~/.oneloop/auth.json`
 
 ## Provider selection
@@ -75,16 +77,20 @@ Stores API keys in `~/.oneloop/auth.json`.
 Default order:
 
 1. Z.AI (if credentials available)
-2. Anthropic (if credentials available)
-3. mock fallback
+2. OpenAI (if credentials available)
+3. Anthropic (if credentials available)
+4. mock fallback
 
 Override with environment variables:
 
-- `ONELOOP_PROVIDER=zai|anthropic|mock` — force a specific provider
+- `ONELOOP_PROVIDER=zai|openai|anthropic|mock` — force a specific provider
 - `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-5`)
+- `ONELOOP_OPENAI_MODEL` — OpenAI model override (defaults to `o3`)
+- `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override (defaults to `https://api.openai.com/v1`)
+- `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models (`low`, `medium`, `high`; defaults to `medium`)
 - `ONELOOP_ZAI_BASE_URL` — Z.AI base URL override (defaults to `https://api.z.ai/api/coding/paas/v4`)
 
-Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`ZAI_API_KEY`, `ANTHROPIC_API_KEY`).
+Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`ZAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
 ## Important note on Anthropic login
 

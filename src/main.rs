@@ -73,6 +73,17 @@ fn login(provider: &str) -> Result<()> {
             println!("Stored Z.AI credentials at {}", path.display());
             Ok(())
         }
+        "openai" => {
+            println!("OpenAI login for oneloop");
+            println!();
+            let key = rpassword::prompt_password("Enter OPENAI_API_KEY: ")?;
+            if key.trim().is_empty() {
+                bail!("empty API key")
+            }
+            let path = auth::store_openai_api_key(key)?;
+            println!("Stored OpenAI credentials at {}", path.display());
+            Ok(())
+        }
         other => bail!("unsupported provider login: {other}"),
     }
 }

@@ -52,14 +52,16 @@ The main `./loop` workflow is agent-driven: the model decides when to use them.
 Currently supported:
 
 - Z.AI via API key
+- OpenAI via API key
 - Anthropic via API key
 - mock fallback
 
 Default selection order:
 
 1. Z.AI
-2. Anthropic
-3. mock
+2. OpenAI
+3. Anthropic
+4. mock
 
 Override with `ONELOOP_PROVIDER` if needed.
 
@@ -79,6 +81,7 @@ Credentials are resolved from `~/.oneloop/auth.json` first, then environment var
 Currently supported environment variables:
 
 - `ZAI_API_KEY`
+- `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
 Anthropic API-key auth is supported, but not `claude.ai` subscription login.

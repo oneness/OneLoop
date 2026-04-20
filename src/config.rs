@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::{Path, PathBuf}};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -17,7 +17,7 @@ impl Default for Config {
     }
 }
 
-fn load_agents_md(cwd: &PathBuf) -> Option<String> {
+fn load_agents_md(cwd: &Path) -> Option<String> {
     let agents_path = cwd.join("AGENTS.md");
     fs::read_to_string(agents_path).ok()
 }

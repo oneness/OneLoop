@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuthFile {
     pub anthropic: Option<ApiKeyEntry>,
+    pub openai: Option<ApiKeyEntry>,
     pub zai: Option<ApiKeyEntry>,
 }
 
@@ -29,6 +30,13 @@ pub fn resolve_zai_api_key() -> Option<String> {
         .or_else(|| env::var("ZAI_API_KEY").ok())
 }
 
+pub fn resolve_openai_api_key() -> Option<String> {
+    load_auth_file()
+        .ok()
+        .and_then(|auth| auth.openai.map(|entry| entry.key))
+        .or_else(|| env::var("OPENAI_API_KEY").ok())
+}
+
 pub fn store_anthropic_api_key(key: String) -> Result<PathBuf> {
     let mut auth = load_auth_file().unwrap_or_default();
     auth.anthropic = Some(ApiKeyEntry {
@@ -41,6 +49,15 @@ pub fn store_anthropic_api_key(key: String) -> Result<PathBuf> {
 pub fn store_zai_api_key(key: String) -> Result<PathBuf> {
     let mut auth = load_auth_file().unwrap_or_default();
     auth.zai = Some(ApiKeyEntry {
+        r#type: "api_key".to_string(),
+        key,
+    });
+    write_auth_file(&auth)
+}
+
+pub fn store_openai_api_key(key: String) -> Result<PathBuf> {
+    let mut auth = load_auth_file().unwrap_or_default();
+    auth.openai = Some(ApiKeyEntry {
         r#type: "api_key".to_string(),
         key,
     });
