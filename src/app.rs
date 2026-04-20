@@ -1,4 +1,5 @@
 use std::io::{self, Write as IoWrite};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 
@@ -6,6 +7,17 @@ use crate::{agent::Agent, config::Config, providers::ProviderRegistry, tools::To
 
 pub struct App {
     config: Config,
+}
+
+/// Shared flag to signal the agent loop to stop.
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_stop_requested() -> bool {
+    STOP_REQUESTED.load(Ordering::Relaxed)
+}
+
+pub fn clear_stop_requested() {
+    STOP_REQUESTED.store(false, Ordering::Relaxed);
 }
 
 impl App {
@@ -27,8 +39,7 @@ impl App {
                 println!("oneloop");
                 println!("{}", agent.summary());
                 println!();
-                println!("interactive mode — type your message, Ctrl+D to exit");
-                println!("prefix with @provider (e.g. @anthropic) to route to a specific provider");
+                println!("interactive mode — type your message, Ctrl+C to stop a running request");
                 println!();
 
                 loop {
@@ -44,7 +55,25 @@ impl App {
                                 continue;
                             }
                             let (provider, prompt) = parse_provider_prefix(&line);
-                            agent.run_once_with(prompt, provider).await?;
+
+                            // Clear any previous stop flag and arm the Ctrl+C handler.
+                            // On Ctrl+C, the stop flag is set and run_once_with will
+                            // break out of its loop on the next iteration boundary.
+                            clear_stop_requested();
+
+                            // Use select to race the agent run against Ctrl+C.
+                            tokio::select! {
+                                result = agent.run_once_with(prompt, provider) => {
+                                    if let Err(e) = result {
+                                        eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                                    }
+                                }
+                                _ = tokio::signal::ctrl_c() => {
+                                    STOP_REQUESTED.store(true, Ordering::Relaxed);
+                                    println!("\x1b[33m  ⏹ stopped\x1b[0m");
+                                }
+                            }
+
                             println!();
                         }
                     }

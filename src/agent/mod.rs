@@ -17,22 +17,41 @@ const SPINNER_FRAMES: &[&str] = &[
     "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 ];
 
-fn start_spinner(label: &str) -> tokio::task::JoinHandle<()> {
-    let label = label.to_string();
-    tokio::spawn(async move {
-        let mut i = 0;
-        loop {
-            let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
-            eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-            i += 1;
-        }
-    })
+/// RAII guard for a spinner task. Aborts the spinner and clears the line on drop.
+/// This ensures the spinner stops even if the future holding it is cancelled
+/// (e.g. by `tokio::select!` on Ctrl+C).
+struct SpinnerGuard {
+    handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-fn stop_spinner(handle: tokio::task::JoinHandle<()>) {
-    handle.abort();
-    eprint!("\x1b[2K\r");
+impl SpinnerGuard {
+    fn new(label: &str) -> Self {
+        let label = label.to_string();
+        let handle = tokio::spawn(async move {
+            let mut i = 0;
+            loop {
+                let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
+                eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                i += 1;
+            }
+        });
+        Self { handle: Some(handle) }
+    }
+
+    /// Explicitly stop the spinner (also happens on drop).
+    fn stop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            eprint!("\x1b[2K\r");
+        }
+    }
+}
+
+impl Drop for SpinnerGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
@@ -97,13 +116,18 @@ impl Agent {
             .unwrap_or(50);
 
         loop {
+            if crate::app::is_stop_requested() {
+                println!("\x1b[33m  ⏹ stopped\x1b[0m");
+                return Ok(());
+            }
+
             iteration += 1;
             if iteration > max_iterations {
                 println!("\x1b[33m  ⚠ reached max iterations ({max_iterations})\x1b[0m");
                 break;
             }
 
-            let spinner = start_spinner("thinking...");
+            let mut spinner = SpinnerGuard::new("thinking...");
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
@@ -113,12 +137,12 @@ impl Agent {
             let response = match self.provider_registry.complete_with(provider_override, request).await {
                 Ok(response) => response,
                 Err(e) => {
-                    stop_spinner(spinner);
+                    spinner.stop();
                     println!("\x1b[31m  ✗ provider error: {e:#}\x1b[0m");
                     break;
                 }
             };
-            stop_spinner(spinner);
+            spinner.stop();
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
@@ -142,7 +166,7 @@ impl Agent {
                 )?;
 
                 let tool_label = format_tool_call(&tool_call.name, &tool_call.arguments);
-                let spinner = start_spinner(&tool_label);
+                let mut spinner = SpinnerGuard::new(&tool_label);
 
                 let result = match self
                     .tool_registry
@@ -156,7 +180,7 @@ impl Agent {
                     },
                 };
 
-                stop_spinner(spinner);
+                spinner.stop();
 
                 self.session.push_tool_result(
                     tool_call.id,
