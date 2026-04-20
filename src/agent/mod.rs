@@ -80,6 +80,12 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
                 .unwrap_or("?");
             format!("edit: {}", path)
         }
+        "web_search" => {
+            let query = arguments.get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("web_search: {}", query)
+        }
         _ => name.to_string(),
     }
 }

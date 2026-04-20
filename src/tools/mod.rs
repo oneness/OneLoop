@@ -1,6 +1,7 @@
 pub mod bash;
 pub mod edit;
 pub mod read;
+pub mod web_search;
 pub mod write;
 
 use anyhow::{bail, Result};
@@ -42,6 +43,7 @@ impl ToolRegistry {
                 Box::new(write::WriteTool),
                 Box::new(edit::EditTool),
                 Box::new(bash::BashTool),
+                Box::new(web_search::WebSearchTool::new()),
             ],
         }
     }
