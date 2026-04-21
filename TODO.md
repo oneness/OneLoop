@@ -28,87 +28,104 @@
 
 Long coding sessions accumulate messages until the context window overflows. All LLM providers return errors when you exceed their token limit — they do **not** auto-compact. Oneloop currently just crashes with a provider error.
 
-### How others do it
+### Key insight
 
-All compaction is **client-side** (the agent, not the API):
+If the context window is filling up, that's a sign the session is doing too many things. Rather than lossy in-place compression (which degrades quality with each compaction), the better approach is: **wrap up the session gracefully, write a handoff document, start fresh.**
 
-- **OpenAI Codex CLI** — `/compact` command + auto at token threshold. Preserves last ~20K tokens of recent messages alongside summary.
-- **Claude Code** — `/compact` command + auto at ~95% capacity. Generates handoff summary, replaces history.
-- **OpenCode** — `/compact` + auto overflow check. Separate "prune" mechanism for large tool outputs (>40K token protection window).
-- **Amp** — Manual "handoff" only. Philosophy: keep conversations short.
+### How others do it (and why it's problematic)
 
-### Proposed implementation
+- **OpenAI Codex CLI** — `/compact` replaces history with a summary + recent messages. Cumulative information loss over multiple compactions.
+- **Claude Code** — Same pattern, auto at ~95%. Users report model "goes off the rails" after multiple compactions.
+- **Amp** — Manual "handoff" only. Philosophy: keep conversations short and focused.
+
+### Proposed approach: Session Handoff (not compression)
+
+Instead of compressing the context in-place, we:
+
+1. **Detect** when context is nearing the limit (e.g. 85% threshold)
+2. **Wrap up** — ask the model to produce a structured handoff document:
+   - What was accomplished
+   - Current work in progress
+   - Files involved and their current state
+   - What remains to be done
+   - Key decisions, constraints, user preferences
+3. **Persist** the handoff to disk (`.oneloop/handoff.md`)
+4. **Start a new session** with the handoff as initial context
+5. The old session stays intact on disk (never deleted, always recoverable)
+
+This is "compaction without compaction" — no information loss, no quality degradation. The model gets a clean context window with everything it needs to continue.
+
+### Implementation
 
 #### New file: `src/agent/compact.rs`
 
-1. **Token estimation** — heuristic ~4 chars/token (good enough for threshold checks). Optionally `tiktoken-rs` for OpenAI models.
-2. **Compaction prompt** — following Codex CLI's approach:
+1. **Token estimation** — heuristic ~4 chars/token for threshold checks.
+2. **Handoff prompt**:
 
 ```
-You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary
-for another LLM that will resume the task.
+We're approaching the context window limit for this session. Before we
+start a new session, create a detailed handoff document that captures
+everything needed to continue this work seamlessly.
 
 Include:
-- Current progress and key decisions made
-- Important context, constraints, or user preferences
+- What was accomplished in this session
+- Current work in progress (be specific about files, functions, state)
 - What remains to be done (clear next steps)
-- Any critical data, examples, or references needed to continue
+- Key decisions made and why
+- Important context, constraints, or user preferences
+- Any critical data, examples, or references
 
-Be concise, structured, and focused on helping the next LLM seamlessly
-continue the work.
+Be thorough — this is the only context the next session will have
+from our conversation.
 ```
 
-3. **Auto-compaction flow** — after each provider response:
+3. **Auto-handoff flow** — after each provider response:
    - Estimate total tokens in `session.messages()`
-   - If over threshold (e.g. 85% of model's context window, configurable via `ONELOOP_COMPACT_THRESHOLD`):
-     - Show `⏳ compacting context...`
-     - Send entire conversation + compaction prompt to the model
-     - Collect the summary
-     - Replace message history with: `[System prompt] + [Summary prefix] + [Compacted summary] + [Last ~20K tokens of recent messages]`
-     - Continue the loop
-4. **Summary prefix** (prepended to summaries so the model knows it's a continuation):
+   - If over threshold (configurable via `ONELOOP_HANDOFF_THRESHOLD`, default 85):
+     - Print: `⚠ context window nearly full — wrapping up session...`
+     - Send conversation + handoff prompt to the model
+     - Save handoff to `.oneloop/handoff.md`
+     - Print the handoff so the user can review
+     - Automatically start a new session with the handoff as the first user message
+     - User continues seamlessly
 
-```
-Another language model started to solve this problem and produced a summary
-of its thinking process. Use this to build on the work that has already been
-done and avoid duplicating work. Here is the summary:
-```
+4. **Manual `/wrap` command** — in interactive mode, user can trigger this anytime:
+   - `/wrap` — generate handoff, start new session
+   - `/wrap <instructions>` — same but with custom handoff instructions
 
 #### Changes to existing files
 
-- **`session.rs`** — add `replace_messages()` method for in-memory replacement. Persist compacted session as a new JSONL (or overwrite).
-- **`agent/mod.rs`** — after each provider response, call `check_compact()`. Print a message when compaction happens so the user knows.
-- **`app.rs`** — support `/compact` command in interactive mode for manual compaction with optional custom instructions.
+- **`session.rs`** — add `token_estimate()` method. Add ability to start a new session file (e.g. `2026-04-20-b.jsonl` when `2026-04-20.jsonl` gets too long).
+- **`agent/mod.rs`** — after each provider response, check token estimate. If over threshold, trigger handoff flow.
+- **`app.rs`** — support `/wrap` command in interactive mode. After handoff, restart the agent loop with the new session.
+- **`config.rs`** — load `.oneloop/handoff.md` as part of the system prompt if it exists (so new sessions pick it up automatically).
 
 #### Configuration
 
-- `ONELOOP_COMPACT_THRESHOLD` — percentage of context window to trigger auto-compaction (default: 85)
-- `ONELOOP_COMPACT_PRESERVE_TOKENS` — how many tokens of recent messages to preserve (default: 20000)
-- `ONELOOP_NO_AUTOCOMPACT` — disable auto-compaction, only manual `/compact`
+- `ONELOOP_HANDOFF_THRESHOLD` — percentage of context window to trigger auto-handoff (default: 85)
+- `ONELOOP_NO_AUTOHANDOFF` — disable auto-handoff, only manual `/wrap`
 
-#### Token counting approach
+#### What this avoids (vs. traditional compaction)
 
-Simple heuristic first (4 chars/token). If needed later, add `tiktoken-rs` for exact OpenAI token counting and rough estimates for other providers. The threshold is a safety margin anyway — exact counting isn't critical.
+- ❌ No cumulative information loss — each session starts fresh with a full handoff
+- ❌ No quality degradation — the model never works from a compressed summary mid-task
+- ❌ No risk of "going off the rails" mid-compaction
+- ❌ No information destruction — old sessions stay on disk untouched
 
-#### What gets preserved
+#### What the user sees
 
-- System prompt (AGENTS.md)
-- Compaction summary
-- Last ~20K tokens of recent messages (current train of thought)
-- All future messages after compaction
+```
+  ✓ edit: src/app.rs (12 lines, 340 bytes)
 
-#### What gets lost
+⚠ context window nearly full (87%) — wrapping up session...
 
-- Detailed tool outputs from early in the session
-- Verbose assistant responses from earlier turns
-- These are summarized into the compaction summary
+  ⏳ generating handoff...
 
-#### Risks / considerations
+Session handoff saved to .oneloop/handoff.md
+Starting new session with handoff context...
 
-- Multiple compactions cause cumulative information loss — quality degrades over time
-- Compaction mid-task (e.g. in the middle of a multi-step refactor) can cause the model to "go off the rails"
-- Compaction costs one extra API call (the summarization request)
-- Should warn user: "Long conversations and multiple compactions can cause the model to be less accurate"
+> (continue working — the new session knows everything from before)
+```
 
 ## Done
 
