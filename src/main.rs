@@ -2,7 +2,6 @@ mod app;
 mod agent;
 mod auth;
 mod config;
-mod ext;
 mod output;
 mod providers;
 mod tools;

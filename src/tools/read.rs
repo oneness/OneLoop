@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{agent::context::AgentContext, output::{truncate_head, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
+use crate::{agent::AgentContext, output::{truncate_head, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
 
 use super::{Tool, ToolResult};
 

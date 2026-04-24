@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{process::Command, time::{timeout, Duration}};
 
-use crate::{agent::context::AgentContext, output::{truncate_tail, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
+use crate::{agent::AgentContext, output::{truncate_tail, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
 
 use super::{Tool, ToolResult};
 

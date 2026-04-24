@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::agent::context::AgentContext;
+use crate::agent::AgentContext;
 
 use super::{Tool, ToolResult};
 

@@ -22,8 +22,8 @@ Not part of the initial core:
 - RPC mode
 - prompt templates
 - skills
-- plugin system
-- branching
+- WASM plugins
+- session branching
 - compaction
 
 ## The loop
@@ -37,14 +37,15 @@ Not part of the initial core:
 7. store tool results
 8. continue until the provider stops returning tool calls
 
-## First built-in tools
+## Built-in tools
 
 - read
 - write
 - edit
 - bash
+- web_search (SearXNG-backed)
 
-All four core built-in tools are now implemented.
+All five core built-in tools are now implemented.
 The main `./loop` workflow is agent-driven: the model decides when to use them.
 
 ## Providers
@@ -64,16 +65,19 @@ Default selection order:
 4. mock
 
 Override with `ONELOOP_PROVIDER` if needed.
+Route per-prompt with `@provider` prefix (e.g. `@anthropic explain this`).
 
 ## Sessions
 
-The first version uses a linear append-only JSONL session file at:
+Sessions are linear append-only JSONL files stored at:
 
-```text
-.oneloop/session.jsonl
+```
+.oneloop/sessions/YYYY-MM-DD.jsonl
 ```
 
-This is intentionally simpler than tree sessions or compaction.
+`/clear` rotates to a new file (`YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`, etc.).
+Old sessions are preserved on disk — never deleted.
+On restart, the latest session file for today is opened automatically.
 
 ## Auth
 
@@ -85,3 +89,32 @@ Currently supported environment variables:
 - `ANTHROPIC_API_KEY`
 
 Anthropic API-key auth is supported, but not `claude.ai` subscription login.
+
+## Source layout
+
+```
+src/
+  main.rs           CLI entry point, login command
+  agent.rs          Agent loop, spinner, AgentContext
+  agent/
+    messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
+    session.rs      Session persistence, rotation, file discovery
+  app.rs            Interactive REPL, command routing, Ctrl+C handling
+  auth.rs           API key storage in ~/.oneloop/auth.json
+  config.rs         System prompt loading from AGENTS.md
+  output.rs         Output truncation utilities
+  providers.rs      Provider trait, ProviderRequest/Response types
+  providers/
+    anthropic.rs    Anthropic Claude provider
+    openai.rs       OpenAI GPT provider
+    zai.rs          Z.AI GLM provider
+    mock.rs         Mock provider for testing
+    registry.rs     Provider discovery and selection
+  tools.rs          Tool trait, ToolRegistry, ToolDefinition
+  tools/
+    bash.rs         Shell command execution
+    read.rs         File reading
+    write.rs        File writing
+    edit.rs         Find-and-replace file editing
+    web_search.rs   SearXNG web search
+```

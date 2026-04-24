@@ -1,6 +1,7 @@
-pub mod context;
 pub mod messages;
 pub mod session;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use std::env;
@@ -11,15 +12,17 @@ use crate::{
     tools::{ToolRegistry, ToolResult},
 };
 
-use self::context::AgentContext;
+/// Context passed to tool executions.
+#[derive(Debug, Clone)]
+pub struct AgentContext {
+    pub cwd: PathBuf,
+}
 
 const SPINNER_FRAMES: &[&str] = &[
     "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 ];
 
 /// RAII guard for a spinner task. Aborts the spinner and clears the line on drop.
-/// This ensures the spinner stops even if the future holding it is cancelled
-/// (e.g. by `tokio::select!` on Ctrl+C).
 struct SpinnerGuard {
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -39,7 +42,6 @@ impl SpinnerGuard {
         Self { handle: Some(handle) }
     }
 
-    /// Explicitly stop the spinner (also happens on drop).
     fn stop(&mut self) {
         if let Some(handle) = self.handle.take() {
             handle.abort();
@@ -57,34 +59,39 @@ impl Drop for SpinnerGuard {
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     match name {
         "bash" => {
-            let cmd = arguments.get("command")
+            let cmd = arguments
+                .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("bash: {}", cmd)
+            format!("bash: {cmd}")
         }
         "read" => {
-            let path = arguments.get("path")
+            let path = arguments
+                .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("read: {}", path)
+            format!("read: {path}")
         }
         "write" => {
-            let path = arguments.get("path")
+            let path = arguments
+                .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("write: {}", path)
+            format!("write: {path}")
         }
         "edit" => {
-            let path = arguments.get("path")
+            let path = arguments
+                .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("edit: {}", path)
+            format!("edit: {path}")
         }
         "web_search" => {
-            let query = arguments.get("query")
+            let query = arguments
+                .get("query")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("web_search: {}", query)
+            format!("web_search: {query}")
         }
         _ => name.to_string(),
     }
@@ -98,7 +105,11 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(config: Config, provider_registry: ProviderRegistry, tool_registry: ToolRegistry) -> Result<Self> {
+    pub fn new(
+        config: Config,
+        provider_registry: ProviderRegistry,
+        tool_registry: ToolRegistry,
+    ) -> Result<Self> {
         let session = session::Session::open_or_create(&config.cwd)?;
         Ok(Self {
             config,
@@ -111,33 +122,33 @@ impl Agent {
     /// Clear the session — rotates to a new empty session file.
     pub fn clear_session(&mut self) -> Result<()> {
         self.session = self.session.rotate()?;
-        println!("\x1b[90m  → cleared context, new session: {}\x1b[0m", self.session.path().display());
+        println!(
+            "\x1b[90m  → cleared context, new session: {}\x1b[0m",
+            self.session.path().display()
+        );
         Ok(())
     }
 
-    pub async fn run_once_with(&mut self, prompt: String, provider_override: Option<&str>) -> Result<()> {
+    pub async fn run_once_with(
+        &mut self,
+        prompt: String,
+        provider_override: Option<&str>,
+    ) -> Result<()> {
         self.session.push_user(prompt)?;
 
         let ctx = AgentContext {
             cwd: self.config.cwd.clone(),
         };
 
-        let mut iteration = 0;
         let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(50);
 
-        loop {
+        for _iteration in 1..=max_iterations {
             if crate::app::is_stop_requested() {
                 println!("\x1b[33m  ⏹ stopped\x1b[0m");
                 return Ok(());
-            }
-
-            iteration += 1;
-            if iteration > max_iterations {
-                println!("\x1b[33m  ⚠ reached max iterations ({max_iterations})\x1b[0m");
-                break;
             }
 
             let mut spinner = SpinnerGuard::new("thinking...");
@@ -147,7 +158,11 @@ impl Agent {
                 tools: self.tool_registry.definitions(),
             };
 
-            let response = match self.provider_registry.complete_with(provider_override, request).await {
+            let response = match self
+                .provider_registry
+                .complete_with(provider_override, request)
+                .await
+            {
                 Ok(response) => response,
                 Err(e) => {
                     spinner.stop();
@@ -161,10 +176,9 @@ impl Agent {
                 self.session.push_assistant(response.content.clone())?;
                 println!("{}", response.content);
             } else if response.tool_calls.is_empty() {
-                // Model returned nothing — no text, no tool calls
                 let msg = "I wasn't able to generate a response. Please try again or rephrase.";
                 self.session.push_assistant(msg.to_string())?;
-                println!("{}", msg);
+                println!("{msg}");
             }
 
             if response.tool_calls.is_empty() {
@@ -204,13 +218,13 @@ impl Agent {
 
                 if result.is_error {
                     eprint!("\x1b[2K\r");
-                    println!("\x1b[31m  ✗ {}\x1b[0m", tool_label);
+                    println!("\x1b[31m  ✗ {tool_label}\x1b[0m");
                     println!("{}", result.content);
                 } else {
                     let lines = result.content.lines().count();
                     let bytes = result.content.len();
                     eprint!("\x1b[2K\r");
-                    println!("\x1b[90m  ✓ {} ({} lines, {} bytes)\x1b[0m", tool_label, lines, bytes);
+                    println!("\x1b[90m  ✓ {tool_label} ({lines} lines, {bytes} bytes)\x1b[0m");
                 }
             }
         }
@@ -231,14 +245,22 @@ impl Agent {
             .is_some_and(|text| !text.trim().is_empty());
 
         let session_info = if message_count > 0 {
-            format!("session: {} ({} messages)", self.session.path().display(), message_count)
+            format!(
+                "session: {} ({message_count} messages)",
+                self.session.path().display()
+            )
         } else {
             format!("session: {} (new)", self.session.path().display())
         };
 
         format!(
-            "provider: {provider} ({provider_model})\navailable: {all_providers}\ntools: {tools}\n{session_info}\nsystem_prompt: {}\nhint: prefix with @provider (e.g. @anthropic) to route to a specific provider",
-            if has_system { "loaded" } else { "none" },
+            "provider: {provider} ({provider_model})\n\
+             available: {all_providers}\n\
+             tools: {tools}\n\
+             {session_info}\n\
+             system_prompt: {}\n\
+             hint: prefix with @provider (e.g. @anthropic) to route to a specific provider",
+            if has_system { "loaded" } else { "none" }
         )
     }
 }

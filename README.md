@@ -16,8 +16,8 @@ A tiny, extensible coding agent.
 oneloop starts small:
 
 - multiple providers (Z.AI, OpenAI, Anthropic, mock fallback)
-- four tools: read, write, edit, bash
-- linear append-only session model
+- five tools: read, write, edit, bash, web_search
+- linear append-only session model with `/clear` to rotate
 - AGENTS.md context loading
 - interactive CLI with animated spinner
 - date-based session persistence
@@ -27,7 +27,7 @@ Everything else is a later layer:
 - RPC mode
 - prompt templates
 - skills
-- plugins
+- WASM plugins
 - session branching
 - compaction
 
@@ -39,7 +39,12 @@ Everything else is a later layer:
 ./ol
 ```
 
-Starts an interactive REPL. Type your message and press Enter. Ctrl+D to exit.
+Starts an interactive REPL. Type your message and press Enter.
+
+Commands:
+- `/clear` — wipe context and start a fresh session
+- `Ctrl+C` — stop a running request
+- `Ctrl+D` — exit
 
 ### One-shot mode
 
@@ -59,18 +64,19 @@ Runs a single prompt and exits.
 
 Stores API keys in `~/.oneloop/auth.json`.
 
-`./ol` is a thin wrapper that runs oneloop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
+`./ol` is a thin wrapper that runs oneloop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `web_search`.
 
 ## Current behavior
 
 - sessions are persisted as JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`
+- `/clear` rotates to a new session file (e.g. `YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`); old sessions are preserved on disk
+- on restart, the latest session file for today is opened automatically
 - an animated braille spinner shows progress while thinking and during tool execution
 - tool results show ✓/✗ with line and byte counts
 - `read` and `bash` truncate large output before it goes back into the model context
 - `AGENTS.md` in the current project directory is loaded as the system prompt
-- `oneloop login zai` stores a Z.AI API key in `~/.oneloop/auth.json`
-- `oneloop login openai` stores an OpenAI API key in `~/.oneloop/auth.json`
-- `oneloop login anthropic` stores an Anthropic API key in `~/.oneloop/auth.json`
+- `@provider` prefix routes to a specific provider (e.g. `@anthropic explain this code`)
+- `oneloop login <provider>` stores API keys in `~/.oneloop/auth.json`
 
 ## Provider selection
 
@@ -84,10 +90,11 @@ Default order:
 Override with environment variables:
 
 - `ONELOOP_PROVIDER=zai|openai|anthropic|mock` — force a specific provider
-- `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-5`)
-- `ONELOOP_OPENAI_MODEL` — OpenAI model override (defaults to `o3`)
+- `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-6`)
+- `ONELOOP_OPENAI_MODEL` — OpenAI model override (defaults to `gpt-5.4`)
 - `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override (defaults to `https://api.openai.com/v1`)
 - `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models (`low`, `medium`, `high`; defaults to `medium`)
+- `ONELOOP_ZAI_MODEL` — Z.AI model override (defaults to `glm-5.1`)
 - `ONELOOP_ZAI_BASE_URL` — Z.AI base URL override (defaults to `https://api.z.ai/api/coding/paas/v4`)
 
 Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`ZAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).

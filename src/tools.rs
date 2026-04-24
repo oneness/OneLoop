@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agent::context::AgentContext;
+use crate::agent::AgentContext;
 
 #[derive(Debug, Clone)]
 pub struct ToolResult {
@@ -18,8 +18,8 @@ pub struct ToolResult {
 
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     pub schema: Value,
 }
 
@@ -56,18 +56,22 @@ impl ToolRegistry {
         self.tools
             .iter()
             .map(|tool| ToolDefinition {
-                name: tool.name(),
-                description: tool.description(),
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
                 schema: tool.schema(),
             })
             .collect()
     }
 
-    pub async fn execute(&self, name: &str, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: Value,
+        ctx: &AgentContext,
+    ) -> Result<ToolResult> {
         let Some(tool) = self.tools.iter().find(|tool| tool.name() == name) else {
             bail!("unknown tool: {name}");
         };
-
         tool.execute(input, ctx).await
     }
 }
