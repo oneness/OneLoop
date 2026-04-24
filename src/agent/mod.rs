@@ -108,6 +108,13 @@ impl Agent {
         })
     }
 
+    /// Clear the session — rotates to a new empty session file.
+    pub fn clear_session(&mut self) -> Result<()> {
+        self.session = self.session.rotate()?;
+        println!("\x1b[90m  → cleared context, new session: {}\x1b[0m", self.session.path().display());
+        Ok(())
+    }
+
     pub async fn run_once_with(&mut self, prompt: String, provider_override: Option<&str>) -> Result<()> {
         self.session.push_user(prompt)?;
 

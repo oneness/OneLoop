@@ -19,5 +19,10 @@ impl Default for Config {
 
 fn load_agents_md(cwd: &Path) -> Option<String> {
     let agents_path = cwd.join("AGENTS.md");
-    fs::read_to_string(agents_path).ok()
+    let content = fs::read_to_string(agents_path).ok()?;
+    if content.trim().is_empty() {
+        None
+    } else {
+        Some(content)
+    }
 }

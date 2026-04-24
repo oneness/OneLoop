@@ -20,6 +20,15 @@ pub fn clear_stop_requested() {
     STOP_REQUESTED.store(false, Ordering::Relaxed);
 }
 
+/// Parse interactive commands. Returns (command, rest_of_input) or None if it's not a command.
+fn parse_command(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if trimmed == "/clear" {
+        return Some("clear");
+    }
+    None
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
         Self { config }
@@ -39,7 +48,7 @@ impl App {
                 println!("oneloop");
                 println!("{}", agent.summary());
                 println!();
-                println!("interactive mode — type your message, Ctrl+C to stop a running request");
+                println!("interactive mode — type your message, /clear to reset context, Ctrl+C to stop");
                 println!();
 
                 loop {
@@ -54,11 +63,22 @@ impl App {
                             if line.is_empty() {
                                 continue;
                             }
+
+                            // Check for built-in commands.
+                            if let Some(cmd) = parse_command(&line) {
+                                match cmd {
+                                    "clear" => {
+                                        agent.clear_session()?;
+                                        println!();
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             let (provider, prompt) = parse_provider_prefix(&line);
 
                             // Clear any previous stop flag and arm the Ctrl+C handler.
-                            // On Ctrl+C, the stop flag is set and run_once_with will
-                            // break out of its loop on the next iteration boundary.
                             clear_stop_requested();
 
                             // Use select to race the agent run against Ctrl+C.
