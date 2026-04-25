@@ -1,3 +1,4 @@
+pub mod compaction;
 pub mod messages;
 pub mod session;
 
@@ -126,6 +127,80 @@ impl Agent {
             "\x1b[90m  → cleared context, new session: {}\x1b[0m",
             self.session.path().display()
         );
+        Ok(())
+    }
+
+    /// Check if auto-compaction is needed and perform it.
+    /// Called after each agent loop completes. If the context is over threshold,
+    /// it calls the provider to generate a summary, rotates the session, and
+    /// injects the summary as the initial context.
+    pub async fn auto_compact_if_needed(&mut self, provider_override: Option<&str>) -> Result<()> {
+        let system_prompt_chars = self
+            .config
+            .system_prompt
+            .as_ref()
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        if !compaction::should_compact(self.session.messages(), system_prompt_chars) {
+            return Ok(());
+        }
+
+        println!("\x1b[33m  ⚠ context near limit — auto-compacting...\x1b[0m");
+
+        // Build a lightweight version of the conversation for the compaction call.
+        // Tool results can be huge (file contents, command output) — replace them
+        // with one-line summaries so the compaction LLM call is fast.
+        let lightweight = compaction::strip_tool_outputs(self.session.messages());
+
+        let mut spinner = SpinnerGuard::new("compacting...");
+
+        use crate::agent::messages::{Message, UserMessage};
+        let mut compact_messages = lightweight;
+        compact_messages.push(Message::User(UserMessage {
+            content: compaction::compaction_user_message(),
+        }));
+
+        let request = ProviderRequest {
+            system_prompt: self.config.system_prompt.clone(),
+            messages: compact_messages,
+            tools: Vec::new(),
+        };
+
+        let response = match self
+            .provider_registry
+            .complete_with(provider_override, request)
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => {
+                spinner.stop();
+                eprintln!("\x1b[31m  ✗ compaction failed: {e:#}\x1b[0m");
+                return Ok(());
+            }
+        };
+        spinner.stop();
+
+        let summary = response.content;
+
+        // Rotate to a new session with the summary.
+        self.session = self.session.rotate()?;
+
+        // Inject the summary as the first exchange in the new session.
+        self.session.push_user(format!(
+            "This is a continuation of a previous session. Here is the summary:\n\n{}",
+            summary
+        ))?;
+        self.session.push_assistant(
+            "Understood. I have the context from the previous session. Ready to continue."
+                .to_string(),
+        )?;
+
+        println!(
+            "\x1b[32m  ✓ compacted — new session: {}\x1b[0m",
+            self.session.path().display()
+        );
+
         Ok(())
     }
 

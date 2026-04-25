@@ -94,6 +94,9 @@ impl App {
                                 }
                             }
 
+                            // Auto-compact if context is near limit.
+                            agent.auto_compact_if_needed(provider).await?;
+
                             println!();
                         }
                     }
