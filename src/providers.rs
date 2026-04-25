@@ -26,14 +26,12 @@ pub trait Provider: Send + Sync {
 }
 
 pub mod anthropic;
-pub mod mock;
 pub mod openai;
 pub mod registry;
 pub mod zai;
 
 // Re-export key types for convenience.
 pub use anthropic::AnthropicProvider;
-pub use mock::MockProvider;
 pub use openai::OpenAIProvider;
 pub use registry::ProviderRegistry;
 pub use zai::ZaiProvider;

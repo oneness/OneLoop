@@ -1,8 +1,10 @@
 use std::env;
+use std::io::{self, Write as IoWrite};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::{AnthropicProvider, MockProvider, OpenAIProvider, Provider, ProviderRequest, ProviderResponse, ZaiProvider};
+use super::{AnthropicProvider, OpenAIProvider, Provider, ProviderRequest, ProviderResponse, ZaiProvider};
 use crate::auth;
 
 pub struct ProviderRegistry {
@@ -15,10 +17,6 @@ impl ProviderRegistry {
         let preferred = env::var("ONELOOP_PROVIDER").ok();
 
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-
-        // Always add mock.
-        let mock_index = providers.len();
-        providers.push(Box::new(MockProvider));
 
         let mut anthropic_index: Option<usize> = None;
         let mut zai_index: Option<usize> = None;
@@ -47,12 +45,11 @@ impl ProviderRegistry {
             Some("openai") => {
                 openai_index.context("ONELOOP_PROVIDER=openai but no OPENAI_API_KEY/auth found")?
             }
-            Some("mock") => mock_index,
             Some(other) => bail!("unknown provider: {other}"),
             None => zai_index
                 .or(openai_index)
                 .or(anthropic_index)
-                .unwrap_or(mock_index),
+                .context("no providers configured — run `oneloop login <provider>` first")?,
         };
 
         Ok(Self {
@@ -85,12 +82,112 @@ impl ProviderRegistry {
             .map(|p| p.as_ref())
     }
 
-    pub async fn complete_with(
+    /// Send a request with automatic retry (up to `max_retries` attempts).
+    /// On persistent failure, prompts the user interactively to pick an
+    /// alternative provider from those available and retries once more.
+    pub async fn complete_with_retry(
         &self,
         provider_name: Option<&str>,
         request: ProviderRequest,
     ) -> Result<ProviderResponse> {
+        let max_retries: usize = env::var("ONELOOP_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
         let provider = self.resolve(provider_name)?;
-        provider.complete(request).await
+        let provider_label = provider.name();
+
+        // --- Phase 1: retry on the same provider ---
+        let mut last_error: Option<String> = None;
+        for attempt in 1..=max_retries {
+            match provider.complete(request.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    let err_msg = format!("{e:#}");
+                    last_error = Some(err_msg.clone());
+
+                    if attempt < max_retries {
+                        let backoff = Duration::from_millis(500 * attempt as u64);
+                        eprintln!(
+                            "\x1b[33m  ⚠ [{provider_label}] attempt {attempt}/{max_retries} failed: {err_msg}\x1b[0m"
+                        );
+                        eprintln!(
+                            "\x1b[90m  ⏳ retrying in {}ms...\x1b[0m",
+                            backoff.as_millis()
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        }
+
+        // --- Phase 2: all retries exhausted, offer fallback ---
+        let err_msg = last_error.as_deref().unwrap_or("unknown error");
+        eprintln!(
+            "\x1b[31m  ✗ [{provider_label}] all {max_retries} attempts failed: {err_msg}\x1b[0m"
+        );
+
+        let alternatives: Vec<&'static str> = self
+            .providers
+            .iter()
+            .map(|p| p.name())
+            .filter(|name| *name != provider_label)
+            .collect();
+
+        if alternatives.is_empty() {
+            bail!(
+                "[{provider_label}] failed after {max_retries} retries and no alternative providers available"
+            );
+        }
+
+        // Show the user a numbered list.
+        println!("\x1b[1m  ── Provider Unavailable ──\x1b[0m");
+        println!(
+            "\x1b[90m  \"{provider_label}\" is not responding. Pick an alternative:\x1b[0m"
+        );
+        for (i, name) in alternatives.iter().enumerate() {
+            let model = self
+                .providers
+                .iter()
+                .find(|p| p.name() == *name)
+                .map(|p| p.model())
+                .unwrap_or_else(|| "?".to_string());
+            println!(
+                "\x1b[1m  {}. {} \x1b[90m({})\x1b[0m",
+                i + 1,
+                name,
+                model
+            );
+        }
+        println!("\x1b[90m  0. abort\x1b[0m");
+        print!("\x1b[1m  → select [0-{}]: \x1b[0m", alternatives.len());
+        io::stdout().flush()?;
+
+        let mut choice = String::new();
+        match io::stdin().read_line(&mut choice) {
+            Ok(0) => bail!("input closed — aborting"),
+            Ok(_) => {
+                let idx: usize = choice.trim().parse().unwrap_or(usize::MAX);
+                if idx == 0 {
+                    bail!("aborted by user");
+                }
+                match alternatives.get(idx - 1) {
+                    Some(&name) => {
+                        let fallback = self.resolve(Some(name))?;
+                        eprintln!(
+                            "\x1b[32m  → switching to {} ({})\x1b[0m",
+                            fallback.name(),
+                            fallback.model()
+                        );
+                        fallback.complete(request.clone()).await
+                    }
+                    None => {
+                        bail!("invalid selection: {}", choice.trim());
+                    }
+                }
+            }
+            Err(e) => bail!("failed to read input: {e}"),
+        }
     }
 }

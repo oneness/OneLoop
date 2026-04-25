@@ -169,7 +169,7 @@ impl Agent {
 
         let response = match self
             .provider_registry
-            .complete_with(provider_override, request)
+            .complete_with_retry(provider_override, request)
             .await
         {
             Ok(response) => response,
@@ -235,7 +235,7 @@ impl Agent {
 
             let response = match self
                 .provider_registry
-                .complete_with(provider_override, request)
+                .complete_with_retry(provider_override, request)
                 .await
             {
                 Ok(response) => response,
