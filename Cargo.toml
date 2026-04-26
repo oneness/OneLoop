@@ -5,6 +5,19 @@ edition = "2024"
 description = "A tiny, extensible coding agent"
 license = "MIT"
 
+[lints.clippy]
+collapsible_match = "deny"
+manual_ok_or = "deny"
+manual_unwrap_or = "deny"
+needless_borrow = "deny"
+needless_collect = "deny"
+redundant_clone = "deny"
+redundant_closure = "deny"
+redundant_closure_for_method_calls = "deny"
+single_match = "deny"
+uninlined_format_args = "deny"
+unwrap_used = "deny"
+
 [dependencies]
 anyhow = "1"
 chrono = "0.4"

@@ -4,7 +4,7 @@ pub mod read;
 pub mod web_search;
 pub mod write;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
 

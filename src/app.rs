@@ -48,7 +48,9 @@ impl App {
                 println!("oneloop");
                 println!("{}", agent.summary());
                 println!();
-                println!("interactive mode — type your message, /clear to reset context, Ctrl+C to stop");
+                println!(
+                    "interactive mode — type your message, /clear to reset context, Ctrl+C to stop"
+                );
                 println!();
 
                 loop {
@@ -65,15 +67,10 @@ impl App {
                             }
 
                             // Check for built-in commands.
-                            if let Some(cmd) = parse_command(&line) {
-                                match cmd {
-                                    "clear" => {
-                                        agent.clear_session()?;
-                                        println!();
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
+                            if let Some("clear") = parse_command(&line) {
+                                agent.clear_session()?;
+                                println!();
+                                continue;
                             }
 
                             let (provider, prompt) = parse_provider_prefix(&line);

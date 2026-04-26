@@ -1,9 +1,9 @@
 use std::fs;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
 
@@ -50,8 +50,9 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
-        let input: EditInput = serde_json::from_value(input)
-            .context("invalid edit input; expected { path: string, old_text: string, new_text: string }")?;
+        let input: EditInput = serde_json::from_value(input).context(
+            "invalid edit input; expected { path: string, old_text: string, new_text: string }",
+        )?;
 
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
@@ -65,10 +66,7 @@ impl Tool for EditTool {
 
         let occurrences = content.matches(&input.old_text).count();
         if occurrences == 0 {
-            return Err(anyhow!(
-                "old_text not found in file: {}",
-                path.display()
-            ));
+            return Err(anyhow!("old_text not found in file: {}", path.display()));
         }
         if occurrences > 1 {
             return Err(anyhow!(

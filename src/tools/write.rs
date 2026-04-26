@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
 
@@ -54,8 +54,12 @@ impl Tool for WriteTool {
         if let Some(parent) = path.parent()
             && parent != Path::new("")
         {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create parent directories for: {}", path.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create parent directories for: {}",
+                    path.display()
+                )
+            })?;
         }
 
         fs::write(&path, input.content)

@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,8 +26,7 @@ impl OpenAIProvider {
             .build()
             .context("failed to build OpenAI HTTP client")?;
 
-        let model =
-            std::env::var("ONELOOP_OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string());
+        let model = std::env::var("ONELOOP_OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string());
         let base_url = std::env::var("ONELOOP_OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let reasoning_effort = env::var("ONELOOP_OPENAI_REASONING_EFFORT")
@@ -222,7 +221,7 @@ impl Provider for OpenAIProvider {
             .context("failed to read OpenAI response body")?;
 
         if !status.is_success() {
-            bail!("OpenAI request failed ({}): {}", status, text);
+            bail!("OpenAI request failed ({status}): {text}");
         }
 
         let parsed: OpenAIResponse =
@@ -238,9 +237,13 @@ impl Provider for OpenAIProvider {
             .unwrap_or_default()
             .into_iter()
             .map(|tc| {
-                let arguments = serde_json::from_str(&tc.function.arguments).with_context(|| {
-                    format!("failed to parse OpenAI tool arguments: {}", tc.function.arguments)
-                })?;
+                let arguments =
+                    serde_json::from_str(&tc.function.arguments).with_context(|| {
+                        format!(
+                            "failed to parse OpenAI tool arguments: {}",
+                            tc.function.arguments
+                        )
+                    })?;
                 Ok(ToolCall {
                     id: tc.id,
                     name: tc.function.name,

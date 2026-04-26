@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -151,7 +151,7 @@ impl Provider for ZaiProvider {
             .context("failed to read Z.AI response body")?;
 
         if !status.is_success() {
-            bail!("Z.AI request failed ({}): {}", status, text);
+            bail!("Z.AI request failed ({status}): {text}");
         }
 
         let parsed: ZaiResponse =
@@ -168,8 +168,9 @@ impl Provider for ZaiProvider {
             .into_iter()
             .map(|tool_call| {
                 let arguments = match tool_call.function.arguments {
-                    Value::String(text) => serde_json::from_str(&text)
-                        .with_context(|| format!("failed to parse Z.AI tool arguments JSON: {text}")),
+                    Value::String(text) => serde_json::from_str(&text).with_context(|| {
+                        format!("failed to parse Z.AI tool arguments JSON: {text}")
+                    }),
                     other => Ok(other),
                 }?;
                 Ok(ToolCall {

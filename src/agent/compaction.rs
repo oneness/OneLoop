@@ -14,16 +14,24 @@ const DEFAULT_COMPACTION_THRESHOLD: u8 = 85;
 /// Maximum characters to keep from a tool result when stripping.
 const TOOL_RESULT_MAX_CHARS: usize = 200;
 
+/// Maximum tokens of recent user messages to preserve after compaction.
+const RECENT_USER_MESSAGES_MAX_TOKENS: usize = 20_000;
+
+/// Prefix prepended to the compaction summary in the new session.
+pub const SUMMARY_PREFIX: &str = "\
+Another language model started working on this task and produced a handoff summary. \
+Use it to build on the work already done and avoid duplicating effort.\n\n";
+
 /// The prompt sent to the model to generate a compacted summary.
-const COMPACTION_PROMPT: &str = r#"Summarize this conversation into a compact handoff document. Include:
+const COMPACTION_PROMPT: &str = r#"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-- What was accomplished
-- Current work in progress (files, functions, state)
-- What remains to be done
-- Key decisions and why
+Include:
+- Current progress and key decisions made
 - Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-Be thorough but concise. This is the only context the next session will have."#;
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work."#;
 
 /// Estimate the total token count for a slice of messages.
 pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usize {
@@ -88,9 +96,13 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
             }
             Message::ToolResult(tool_result) => {
                 let truncated = if tool_result.content.len() > TOOL_RESULT_MAX_CHARS {
+                    let mut end = TOOL_RESULT_MAX_CHARS;
+                    while end > 0 && !tool_result.content.is_char_boundary(end) {
+                        end -= 1;
+                    }
                     format!(
                         "{}... ({} chars truncated)",
-                        &tool_result.content[..TOOL_RESULT_MAX_CHARS],
+                        &tool_result.content[..end],
                         tool_result.content.len()
                     )
                 } else {
@@ -130,4 +142,49 @@ fn summarize_tool_arguments(name: &str, arguments: &serde_json::Value) -> String
             .to_string(),
         _ => arguments.to_string(),
     }
+}
+
+/// Collect recent user messages from history (most recent first), up to
+/// `RECENT_USER_MESSAGES_MAX_TOKENS` tokens. Returns them in chronological
+/// order. Skips any messages that look like previous compaction summaries.
+pub fn collect_recent_user_messages(messages: &[Message]) -> Vec<String> {
+    let max_tokens: usize = env::var("ONELOOP_COMPACT_USER_MSG_TOKENS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RECENT_USER_MESSAGES_MAX_TOKENS);
+
+    let mut selected: Vec<String> = Vec::new();
+    let mut remaining = max_tokens;
+
+    for msg in messages.iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        if let Message::User(user) = msg {
+            // Skip previous compaction summaries.
+            if user.content.starts_with(SUMMARY_PREFIX) {
+                continue;
+            }
+            let tokens = user.content.len() / CHARS_PER_TOKEN;
+            if tokens <= remaining {
+                selected.push(user.content.clone());
+                remaining = remaining.saturating_sub(tokens);
+            } else {
+                // Partially include this message (truncate to fit).
+                let mut keep_chars = (remaining * CHARS_PER_TOKEN).min(user.content.len());
+                // Walk back to a valid UTF-8 boundary.
+                while keep_chars > 0 && !user.content.is_char_boundary(keep_chars) {
+                    keep_chars -= 1;
+                }
+                if keep_chars > 0 {
+                    selected.push(format!("{}... [truncated]", &user.content[..keep_chars]));
+                }
+                break;
+            }
+        }
+    }
+
+    // Reverse back to chronological order.
+    selected.reverse();
+    selected
 }

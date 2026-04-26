@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -145,7 +145,7 @@ impl Provider for AnthropicProvider {
             .context("failed to read Anthropic response body")?;
 
         if !status.is_success() {
-            bail!("Anthropic request failed ({}): {}", status, text);
+            bail!("Anthropic request failed ({status}): {text}");
         }
 
         let parsed: AnthropicResponse =

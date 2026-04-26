@@ -3,9 +3,12 @@ use std::fs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{agent::AgentContext, output::{truncate_head, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
+use crate::{
+    agent::AgentContext,
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head, truncation_notice},
+};
 
 use super::{Tool, ToolResult};
 
@@ -51,7 +54,9 @@ impl Tool for ReadTool {
                 content: format!(
                     "file not found: {}\nUse `bash` with `find` or `grep` to search for it, e.g.: find . -name \"*{}*\" -type f",
                     path.display(),
-                    path.file_name().map(|f| f.to_string_lossy()).unwrap_or_default()
+                    path.file_name()
+                        .map(|f| f.to_string_lossy())
+                        .unwrap_or_default()
                 ),
                 is_error: true,
             });

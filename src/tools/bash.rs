@@ -3,10 +3,16 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::{process::Command, time::{timeout, Duration}};
+use serde_json::{Value, json};
+use tokio::{
+    process::Command,
+    time::{Duration, timeout},
+};
 
-use crate::{agent::AgentContext, output::{truncate_tail, truncation_notice, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES}};
+use crate::{
+    agent::AgentContext,
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail, truncation_notice},
+};
 
 use super::{Tool, ToolResult};
 
@@ -61,7 +67,7 @@ impl Tool for BashTool {
 
         let output = timeout(Duration::from_secs(timeout_secs), command.output())
             .await
-            .with_context(|| format!("bash command timed out after {} seconds", timeout_secs))??;
+            .with_context(|| format!("bash command timed out after {timeout_secs} seconds"))??;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -70,7 +76,13 @@ impl Tool for BashTool {
 
         let mut combined = String::new();
         combined.push_str(&format!("command: {}\n", input.command));
-        combined.push_str(&format!("exit_code: {}\n", exit_code.map_or_else(|| "terminated by signal".to_string(), |code| code.to_string())));
+        combined.push_str(&format!(
+            "exit_code: {}\n",
+            exit_code.map_or_else(
+                || "terminated by signal".to_string(),
+                |code| code.to_string()
+            )
+        ));
 
         if !stdout.trim().is_empty() {
             combined.push_str("stdout:\n");

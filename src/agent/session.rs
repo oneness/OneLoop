@@ -25,8 +25,12 @@ pub struct Session {
 impl Session {
     pub fn open_or_create(cwd: &Path) -> Result<Self> {
         let sessions_dir = cwd.join(".oneloop").join("sessions");
-        fs::create_dir_all(&sessions_dir)
-            .with_context(|| format!("failed to create sessions directory: {}", sessions_dir.display()))?;
+        fs::create_dir_all(&sessions_dir).with_context(|| {
+            format!(
+                "failed to create sessions directory: {}",
+                sessions_dir.display()
+            )
+        })?;
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let path = find_latest_session(&sessions_dir, &today);
@@ -51,7 +55,11 @@ impl Session {
     }
 
     pub fn push_tool_call(&mut self, id: String, name: String, arguments: Value) -> Result<()> {
-        let message = Message::ToolCall(ToolCall { id, name, arguments });
+        let message = Message::ToolCall(ToolCall {
+            id,
+            name,
+            arguments,
+        });
         self.append(message)
     }
 
@@ -84,11 +92,15 @@ impl Session {
     /// Suffix is always derived from the base date, so files go
     /// 2026-04-20.jsonl, 2026-04-20-001.jsonl, 2026-04-20-002.jsonl, etc.
     pub fn rotate(&self) -> Result<Self> {
-        let sessions_dir = self.path.parent()
+        let sessions_dir = self
+            .path
+            .parent()
             .context("session file has no parent directory")?;
 
         // Extract the base date (e.g. "2026-04-20" from "2026-04-20-002.jsonl" or "2026-04-20.jsonl")
-        let filename = self.path.file_stem()
+        let filename = self
+            .path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("session");
         let base_name = filename.split('-').take(3).collect::<Vec<_>>().join("-");

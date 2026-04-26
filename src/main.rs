@@ -1,12 +1,12 @@
-mod app;
 mod agent;
+mod app;
 mod auth;
 mod config;
 mod output;
 mod providers;
 mod tools;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]

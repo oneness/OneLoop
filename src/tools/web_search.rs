@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
-use crate::output::{truncate_tail, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES};
+use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
 
 use super::{Tool, ToolResult};
 
@@ -77,8 +77,9 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, input: Value, _ctx: &AgentContext) -> Result<ToolResult> {
-        let input: SearchInput = serde_json::from_value(input)
-            .context("invalid web_search input; expected { query: string, max_results?: number }")?;
+        let input: SearchInput = serde_json::from_value(input).context(
+            "invalid web_search input; expected { query: string, max_results?: number }",
+        )?;
 
         let url = format!(
             "{}/search?q={}&format=json",
@@ -102,7 +103,7 @@ impl Tool for WebSearchTool {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Ok(ToolResult {
-                content: format!("web search failed ({}): {}", status, body),
+                content: format!("web search failed ({status}): {body}"),
                 is_error: true,
             });
         }
@@ -114,12 +115,15 @@ impl Tool for WebSearchTool {
 
         let mut output = String::new();
         output.push_str(&format!("query: {}\n", input.query));
-        output.push_str(&format!("results: {}\n\n", searx.results.len().min(input.max_results)));
+        output.push_str(&format!(
+            "results: {}\n\n",
+            searx.results.len().min(input.max_results)
+        ));
 
         if !searx.answers.is_empty() {
             output.push_str("instant answers:\n");
             for answer in &searx.answers {
-                output.push_str(&format!("  - {}\n", answer));
+                output.push_str(&format!("  - {answer}\n"));
             }
             output.push('\n');
         }
@@ -144,7 +148,10 @@ impl Tool for WebSearchTool {
             }
             final_content.push_str(&format!(
                 "[output truncated: showing {} of {} lines, {} of {} bytes]",
-                truncated.shown_lines, truncated.original_lines, truncated.shown_bytes, truncated.original_bytes
+                truncated.shown_lines,
+                truncated.original_lines,
+                truncated.shown_bytes,
+                truncated.original_bytes
             ));
         }
 

@@ -2,9 +2,11 @@ use std::env;
 use std::io::{self, Write as IoWrite};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use super::{AnthropicProvider, OpenAIProvider, Provider, ProviderRequest, ProviderResponse, ZaiProvider};
+use super::{
+    AnthropicProvider, OpenAIProvider, Provider, ProviderRequest, ProviderResponse, ZaiProvider,
+};
 use crate::auth;
 
 pub struct ProviderRegistry {
@@ -38,10 +40,11 @@ impl ProviderRegistry {
         }
 
         let default_index = match preferred.as_deref() {
-            Some("zai") => zai_index.context("ONELOOP_PROVIDER=zai but no ZAI_API_KEY/auth found")?,
-            Some("anthropic") => {
-                anthropic_index.context("ONELOOP_PROVIDER=anthropic but no ANTHROPIC_API_KEY/auth found")?
+            Some("zai") => {
+                zai_index.context("ONELOOP_PROVIDER=zai but no ZAI_API_KEY/auth found")?
             }
+            Some("anthropic") => anthropic_index
+                .context("ONELOOP_PROVIDER=anthropic but no ANTHROPIC_API_KEY/auth found")?,
             Some("openai") => {
                 openai_index.context("ONELOOP_PROVIDER=openai but no OPENAI_API_KEY/auth found")?
             }
@@ -77,9 +80,12 @@ impl ProviderRegistry {
             .find(|p| p.name() == name)
             .with_context(|| {
                 let available: Vec<&str> = self.providers.iter().map(|p| p.name()).collect();
-                format!("unknown provider: {name}. available: {}", available.join(", "))
+                format!(
+                    "unknown provider: {name}. available: {}",
+                    available.join(", ")
+                )
             })
-            .map(|p| p.as_ref())
+            .map(AsRef::as_ref)
     }
 
     /// Send a request with automatic retry (up to `max_retries` attempts).
@@ -143,9 +149,7 @@ impl ProviderRegistry {
 
         // Show the user a numbered list.
         println!("\x1b[1m  ── Provider Unavailable ──\x1b[0m");
-        println!(
-            "\x1b[90m  \"{provider_label}\" is not responding. Pick an alternative:\x1b[0m"
-        );
+        println!("\x1b[90m  \"{provider_label}\" is not responding. Pick an alternative:\x1b[0m");
         for (i, name) in alternatives.iter().enumerate() {
             let model = self
                 .providers
@@ -153,12 +157,7 @@ impl ProviderRegistry {
                 .find(|p| p.name() == *name)
                 .map(|p| p.model())
                 .unwrap_or_else(|| "?".to_string());
-            println!(
-                "\x1b[1m  {}. {} \x1b[90m({})\x1b[0m",
-                i + 1,
-                name,
-                model
-            );
+            println!("\x1b[1m  {}. {} \x1b[90m({})\x1b[0m", i + 1, name, model);
         }
         println!("\x1b[90m  0. abort\x1b[0m");
         print!("\x1b[1m  → select [0-{}]: \x1b[0m", alternatives.len());

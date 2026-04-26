@@ -19,9 +19,7 @@ pub struct AgentContext {
     pub cwd: PathBuf,
 }
 
-const SPINNER_FRAMES: &[&str] = &[
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-];
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// RAII guard for a spinner task. Aborts the spinner and clears the line on drop.
 struct SpinnerGuard {
@@ -40,7 +38,9 @@ impl SpinnerGuard {
                 i += 1;
             }
         });
-        Self { handle: Some(handle) }
+        Self {
+            handle: Some(handle),
+        }
     }
 
     fn stop(&mut self) {
@@ -139,7 +139,7 @@ impl Agent {
             .config
             .system_prompt
             .as_ref()
-            .map(|s| s.len())
+            .map(String::len)
             .unwrap_or(0);
 
         if !compaction::should_compact(self.session.messages(), system_prompt_chars) {
@@ -183,22 +183,34 @@ impl Agent {
 
         let summary = response.content;
 
+        // Preserve recent user messages so the next session has verbatim context.
+        // Must collect before rotating since rotate() creates an empty session.
+        let recent_user_messages =
+            compaction::collect_recent_user_messages(self.session.messages());
+
         // Rotate to a new session with the summary.
         self.session = self.session.rotate()?;
 
-        // Inject the summary as the first exchange in the new session.
-        self.session.push_user(format!(
-            "This is a continuation of a previous session. Here is the summary:\n\n{}",
-            summary
-        ))?;
+        // Replay recent user messages verbatim.
+        for user_msg in &recent_user_messages {
+            self.session.push_user(user_msg.clone())?;
+        }
+
+        // Inject the structured summary as the final user message.
+        self.session
+            .push_user(format!("{}{}", compaction::SUMMARY_PREFIX, summary))?;
         self.session.push_assistant(
             "Understood. I have the context from the previous session. Ready to continue."
                 .to_string(),
         )?;
 
         println!(
-            "\x1b[32m  ✓ compacted — new session: {}\x1b[0m",
-            self.session.path().display()
+            "\x1b[32m  ✓ compacted — new session: {} ({} recent messages preserved)\x1b[0m",
+            self.session.path().display(),
+            recent_user_messages.len()
+        );
+        println!(
+            "\x1b[90m  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.\x1b[0m"
         );
 
         Ok(())
