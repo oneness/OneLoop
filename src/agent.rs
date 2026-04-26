@@ -223,10 +223,6 @@ impl Agent {
     ) -> Result<()> {
         self.session.push_user(prompt)?;
 
-        let ctx = AgentContext {
-            cwd: self.config.cwd.clone(),
-        };
-
         let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -272,45 +268,68 @@ impl Agent {
                 break;
             }
 
-            for tool_call in response.tool_calls {
+            // Record tool calls in session, then execute in parallel.
+            // Session records must be sequential (JSONL ordering), but execution
+            // can happen concurrently — e.g. two `read` calls at the same time.
+            let tool_calls = response.tool_calls;
+
+            // Log all tool calls to session first.
+            for tc in &tool_calls {
                 self.session.push_tool_call(
-                    tool_call.id.clone(),
-                    tool_call.name.clone(),
-                    tool_call.arguments.clone(),
+                    tc.id.clone(),
+                    tc.name.clone(),
+                    tc.arguments.clone(),
                 )?;
+            }
 
-                let tool_label = format_tool_call(&tool_call.name, &tool_call.arguments);
-                let mut spinner = SpinnerGuard::new(&tool_label);
+            // Spawn all tool executions as separate tasks.
+            let handles: Vec<_> = tool_calls
+                .iter()
+                .map(|tc| {
+                    let name = tc.name.clone();
+                    let arguments = tc.arguments.clone();
+                    let ctx = AgentContext {
+                        cwd: self.config.cwd.clone(),
+                    };
+                    let registry = self.tool_registry.clone();
+                    tokio::spawn(async move { registry.execute(&name, arguments, &ctx).await })
+                })
+                .collect();
 
-                let result = match self
-                    .tool_registry
-                    .execute(&tool_call.name, tool_call.arguments.clone(), &ctx)
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(e) => ToolResult {
+            // Await all handles in spawn order — preserves original ordering.
+            let results: Vec<_> = futures::future::join_all(handles)
+                .await
+                .into_iter()
+                .map(|res| match res {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => ToolResult {
                         content: format!("Tool execution failed: {e:#}"),
                         is_error: true,
                     },
-                };
+                    Err(join_err) => ToolResult {
+                        content: format!("Tool task failed: {join_err}"),
+                        is_error: true,
+                    },
+                })
+                .collect();
 
-                spinner.stop();
+            // Now log results to session and print feedback in order.
+            for (tc, result) in tool_calls.iter().zip(results) {
+                let tool_label = format_tool_call(&tc.name, &tc.arguments);
 
                 self.session.push_tool_result(
-                    tool_call.id,
-                    tool_call.name,
+                    tc.id.clone(),
+                    tc.name.clone(),
                     result.content.clone(),
                     result.is_error,
                 )?;
 
                 if result.is_error {
-                    eprint!("\x1b[2K\r");
                     println!("\x1b[31m  ✗ {tool_label}\x1b[0m");
                     println!("{}", result.content);
                 } else {
                     let lines = result.content.lines().count();
                     let bytes = result.content.len();
-                    eprint!("\x1b[2K\r");
                     println!("\x1b[90m  ✓ {tool_label} ({lines} lines, {bytes} bytes)\x1b[0m");
                 }
             }

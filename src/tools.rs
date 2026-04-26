@@ -4,6 +4,8 @@ pub mod read;
 pub mod web_search;
 pub mod write;
 
+use std::sync::Arc;
+
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -31,19 +33,20 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult>;
 }
 
+#[derive(Clone)]
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
     pub fn with_builtin_tools() -> Self {
         Self {
             tools: vec![
-                Box::new(read::ReadTool),
-                Box::new(write::WriteTool),
-                Box::new(edit::EditTool),
-                Box::new(bash::BashTool),
-                Box::new(web_search::WebSearchTool::new()),
+                Arc::new(read::ReadTool),
+                Arc::new(write::WriteTool),
+                Arc::new(edit::EditTool),
+                Arc::new(bash::BashTool),
+                Arc::new(web_search::WebSearchTool::new()),
             ],
         }
     }
