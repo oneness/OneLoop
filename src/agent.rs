@@ -1,11 +1,14 @@
 pub mod compaction;
 pub mod messages;
+pub mod metrics;
 pub mod session;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Result;
 use std::env;
+use serde_json::json;
 
 use crate::{
     config::Config,
@@ -103,6 +106,7 @@ pub struct Agent {
     provider_registry: ProviderRegistry,
     tool_registry: ToolRegistry,
     session: session::Session,
+    metrics: metrics::Metrics,
 }
 
 impl Agent {
@@ -112,17 +116,20 @@ impl Agent {
         tool_registry: ToolRegistry,
     ) -> Result<Self> {
         let session = session::Session::open_or_create(&config.cwd)?;
+        let metrics = metrics::Metrics::from_session_path(session.path())?;
         Ok(Self {
             config,
             provider_registry,
             tool_registry,
             session,
+            metrics,
         })
     }
 
     /// Clear the session — rotates to a new empty session file.
     pub fn clear_session(&mut self) -> Result<()> {
         self.session = self.session.rotate()?;
+        self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
         println!(
             "\x1b[90m  → cleared context, new session: {}\x1b[0m",
             self.session.path().display()
@@ -147,6 +154,9 @@ impl Agent {
         }
 
         println!("\x1b[33m  ⚠ context near limit — auto-compacting...\x1b[0m");
+
+        let tokens_before = compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
+        let compact_start = Instant::now();
 
         // Build a lightweight version of the conversation for the compaction call.
         // Tool results can be huge (file contents, command output) — replace them
@@ -191,6 +201,9 @@ impl Agent {
         // Rotate to a new session with the summary.
         self.session = self.session.rotate()?;
 
+        // Update metrics to point to new session file.
+        self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
+
         // Replay recent user messages verbatim.
         for user_msg in &recent_user_messages {
             self.session.push_user(user_msg.clone())?;
@@ -203,6 +216,18 @@ impl Agent {
             "Understood. I have the context from the previous session. Ready to continue."
                 .to_string(),
         )?;
+
+        let tokens_after = compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
+        let compact_duration = compact_start.elapsed();
+
+        self.metrics.log(
+            "compaction",
+            json!({
+                "duration_ms": compact_duration.as_millis(),
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+            }),
+        );
 
         println!(
             "\x1b[32m  ✓ compacted — new session: {} ({} recent messages preserved)\x1b[0m",
@@ -235,6 +260,11 @@ impl Agent {
             }
 
             let mut spinner = SpinnerGuard::new("thinking...");
+            let tokens_estimated = compaction::estimate_tokens(
+                self.session.messages(),
+                self.config.system_prompt.as_ref().map(String::len).unwrap_or(0),
+            );
+            let api_start = Instant::now();
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
@@ -249,11 +279,32 @@ impl Agent {
                 Ok(response) => response,
                 Err(e) => {
                     spinner.stop();
+                    self.metrics.log(
+                        "api_call",
+                        json!({
+                            "provider": self.provider_registry.active_name(),
+                            "model": self.provider_registry.active_model(),
+                            "duration_ms": api_start.elapsed().as_millis(),
+                            "tokens_estimated": tokens_estimated,
+                            "success": false,
+                        }),
+                    );
                     println!("\x1b[31m  ✗ provider error: {e:#}\x1b[0m");
                     break;
                 }
             };
             spinner.stop();
+
+            self.metrics.log(
+                "api_call",
+                json!({
+                    "provider": self.provider_registry.active_name(),
+                    "model": self.provider_registry.active_model(),
+                    "duration_ms": api_start.elapsed().as_millis(),
+                    "tokens_estimated": tokens_estimated,
+                    "success": true,
+                }),
+            );
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
@@ -272,6 +323,7 @@ impl Agent {
             // Session records must be sequential (JSONL ordering), but execution
             // can happen concurrently — e.g. two `read` calls at the same time.
             let tool_calls = response.tool_calls;
+            let tool_start = Instant::now();
 
             // Log all tool calls to session first.
             for tc in &tool_calls {
@@ -312,6 +364,18 @@ impl Agent {
                     },
                 })
                 .collect();
+
+            let tool_duration = tool_start.elapsed();
+
+            // Log tool execution metrics.
+            self.metrics.log(
+                "tool_exec",
+                json!({
+                    "duration_ms": tool_duration.as_millis(),
+                    "tools": tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
+                    "success": results.iter().all(|r| !r.is_error),
+                }),
+            );
 
             // Now log results to session and print feedback in order.
             for (tc, result) in tool_calls.iter().zip(results) {
