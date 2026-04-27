@@ -14,18 +14,6 @@ The initial core is intentionally small:
 Built-in tools use the same core tool abstraction as future non-built-in tools.
 That keeps the core honest without forcing a full plugin runtime too early.
 
-## Layers on top
-
-Not part of the initial core:
-
-- TUI polish
-- RPC mode
-- prompt templates
-- skills
-- WASM plugins
-- session branching
-- compaction
-
 ## The loop
 
 1. accept user input
@@ -46,7 +34,6 @@ Not part of the initial core:
 - web_search (SearXNG-backed)
 
 All five core built-in tools are now implemented.
-The main `./loop` workflow is agent-driven: the model decides when to use them.
 
 ## Providers
 
@@ -55,14 +42,12 @@ Currently supported:
 - Z.AI via API key
 - OpenAI via API key
 - Anthropic via API key
-- mock fallback
 
-Default selection order:
+Default selection order (when `ONELOOP_PROVIDER` is not set):
 
 1. Z.AI
 2. OpenAI
 3. Anthropic
-4. mock
 
 Override with `ONELOOP_PROVIDER` if needed.
 Route per-prompt with `@provider` prefix (e.g. `@anthropic explain this`).

@@ -10,25 +10,12 @@
 
 - [ ] **Skills loader** — Walk `.oneloop/skills/*.md` and `~/.oneloop/skills/*.md`, concatenate, append to system prompt. Makes oneloop extensible without Rust changes. Users drop markdown files to teach the agent new capabilities through natural language.
 
-- [ ] **Config-driven tools** — A `.oneloop/tools/*.toml` directory where users declaratively define tools (name, description, JSON schema, exec command). The registry reads these at startup, generates `ToolDefinition` entries, and interpolates arguments into the exec command via bash. First-class tool visibility without writing Rust code.
-
-- [ ] **Qwen provider** — Add `@qwen` as a first-class provider. Qwen is OpenAI-compatible (same `/chat/completions` endpoint with tool calling support). Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`. Models: `qwen-coder-plus`, `qwen3.6-plus`, `qwen3.6-flash`. Dramatically cheaper than Anthropic/OpenAI (~$0.17-0.97/M tokens vs $3-15/M). Extend `OpenAIProvider` with Qwen defaults, add `oneloop login qwen`, register in `ProviderRegistry`.
-
-## Later
-
-- [ ] **RPC mode** — Expose the agent loop over a socket/HTTP so editors and other tools can drive it programmatically.
-
-- [ ] **Prompt templates** — Named reusable prompt patterns (e.g. "refactor", "debug", "explain") stored in `.oneloop/templates/`.
-
-- [ ] **Session branching** — Fork a session at an arbitrary point to explore alternative paths without losing the original conversation.
-
-- [ ] **TUI polish** — Richer terminal UI with colors, markdown rendering, progress bars.
 
 ## Done
 
 - [x] **Built-in tools** — read, write, edit, bash
 - [x] **Web search tool** — SearXNG-backed `web_search` tool, configurable via `ONELOOP_SEARX_URL`
-- [x] **Multiple providers** — Z.AI, OpenAI, Anthropic, mock fallback
+- [x] **Multiple providers** — Z.AI, OpenAI, Anthropic
 - [x] **Ctrl+C to stop** — Agent loop checks a shared stop flag, Ctrl+C breaks out cleanly
 - [x] **Interactive mode** — REPL with animated spinner
 - [x] **Session persistence** — JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`

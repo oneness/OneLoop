@@ -40,6 +40,19 @@ M.hooks = { "before_api_call", "after_tool" }
 return M
 ```
 
+## Hot Reload
+
+Plugins are loaded once on startup. Editing a `.lua` file while the agent is running does **not** take effect automatically. Use the `/reload` REPL command to re-read all plugin files from disk:
+
+```
+> /reload
+  ✓ reloaded 3 plugins
+```
+
+This calls `PluginManager::load_from_dirs()` again, replacing all loaded plugins with the current files on disk. The agent loop continues uninterrupted — the next hook fire uses the new code. No restart needed.
+
+This is the simplest approach: explicit, predictable, no surprising behavior mid-conversation.
+
 ## Host Side (Rust)
 
 ```rust
@@ -391,6 +404,7 @@ return M
 3. **Define `ctx` API** — Expose `shell`, `read_file`, `write_file`, `append_file`, `file_exists`, `resolve_path`, `project_root`, `log` as Lua functions
 4. **Wire hooks into `agent.rs`** — Call `plugins.fire_hook()` at each extension point
 5. **Handle `before_tool` return values** — Map `{action="block"}` / `{action="confirm"}` to Rust behavior
-6. **Ship `memory.lua` and `safety.lua`** as built-in (but overridable) defaults in `~/.oneloop/plugins/`
-7. **Add `plugins` field to `Agent`** — Load on startup, pass through to hook points
-8. **Update `docs/architecture.md`** — Add plugin system to source layout
+6. **Add `/reload` command** — In `app.rs`, re-read plugin files from disk, replace in `Agent`
+7. **Ship `memory.lua` and `safety.lua`** as built-in (but overridable) defaults in `~/.oneloop/plugins/`
+8. **Add `plugins` field to `Agent`** — Load on startup, pass through to hook points
+9. **Update `docs/architecture.md`** — Add plugin system to source layout
