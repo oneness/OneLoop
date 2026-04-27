@@ -95,10 +95,12 @@ Anthropic API-key auth is supported, but not `claude.ai` subscription login.
 ```
 src/
   main.rs           CLI entry point, login command
-  agent.rs          Agent loop, spinner, AgentContext
+  agent.rs          Agent loop, spinner, AgentContext, metrics
   agent/
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, file discovery
+    compaction.rs   Token estimation, tool output stripping, compaction
+    metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL, command routing, Ctrl+C handling
   auth.rs           API key storage in ~/.oneloop/auth.json
   config.rs         System prompt loading from AGENTS.md
@@ -108,13 +110,16 @@ src/
     anthropic.rs    Anthropic Claude provider
     openai.rs       OpenAI GPT provider
     zai.rs          Z.AI GLM provider
-    mock.rs         Mock provider for testing
-    registry.rs     Provider discovery and selection
-  tools.rs          Tool trait, ToolRegistry, ToolDefinition
+    registry.rs     Provider discovery, selection, retry with fallback
+  tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
     web_search.rs   SearXNG web search
+docs/
+  architecture.md   This file
+  style-guide.md    Coding conventions and lint config
+  plugins.md        Plugin system design and example plugins
 ```
