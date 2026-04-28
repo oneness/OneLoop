@@ -15,21 +15,16 @@ A tiny, extensible coding agent.
 
 oneloop starts small:
 
-- multiple providers (Z.AI, OpenAI, Anthropic, mock fallback)
+- multiple providers (Z.AI, OpenAI, Anthropic)
 - five tools: read, write, edit, bash, web_search
 - linear append-only session model with `/clear` to rotate
 - AGENTS.md context loading
 - interactive CLI with animated spinner
 - date-based session persistence
-
-Everything else is a later layer:
-
-- RPC mode
-- prompt templates
-- skills
-- WASM plugins
-- session branching
-- compaction
+- auto-compaction when context nears limit
+- retry with interactive fallback to alternative providers
+- parallel tool execution
+- per-session metrics logging
 
 ## Usage
 
@@ -77,6 +72,10 @@ Stores API keys in `~/.oneloop/auth.json`.
 - `AGENTS.md` in the current project directory is loaded as the system prompt
 - `@provider` prefix routes to a specific provider (e.g. `@anthropic explain this code`)
 - `oneloop login <provider>` stores API keys in `~/.oneloop/auth.json`
+- multiple tool calls from a single response execute in parallel
+- auto-compaction triggers at 85% of context window with a structured handoff summary
+- on provider failure, retries up to 3 times then prompts to pick an alternative provider
+- per-session metrics logged to `.oneloop/metrics/<session>.jsonl`
 
 ## Provider selection
 
@@ -85,11 +84,10 @@ Default order:
 1. Z.AI (if credentials available)
 2. OpenAI (if credentials available)
 3. Anthropic (if credentials available)
-4. mock fallback
 
 Override with environment variables:
 
-- `ONELOOP_PROVIDER=zai|openai|anthropic|mock` — force a specific provider
+- `ONELOOP_PROVIDER=zai|openai|anthropic` — force a specific provider
 - `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-6`)
 - `ONELOOP_OPENAI_MODEL` — OpenAI model override (defaults to `gpt-5.4`)
 - `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override (defaults to `https://api.openai.com/v1`)
