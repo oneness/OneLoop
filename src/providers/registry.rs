@@ -91,10 +91,17 @@ impl ProviderRegistry {
     /// Send a request with automatic retry (up to `max_retries` attempts).
     /// On persistent failure, prompts the user interactively to pick an
     /// alternative provider from those available and retries once more.
+    ///
+    /// `stop_spinner` is called before showing the interactive fallback prompt
+    /// so any caller-side animation (e.g. "thinking…") is halted first.
+    /// `start_spinner` is called after the user selects a fallback, to resume
+    /// the animation while the fallback provider processes the request.
     pub async fn complete_with_retry(
         &self,
         provider_name: Option<&str>,
         request: ProviderRequest,
+        stop_spinner: Option<Box<dyn FnOnce() + Send>>,
+        start_spinner: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<ProviderResponse> {
         let max_retries: usize = env::var("ONELOOP_MAX_RETRIES")
             .ok()
@@ -147,9 +154,14 @@ impl ProviderRegistry {
             );
         }
 
+        // Halt any caller-side spinner before showing the interactive prompt.
+        if let Some(stop) = stop_spinner {
+            stop();
+        }
+
         // Show the user a numbered list.
         println!("\x1b[1m  ── Provider Unavailable ──\x1b[0m");
-        println!("\x1b[90m  \"{provider_label}\" is not responding. Pick an alternative:\x1b[0m");
+        println!("\x1b[90m  {provider_label} is not responding. Pick an alternative:\x1b[0m");
         for (i, name) in alternatives.iter().enumerate() {
             let model = self
                 .providers
@@ -159,18 +171,13 @@ impl ProviderRegistry {
                 .unwrap_or_else(|| "?".to_string());
             println!("\x1b[1m  {}. {} \x1b[90m({})\x1b[0m", i + 1, name, model);
         }
-        println!("\x1b[90m  0. abort\x1b[0m");
-        print!("\x1b[1m  → select [0-{}]: \x1b[0m", alternatives.len());
+        print!("\x1b[1m  → select [1-{}]: \x1b[0m", alternatives.len());
         io::stdout().flush()?;
-
         let mut choice = String::new();
         match io::stdin().read_line(&mut choice) {
             Ok(0) => bail!("input closed — aborting"),
             Ok(_) => {
                 let idx: usize = choice.trim().parse().unwrap_or(usize::MAX);
-                if idx == 0 {
-                    bail!("aborted by user");
-                }
                 match alternatives.get(idx - 1) {
                     Some(&name) => {
                         let fallback = self.resolve(Some(name))?;
@@ -179,6 +186,9 @@ impl ProviderRegistry {
                             fallback.name(),
                             fallback.model()
                         );
+                        if let Some(start) = start_spinner {
+                            start();
+                        }
                         fallback.complete(request.clone()).await
                     }
                     None => {

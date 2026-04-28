@@ -26,7 +26,7 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 
 /// RAII guard for a spinner task. Aborts the spinner and clears the line on drop.
 struct SpinnerGuard {
-    handle: Option<tokio::task::JoinHandle<()>>,
+    handle: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl SpinnerGuard {
@@ -42,15 +42,47 @@ impl SpinnerGuard {
             }
         });
         Self {
-            handle: Some(handle),
+            handle: std::sync::Arc::new(std::sync::Mutex::new(Some(handle))),
         }
     }
 
-    fn stop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+    fn stop(&self) {
+        if let Some(handle) = self.handle.lock().unwrap().take() {
             handle.abort();
             eprint!("\x1b[2K\r");
         }
+    }
+
+    /// Returns a callback that stops the spinner, suitable for passing to
+    /// `complete_with_retry` so it can halt the animation before showing an
+    /// interactive prompt.
+    fn stop_callback(self: &SpinnerGuard) -> Box<dyn FnOnce() + Send> {
+        let handle = self.handle.clone();
+        Box::new(move || {
+            if let Some(h) = handle.lock().unwrap().take() {
+                h.abort();
+                eprint!("\x1b[2K\r");
+            }
+        })
+    }
+
+    /// Returns a callback that starts a new spinner, used after an interactive
+    /// prompt to resume the animation.
+    fn start_callback(self: &SpinnerGuard, label: &str) -> Box<dyn FnOnce() + Send> {
+        let handle = self.handle.clone();
+        let label = label.to_string();
+        Box::new(move || {
+            let new_handle = tokio::spawn(async move {
+                let mut i = 0;
+                loop {
+                    let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
+                    eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    i += 1;
+                }
+            });
+            *handle.lock().unwrap() = Some(new_handle);
+        })
     }
 }
 
@@ -163,7 +195,7 @@ impl Agent {
         // with one-line summaries so the compaction LLM call is fast.
         let lightweight = compaction::strip_tool_outputs(self.session.messages());
 
-        let mut spinner = SpinnerGuard::new("compacting...");
+        let spinner = SpinnerGuard::new("compacting...");
 
         use crate::agent::messages::{Message, UserMessage};
         let mut compact_messages = lightweight;
@@ -179,7 +211,12 @@ impl Agent {
 
         let response = match self
             .provider_registry
-            .complete_with_retry(provider_override, request)
+            .complete_with_retry(
+                provider_override,
+                request,
+                Some(spinner.stop_callback()),
+                Some(spinner.start_callback("compacting...")),
+            )
             .await
         {
             Ok(response) => response,
@@ -259,7 +296,7 @@ impl Agent {
                 return Ok(());
             }
 
-            let mut spinner = SpinnerGuard::new("thinking...");
+            let spinner = SpinnerGuard::new("thinking...");
             let tokens_estimated = compaction::estimate_tokens(
                 self.session.messages(),
                 self.config.system_prompt.as_ref().map(String::len).unwrap_or(0),
@@ -273,7 +310,12 @@ impl Agent {
 
             let response = match self
                 .provider_registry
-                .complete_with_retry(provider_override, request)
+                .complete_with_retry(
+                    provider_override,
+                    request,
+                    Some(spinner.stop_callback()),
+                    Some(spinner.start_callback("thinking...")),
+                )
                 .await
             {
                 Ok(response) => response,
