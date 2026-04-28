@@ -382,6 +382,9 @@ impl Agent {
                 )?;
             }
 
+            // Start a spinner while tools execute.
+            let tool_spinner = SpinnerGuard::new("running tools...");
+
             // Spawn all tool executions as separate tasks.
             let handles: Vec<_> = tool_calls
                 .iter()
@@ -412,6 +415,9 @@ impl Agent {
                     },
                 })
                 .collect();
+
+            // Stop tool spinner before printing results.
+            tool_spinner.stop();
 
             let tool_duration = tool_start.elapsed();
 
