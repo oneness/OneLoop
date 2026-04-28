@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{Provider, ProviderRequest, ProviderResponse};
+use super::{extract_error_message, Provider, ProviderRequest, ProviderResponse};
 
 pub struct ZaiProvider {
     client: reqwest::Client,
@@ -151,7 +151,8 @@ impl Provider for ZaiProvider {
             .context("failed to read Z.AI response body")?;
 
         if !status.is_success() {
-            bail!("Z.AI request failed ({status}): {text}");
+            let message = extract_error_message(&text);
+            bail!("Z.AI request failed ({status}): {message}");
         }
 
         let parsed: ZaiResponse =

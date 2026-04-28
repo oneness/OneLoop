@@ -219,7 +219,7 @@ impl Agent {
             )
             .await
         {
-            Ok(response) => response,
+            Ok((_used_provider, response)) => response,
             Err(e) => {
                 spinner.stop();
                 eprintln!("\x1b[31m  ✗ compaction failed: {e:#}\x1b[0m");
@@ -290,6 +290,8 @@ impl Agent {
             .and_then(|v| v.parse().ok())
             .unwrap_or(50);
 
+        let mut active_provider = provider_override.map(String::from);
+
         for _iteration in 1..=max_iterations {
             if crate::app::is_stop_requested() {
                 println!("\x1b[33m  ⏹ stopped\x1b[0m");
@@ -311,14 +313,18 @@ impl Agent {
             let response = match self
                 .provider_registry
                 .complete_with_retry(
-                    provider_override,
+                    active_provider.as_deref(),
                     request,
                     Some(spinner.stop_callback()),
                     Some(spinner.start_callback("thinking...")),
                 )
                 .await
             {
-                Ok(response) => response,
+                Ok((used_provider, response)) => {
+                    // Persist the provider for subsequent iterations.
+                    active_provider = Some(used_provider);
+                    response
+                }
                 Err(e) => {
                     spinner.stop();
                     self.metrics.log(

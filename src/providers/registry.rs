@@ -102,7 +102,7 @@ impl ProviderRegistry {
         request: ProviderRequest,
         stop_spinner: Option<Box<dyn FnOnce() + Send>>,
         start_spinner: Option<Box<dyn FnOnce() + Send>>,
-    ) -> Result<ProviderResponse> {
+    ) -> Result<(String, ProviderResponse)> {
         let max_retries: usize = env::var("ONELOOP_MAX_RETRIES")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -115,7 +115,7 @@ impl ProviderRegistry {
         let mut last_error: Option<String> = None;
         for attempt in 1..=max_retries {
             match provider.complete(request.clone()).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => return Ok((provider_label.to_string(), response)),
                 Err(e) => {
                     let err_msg = format!("{e:#}");
                     last_error = Some(err_msg.clone());
@@ -189,7 +189,8 @@ impl ProviderRegistry {
                         if let Some(start) = start_spinner {
                             start();
                         }
-                        fallback.complete(request.clone()).await
+                        let response = fallback.complete(request.clone()).await?;
+                        Ok((fallback.name().to_string(), response))
                     }
                     None => {
                         bail!("invalid selection: {}", choice.trim());

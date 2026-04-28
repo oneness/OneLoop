@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::ToolCall;
 
-use super::{Provider, ProviderRequest, ProviderResponse};
+use super::{extract_error_message, Provider, ProviderRequest, ProviderResponse};
 
 pub struct OpenAIProvider {
     client: reqwest::Client,
@@ -221,7 +221,8 @@ impl Provider for OpenAIProvider {
             .context("failed to read OpenAI response body")?;
 
         if !status.is_success() {
-            bail!("OpenAI request failed ({status}): {text}");
+            let message = extract_error_message(&text);
+            bail!("OpenAI request failed ({status}): {message}");
         }
 
         let parsed: OpenAIResponse =

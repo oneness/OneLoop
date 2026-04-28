@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{Provider, ProviderRequest, ProviderResponse};
+use super::{extract_error_message, Provider, ProviderRequest, ProviderResponse};
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -145,7 +145,8 @@ impl Provider for AnthropicProvider {
             .context("failed to read Anthropic response body")?;
 
         if !status.is_success() {
-            bail!("Anthropic request failed ({status}): {text}");
+            let message = extract_error_message(&text);
+            bail!("Anthropic request failed ({status}): {message}");
         }
 
         let parsed: AnthropicResponse =
