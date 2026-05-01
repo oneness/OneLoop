@@ -161,7 +161,9 @@ impl ProviderRegistry {
 
         // Show the user a numbered list.
         println!("\x1b[1m  ── Provider Unavailable ──\x1b[0m");
-        println!("\x1b[90m  {provider_label} is not responding. Pick an alternative:\x1b[0m");
+        println!(
+            "\x1b[90m  {provider_label} is not responding. Pick an alternative (Enter to abort):\x1b[0m"
+        );
         for (i, name) in alternatives.iter().enumerate() {
             let model = self
                 .providers
@@ -171,33 +173,54 @@ impl ProviderRegistry {
                 .unwrap_or_else(|| "?".to_string());
             println!("\x1b[1m  {}. {} \x1b[90m({})\x1b[0m", i + 1, name, model);
         }
-        print!("\x1b[1m  → select [1-{}]: \x1b[0m", alternatives.len());
+        print!("\x1b[1m  → select [1-{}] or Enter to abort: \x1b[0m", alternatives.len());
         io::stdout().flush()?;
-        let mut choice = String::new();
-        match io::stdin().read_line(&mut choice) {
-            Ok(0) => bail!("input closed — aborting"),
-            Ok(_) => {
-                let idx: usize = choice.trim().parse().unwrap_or(usize::MAX);
-                match alternatives.get(idx - 1) {
-                    Some(&name) => {
-                        let fallback = self.resolve(Some(name))?;
-                        eprintln!(
-                            "\x1b[32m  → switching to {} ({})\x1b[0m",
-                            fallback.name(),
-                            fallback.model()
-                        );
-                        if let Some(start) = start_spinner {
-                            start();
-                        }
-                        let response = fallback.complete(request.clone()).await?;
-                        Ok((fallback.name().to_string(), response))
-                    }
-                    None => {
-                        bail!("invalid selection: {}", choice.trim());
-                    }
-                }
+
+        // Spawn the blocking stdin read on a blocking thread so we can race it
+        // against Ctrl+C. This ensures the user can abort the selection prompt
+        // with Ctrl+C instead of being forced to pick a provider.
+        let choice = tokio::select! {
+            res = tokio::task::spawn_blocking(|| {
+                let mut buf = String::new();
+                io::stdin().read_line(&mut buf).map(|_| buf)
+            }) => res,
+            _ = tokio::signal::ctrl_c() => {
+                println!();
+                bail!("aborted — no provider selected");
             }
-            Err(e) => bail!("failed to read input: {e}"),
+        };
+
+        let choice = match choice {
+            Ok(Ok(buf)) => buf,
+            Ok(Err(e)) => bail!("failed to read input: {e}"),
+            Err(e) => bail!("input thread failed: {e}"),
+        };
+
+        let trimmed = choice.trim();
+
+        // Empty input (just pressed Enter) means abort.
+        if trimmed.is_empty() {
+            bail!("aborted — no provider selected");
+        }
+
+        let idx: usize = trimmed.parse().unwrap_or(usize::MAX);
+        match alternatives.get(idx - 1) {
+            Some(&name) => {
+                let fallback = self.resolve(Some(name))?;
+                eprintln!(
+                    "\x1b[32m  → switching to {} ({})\x1b[0m",
+                    fallback.name(),
+                    fallback.model()
+                );
+                if let Some(start) = start_spinner {
+                    start();
+                }
+                let response = fallback.complete(request.clone()).await?;
+                Ok((fallback.name().to_string(), response))
+            }
+            None => {
+                bail!("invalid selection: {trimmed}");
+            }
         }
     }
 }
