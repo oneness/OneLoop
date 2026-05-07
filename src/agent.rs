@@ -6,12 +6,14 @@ pub mod session;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::Result;
-use std::env;
+use anyhow::{Result, bail};
+use futures::future::join_all;
 use serde_json::json;
+use std::env;
 
 use crate::{
     config::Config,
+    directives::ToolMode,
     providers::{ProviderRegistry, ProviderRequest},
     tools::{ToolRegistry, ToolResult},
 };
@@ -47,7 +49,9 @@ impl SpinnerGuard {
     }
 
     fn stop(&self) {
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Ok(mut handle) = self.handle.lock()
+            && let Some(handle) = handle.take()
+        {
             handle.abort();
             eprint!("\x1b[2K\r");
         }
@@ -59,7 +63,9 @@ impl SpinnerGuard {
     fn stop_callback(self: &SpinnerGuard) -> Box<dyn FnOnce() + Send> {
         let handle = self.handle.clone();
         Box::new(move || {
-            if let Some(h) = handle.lock().unwrap().take() {
+            if let Ok(mut handle) = handle.lock()
+                && let Some(h) = handle.take()
+            {
                 h.abort();
                 eprint!("\x1b[2K\r");
             }
@@ -81,7 +87,9 @@ impl SpinnerGuard {
                     i += 1;
                 }
             });
-            *handle.lock().unwrap() = Some(new_handle);
+            if let Ok(mut handle) = handle.lock() {
+                *handle = Some(new_handle);
+            }
         })
     }
 }
@@ -131,6 +139,32 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
         }
         _ => name.to_string(),
     }
+}
+
+fn format_labeled_responses(responses: &[(String, String)]) -> String {
+    responses
+        .iter()
+        .map(|(provider, content)| format!("── {provider} ──\n{}", content.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn format_synthesis_prompt(prompt: &str, responses: &[(String, String)], label: &str) -> String {
+    format!(
+        "The user asked:\n\n{prompt}\n\nSeveral models answered independently:\n\n{}\n\nSynthesize a final {label}. Identify agreements, disagreements, tradeoffs, and a practical recommendation. Do not simply average the answers; prefer the best-supported reasoning.",
+        format_labeled_responses(responses)
+    )
+}
+
+fn format_debate_round_prompt(
+    prompt: &str,
+    transcript: &[(String, String)],
+    round: usize,
+) -> String {
+    format!(
+        "The user asked:\n\n{prompt}\n\nDebate transcript so far:\n\n{}\n\nThis is critique/revision round {round}. Critique the other responses, identify where your previous reasoning may be incomplete, and provide a revised position.",
+        format_labeled_responses(transcript)
+    )
 }
 
 pub struct Agent {
@@ -187,7 +221,8 @@ impl Agent {
 
         println!("\x1b[33m  ⚠ context near limit — auto-compacting...\x1b[0m");
 
-        let tokens_before = compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
+        let tokens_before =
+            compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
         let compact_start = Instant::now();
 
         // Build a lightweight version of the conversation for the compaction call.
@@ -254,7 +289,8 @@ impl Agent {
                 .to_string(),
         )?;
 
-        let tokens_after = compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
+        let tokens_after =
+            compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
         let compact_duration = compact_start.elapsed();
 
         self.metrics.log(
@@ -276,6 +312,183 @@ impl Agent {
         );
 
         Ok(())
+    }
+
+    pub async fn run_consensus(
+        &mut self,
+        prompt: String,
+        providers: Vec<String>,
+        judge: Option<String>,
+        tools: ToolMode,
+    ) -> Result<()> {
+        providers
+            .iter()
+            .try_for_each(|provider| self.provider_registry.validate_provider(provider))?;
+        if let Some(judge) = &judge {
+            self.provider_registry.validate_provider(judge)?;
+        }
+        self.validate_orchestration_tools(&tools)?;
+        self.session.push_user(prompt.clone())?;
+
+        let responses = self
+            .collect_provider_responses(&providers, &prompt, "consensus", &tools)
+            .await?;
+        let initial_output = format_labeled_responses(&responses);
+        println!("{initial_output}");
+        self.session.push_assistant(initial_output)?;
+
+        let judge = judge.unwrap_or_else(|| providers[0].clone());
+        let synthesis = self
+            .synthesize_consensus(&judge, &prompt, &responses, "Consensus")
+            .await?;
+        let output = format!("── Consensus ({judge}) ──\n{synthesis}");
+        println!("\n{output}");
+        self.session.push_assistant(output)?;
+        Ok(())
+    }
+
+    pub async fn run_debate(
+        &mut self,
+        prompt: String,
+        providers: Vec<String>,
+        judge: Option<String>,
+        rounds: usize,
+        tools: ToolMode,
+    ) -> Result<()> {
+        providers
+            .iter()
+            .try_for_each(|provider| self.provider_registry.validate_provider(provider))?;
+        if let Some(judge) = &judge {
+            self.provider_registry.validate_provider(judge)?;
+        }
+        self.validate_orchestration_tools(&tools)?;
+        self.session.push_user(prompt.clone())?;
+
+        let mut transcript = self
+            .collect_provider_responses(&providers, &prompt, "initial answer", &tools)
+            .await?;
+        let mut output = format!(
+            "── Round 1: Initial Answers ──\n\n{}",
+            format_labeled_responses(&transcript)
+        );
+        println!("{output}");
+
+        for round in 1..=rounds {
+            let debate_prompt = format_debate_round_prompt(&prompt, &transcript, round);
+            let critiques = self
+                .collect_provider_responses(&providers, &debate_prompt, "critique/revision", &tools)
+                .await?;
+            let section = format!(
+                "── Round {}: Critiques/Revisions ──\n\n{}",
+                round + 1,
+                format_labeled_responses(&critiques)
+            );
+            println!("\n{section}");
+            output.push_str("\n\n");
+            output.push_str(&section);
+            transcript.extend(critiques);
+        }
+
+        self.session.push_assistant(output)?;
+
+        let judge = judge.unwrap_or_else(|| providers[0].clone());
+        let synthesis = self
+            .synthesize_consensus(&judge, &prompt, &transcript, "Final Consensus")
+            .await?;
+        let output = format!("── Final Consensus ({judge}) ──\n{synthesis}");
+        println!("\n{output}");
+        self.session.push_assistant(output)?;
+        Ok(())
+    }
+
+    fn validate_orchestration_tools(&self, tools: &ToolMode) -> Result<()> {
+        match tools {
+            ToolMode::Default | ToolMode::None => Ok(()),
+            ToolMode::AllowList(names) => {
+                let available = self.tool_registry.names();
+                let unsupported: Vec<&str> = names
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !matches!(*name, "read" | "web_search"))
+                    .collect();
+                if !unsupported.is_empty() {
+                    bail!(
+                        "unsupported tools for multi-model orchestration: {}",
+                        unsupported.join(", ")
+                    );
+                }
+                let unknown: Vec<&str> = names
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !available.contains(name))
+                    .collect();
+                if !unknown.is_empty() {
+                    bail!("unknown tools: {}", unknown.join(", "));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn collect_provider_responses(
+        &self,
+        providers: &[String],
+        prompt: &str,
+        purpose: &str,
+        tools: &ToolMode,
+    ) -> Result<Vec<(String, String)>> {
+        let messages = vec![messages::Message::User(messages::UserMessage {
+            content: prompt.to_string(),
+        })];
+        let tool_definitions = match tools {
+            ToolMode::Default | ToolMode::None => Vec::new(),
+            ToolMode::AllowList(names) => self.tool_registry.definitions_for(names),
+        };
+        let request = ProviderRequest {
+            system_prompt: self.config.system_prompt.clone(),
+            messages,
+            tools: tool_definitions,
+        };
+
+        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
+        let handles: Vec<_> = providers
+            .iter()
+            .map(|provider| {
+                let provider = provider.clone();
+                let request = request.clone();
+                async move {
+                    let response = self
+                        .provider_registry
+                        .complete_once(&provider, request)
+                        .await?;
+                    Ok::<_, anyhow::Error>((provider, response.content))
+                }
+            })
+            .collect();
+
+        let results = join_all(handles).await;
+        spinner.stop();
+        results.into_iter().collect()
+    }
+
+    async fn synthesize_consensus(
+        &self,
+        judge: &str,
+        prompt: &str,
+        responses: &[(String, String)],
+        label: &str,
+    ) -> Result<String> {
+        let content = format_synthesis_prompt(prompt, responses, label);
+        let request = ProviderRequest {
+            system_prompt: self.config.system_prompt.clone(),
+            messages: vec![messages::Message::User(messages::UserMessage { content })],
+            tools: Vec::new(),
+        };
+
+        let spinner = SpinnerGuard::new("synthesizing consensus...");
+        let response = self.provider_registry.complete_once(judge, request).await;
+        spinner.stop();
+        response.map(|response| response.content)
     }
 
     pub async fn run_once_with(
@@ -301,7 +514,11 @@ impl Agent {
             let spinner = SpinnerGuard::new("thinking...");
             let tokens_estimated = compaction::estimate_tokens(
                 self.session.messages(),
-                self.config.system_prompt.as_ref().map(String::len).unwrap_or(0),
+                self.config
+                    .system_prompt
+                    .as_ref()
+                    .map(String::len)
+                    .unwrap_or(0),
             );
             let api_start = Instant::now();
             let request = ProviderRequest {
@@ -400,7 +617,7 @@ impl Agent {
                 .collect();
 
             // Await all handles in spawn order — preserves original ordering.
-            let results: Vec<_> = futures::future::join_all(handles)
+            let results: Vec<_> = join_all(handles)
                 .await
                 .into_iter()
                 .map(|res| match res {
@@ -482,8 +699,7 @@ impl Agent {
              available: {all_providers}\n\
              tools: {tools}\n\
              {session_info}\n\
-             system_prompt: {}\n\
-             hint: prefix with @provider (e.g. @anthropic) to route to a specific provider",
+             system_prompt: {}",
             if has_system { "loaded" } else { "none" }
         )
     }

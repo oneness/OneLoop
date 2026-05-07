@@ -88,6 +88,18 @@ impl ProviderRegistry {
             .map(AsRef::as_ref)
     }
 
+    pub async fn complete_once(
+        &self,
+        provider_name: &str,
+        request: ProviderRequest,
+    ) -> Result<ProviderResponse> {
+        self.resolve(Some(provider_name))?.complete(request).await
+    }
+
+    pub fn validate_provider(&self, provider_name: &str) -> Result<()> {
+        self.resolve(Some(provider_name)).map(|_| ())
+    }
+
     /// Send a request with automatic retry (up to `max_retries` attempts).
     /// On persistent failure, prompts the user interactively to pick an
     /// alternative provider from those available and retries once more.
@@ -173,7 +185,10 @@ impl ProviderRegistry {
                 .unwrap_or_else(|| "?".to_string());
             println!("\x1b[1m  {}. {} \x1b[90m({})\x1b[0m", i + 1, name, model);
         }
-        print!("\x1b[1m  → select [1-{}] or Enter to abort: \x1b[0m", alternatives.len());
+        print!(
+            "\x1b[1m  → select [1-{}] or Enter to abort: \x1b[0m",
+            alternatives.len()
+        );
         io::stdout().flush()?;
 
         // Spawn the blocking stdin read on a blocking thread so we can race it

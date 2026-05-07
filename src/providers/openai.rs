@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::ToolCall;
 
-use super::{extract_error_message, Provider, ProviderRequest, ProviderResponse};
+use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
 
 pub struct OpenAIProvider {
     client: reqwest::Client,
@@ -179,9 +179,12 @@ impl Provider for OpenAIProvider {
                     strict: None,
                 })
                 .collect(),
-            reasoning: self.reasoning_effort.as_ref().map(|effort| ResponsesReasoning {
-                effort: effort.clone(),
-            }),
+            reasoning: self
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| ResponsesReasoning {
+                    effort: effort.clone(),
+                }),
         };
 
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
@@ -216,10 +219,10 @@ impl Provider for OpenAIProvider {
                 "message" => {
                     if let Some(parts) = item.content {
                         for part in parts {
-                            if part.part_type == "output_text" {
-                                if let Some(txt) = part.text {
-                                    content.push_str(&txt);
-                                }
+                            if part.part_type == "output_text"
+                                && let Some(txt) = part.text
+                            {
+                                content.push_str(&txt);
                             }
                         }
                     }
@@ -242,6 +245,9 @@ impl Provider for OpenAIProvider {
             }
         }
 
-        Ok(ProviderResponse { content, tool_calls })
+        Ok(ProviderResponse {
+            content,
+            tool_calls,
+        })
     }
 }

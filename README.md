@@ -16,6 +16,7 @@ A tiny, extensible coding agent.
 oneloop starts small:
 
 - multiple providers (Z.AI, OpenAI, Anthropic)
+- `#!` directives for provider routing and multi-model consensus/debate orchestration
 - five tools: read, write, edit, bash, web_search
 - linear append-only session model with `/clear` to rotate
 - AGENTS.md context loading
@@ -63,6 +64,11 @@ Stores API keys in `~/.oneloop/auth.json`.
 
 ## Current behavior
 
+- `#!<provider>` is shorthand for `#!provider <provider>`
+- `#!<provider> <provider>...` is shorthand for `#!consensus <provider> <provider>...`
+- `#!provider <provider>` routes one prompt to a specific provider
+- `#!consensus <provider> <provider>...` asks multiple providers in parallel and synthesizes an answer
+- `#!debate <provider> <provider>...` runs critique/revision rounds before final synthesis
 - sessions are persisted as JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`
 - `/clear` rotates to a new session file (e.g. `YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`); old sessions are preserved on disk
 - on restart, the latest session file for today is opened automatically
@@ -70,7 +76,7 @@ Stores API keys in `~/.oneloop/auth.json`.
 - tool results show ✓/✗ with line and byte counts
 - `read` and `bash` truncate large output before it goes back into the model context
 - `AGENTS.md` in the current project directory is loaded as the system prompt
-- `@provider` prefix routes to a specific provider (e.g. `@anthropic explain this code`)
+- `#!provider` routes one prompt to a specific provider
 - `oneloop login <provider>` stores API keys in `~/.oneloop/auth.json`
 - multiple tool calls from a single response execute in parallel
 - auto-compaction triggers at 85% of context window with a structured handoff summary
@@ -101,6 +107,9 @@ Credentials are resolved from `~/.oneloop/auth.json` first, then from environmen
 
 oneloop does **not** implement `claude.ai` subscription login.
 Anthropic's official docs state that third-party developers are not allowed to offer `claude.ai` login for their own products unless specially approved. So oneloop currently supports Anthropic API-key auth only.
+
+- [Directive and multi-model orchestration spec](docs/directives.md)
+- [Plugin system design](docs/plugins.md)
 
 ## Development
 

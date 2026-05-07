@@ -66,6 +66,18 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn definitions_for(&self, names: &[String]) -> Vec<ToolDefinition> {
+        self.tools
+            .iter()
+            .filter(|tool| names.iter().any(|name| name == tool.name()))
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                schema: tool.schema(),
+            })
+            .collect()
+    }
+
     pub async fn execute(
         &self,
         name: &str,

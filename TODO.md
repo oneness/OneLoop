@@ -2,6 +2,8 @@
 
 ## Near term
 
+- [x] **Directive parser and multi-model orchestration** — Parse `#!` control directives before provider calls. Supports one-shot provider routing (`#!provider`) and multi-model workflows (`#!consensus`, `#!debate`, `#!judge`, `#!rounds`). Provider routing remains runtime control-plane behavior, not a skill. See [`docs/directives.md`](docs/directives.md).
+
 - [ ] **Lua plugin system** — REPL-driven plugin system using `mlua`. Plugins are `.lua` files in `.oneloop/plugins/`. They subscribe to lifecycle hooks and can inject context, block/confirm tool calls, and persist state across sessions. Core agent code does not change — plugins are loaded dynamically at startup. See [`docs/plugins.md`](docs/plugins.md) for the full design.
 
 - [ ] **Memory plugin** — Persistent `.oneloop/memory.md` that survives compaction and new sessions. Extracts facts from conversations during compaction, injects memory into every API call's system prompt. Compounds over time — after a week of use, the agent knows your project, preferences, and decisions without being told. Example plugin included in [`docs/plugins.md`](docs/plugins.md).

@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{extract_error_message, Provider, ProviderRequest, ProviderResponse};
+use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
 
 pub struct ZaiProvider {
     client: reqwest::Client,

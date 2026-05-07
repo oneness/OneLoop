@@ -49,8 +49,8 @@ Default selection order (when `ONELOOP_PROVIDER` is not set):
 2. OpenAI
 3. Anthropic
 
-Override with `ONELOOP_PROVIDER` if needed.
-Route per-prompt with `@provider` prefix (e.g. `@anthropic explain this`).
+Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` directives.
+Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
 
 ## Sessions
 

@@ -1,9 +1,15 @@
 use std::io::{self, Write as IoWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
-use crate::{agent::Agent, config::Config, providers::ProviderRegistry, tools::ToolRegistry};
+use crate::{
+    agent::Agent,
+    config::Config,
+    directives::{PromptDirectives, RunMode, parse_prompt},
+    providers::ProviderRegistry,
+    tools::ToolRegistry,
+};
 
 pub struct App {
     config: Config,
@@ -29,6 +35,94 @@ fn parse_command(input: &str) -> Option<&str> {
     None
 }
 
+fn read_directive_body(first_line: &str) -> Result<String> {
+    eprintln!(
+        "\x1b[90m  directive needs a prompt body. enter body lines, then submit an empty line.\x1b[0m"
+    );
+
+    let mut lines = vec![first_line.to_string()];
+    loop {
+        print!("· ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        let bytes = io::stdin()
+            .read_line(&mut input)
+            .context("failed to read directive body")?;
+        if bytes == 0 {
+            break;
+        }
+
+        let line = input.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line.to_string());
+    }
+
+    Ok(lines.join("\n"))
+}
+
+fn print_directive_summary(directives: &PromptDirectives) {
+    match &directives.mode {
+        RunMode::Single {
+            provider: Some(provider),
+        } => {
+            eprintln!("\x1b[90m  → provider: {provider}\x1b[0m");
+        }
+        RunMode::Single { provider: None } => {}
+        RunMode::Consensus { providers } => {
+            eprintln!("\x1b[90m  → consensus: {}\x1b[0m", providers.join(", "));
+        }
+        RunMode::Debate { providers } => {
+            eprintln!("\x1b[90m  → debate: {}\x1b[0m", providers.join(", "));
+        }
+    }
+}
+
+async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Result<()> {
+    print_directive_summary(&directives);
+    match directives.mode {
+        RunMode::Single { provider } => {
+            agent
+                .run_once_with(directives.prompt, provider.as_deref())
+                .await
+        }
+        RunMode::Consensus { providers } => {
+            agent
+                .run_consensus(
+                    directives.prompt,
+                    providers,
+                    directives.judge,
+                    directives.tools,
+                )
+                .await
+        }
+        RunMode::Debate { providers } => {
+            agent
+                .run_debate(
+                    directives.prompt,
+                    providers,
+                    directives.judge,
+                    directives.rounds,
+                    directives.tools,
+                )
+                .await
+        }
+    }
+}
+
+async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
+    run_directives(agent, parse_prompt(input)?).await
+}
+
+fn provider_override(directives: &PromptDirectives) -> Option<&str> {
+    match &directives.mode {
+        RunMode::Single { provider } => provider.as_deref(),
+        RunMode::Consensus { .. } | RunMode::Debate { .. } => None,
+    }
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
         Self { config }
@@ -40,10 +134,7 @@ impl App {
         let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
 
         match prompt {
-            Some(prompt) => {
-                let (provider, prompt) = parse_provider_prefix(&prompt);
-                agent.run_once_with(prompt, provider).await
-            }
+            Some(prompt) => run_directed_prompt(&mut agent, &prompt).await,
             None => {
                 println!("oneloop");
                 println!("{}", agent.summary());
@@ -73,14 +164,32 @@ impl App {
                                 continue;
                             }
 
-                            let (provider, prompt) = parse_provider_prefix(&line);
+                            let line = if line.starts_with("#!") && parse_prompt(&line).is_err() {
+                                read_directive_body(&line)?
+                            } else {
+                                line
+                            };
+
+                            let directives = match parse_prompt(&line) {
+                                Ok(directives) => directives,
+                                Err(e) => {
+                                    eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                                    println!(
+                                        "\x1b[90m  hint: add a prompt after the directive, e.g. `#!consensus anthropic openai Should we do X?`\x1b[0m"
+                                    );
+                                    println!();
+                                    continue;
+                                }
+                            };
+                            let compact_provider_override =
+                                provider_override(&directives).map(String::from);
 
                             // Clear any previous stop flag and arm the Ctrl+C handler.
                             clear_stop_requested();
 
                             // Use select to race the agent run against Ctrl+C.
                             tokio::select! {
-                                result = agent.run_once_with(prompt, provider) => {
+                                result = run_directives(&mut agent, directives) => {
                                     if let Err(e) = result {
                                         eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
                                     }
@@ -92,7 +201,9 @@ impl App {
                             }
 
                             // Auto-compact if context is near limit.
-                            agent.auto_compact_if_needed(provider).await?;
+                            agent
+                                .auto_compact_if_needed(compact_provider_override.as_deref())
+                                .await?;
 
                             println!();
                         }
@@ -103,21 +214,4 @@ impl App {
             }
         }
     }
-}
-
-/// Parse a `@provider` prefix from the beginning of a prompt.
-/// Returns `(Some("anthropic"), "say hello")` for `"@anthropic say hello"`.
-/// Returns `(None, "say hello")` for `"say hello"`.
-fn parse_provider_prefix(input: &str) -> (Option<&str>, String) {
-    let trimmed = input.trim();
-    if let Some(rest) = trimmed.strip_prefix('@')
-        && let Some(space_pos) = rest.find(char::is_whitespace)
-    {
-        let provider = &rest[..space_pos];
-        let prompt = rest[space_pos..].trim();
-        if !provider.is_empty() && !prompt.is_empty() {
-            return (Some(provider), prompt.to_string());
-        }
-    }
-    (None, trimmed.to_string())
 }
