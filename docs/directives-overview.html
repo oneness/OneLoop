@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>oneloop — Directive System</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f9fb;
+    --card: #ffffff;
+    --border: #e2e5eb;
+    --text: #1a1d26;
+    --muted: #5c6170;
+    --accent: #3b5bdb;
+    --green: #16a34a;
+    --amber: #d97706;
+    --red: #dc2626;
+    --openai: #0d8f6f;
+    --anthropic: #b07d4f;
+    --zai: #3b5bdb;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .slide {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 64px 48px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .slide + .slide {
+    border-top: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
+  }
+
+  /* ── Typography ── */
+
+  h1 {
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.15;
+    margin-bottom: 16px;
+  }
+
+  h2 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+    margin-bottom: 12px;
+    color: var(--accent);
+  }
+
+  h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    font-size: 20px;
+    color: var(--muted);
+    margin-bottom: 48px;
+  }
+
+  .label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  p { margin-bottom: 16px; color: var(--muted); font-size: 16px; }
+  p strong { color: var(--text); }
+
+  /* ── Cards ── */
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .provider-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .provider-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+
+  .provider-card.openai::before { background: var(--openai); }
+  .provider-card.anthropic::before { background: var(--anthropic); }
+  .provider-card.zai::before { background: var(--zai); }
+
+  .provider-card .name {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .provider-card.openai .name { color: var(--openai); }
+  .provider-card.anthropic .name { color: var(--anthropic); }
+  .provider-card.zai .name { color: var(--zai); }
+
+  .provider-card .model {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  .provider-card .role {
+    font-size: 14px;
+    color: var(--text);
+  }
+
+  /* ── Code ── */
+
+  pre {
+    background: #f4f5f8;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    overflow-x: auto;
+    margin-bottom: 20px;
+    color: var(--text);
+  }
+
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-size: 13px;
+  }
+
+  .kw { color: #3b5bdb; }
+  .str { color: #16a34a; }
+  .cm { color: #94a3b8; }
+
+  /* ── Flow diagram ── */
+
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+    justify-content: center;
+  }
+
+  .flow-step {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    min-width: 120px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  .flow-step.active {
+    border-color: var(--accent);
+    background: rgba(59, 91, 219, 0.06);
+  }
+
+  .flow-arrow {
+    color: var(--muted);
+    font-size: 20px;
+  }
+
+  /* ── Table ── */
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    font-size: 14px;
+  }
+
+  th {
+    text-align: left;
+    padding: 12px 16px;
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+
+  td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  .status {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 100px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .status.done { background: rgba(22, 163, 74, 0.08); color: var(--green); }
+  .status.partial { background: rgba(217, 119, 6, 0.08); color: var(--amber); }
+  .status.todo { background: rgba(92, 97, 112, 0.08); color: var(--muted); }
+
+  /* ── Syntax table ── */
+
+  .syntax-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .syntax-row {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+
+  .syntax-row .input { font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+  .syntax-row .desc { font-size: 14px; color: var(--muted); }
+
+  /* ── Consensus output ── */
+
+  .consensus-output {
+    background: #f4f5f8;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+
+  .provider-header {
+    padding: 12px 20px;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+  }
+
+  .provider-header.openai { background: rgba(13, 143, 111, 0.06); color: var(--openai); border-bottom: 1px solid rgba(13, 143, 111, 0.15); }
+  .provider-header.anthropic { background: rgba(176, 125, 79, 0.06); color: var(--anthropic); border-bottom: 1px solid rgba(176, 125, 79, 0.15); }
+  .provider-header.zai { background: rgba(59, 91, 219, 0.06); color: var(--zai); border-bottom: 1px solid rgba(59, 91, 219, 0.15); }
+
+  .provider-response {
+    padding: 16px 20px;
+    font-size: 14px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    line-height: 1.6;
+  }
+
+  .consensus-final {
+    background: rgba(59, 91, 219, 0.04);
+    border-top: 2px solid var(--accent);
+  }
+
+  .consensus-final .provider-header {
+    background: rgba(59, 91, 219, 0.08);
+    color: var(--accent);
+    border-bottom: 1px solid rgba(59, 91, 219, 0.15);
+  }
+
+  .consensus-final .provider-response {
+    color: var(--text);
+    border-bottom: none;
+  }
+
+  /* ── Debate timeline ── */
+
+  .timeline {
+    position: relative;
+    padding-left: 32px;
+    margin-bottom: 24px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--border);
+  }
+
+  .timeline-step {
+    position: relative;
+    margin-bottom: 24px;
+  }
+
+  .timeline-step::before {
+    content: '';
+    position: absolute;
+    left: -27px;
+    top: 6px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+  }
+
+  .timeline-step .step-title {
+    font-weight: 600;
+    font-size: 15px;
+    margin-bottom: 4px;
+  }
+
+  .timeline-step .step-desc {
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  /* ── Badge row ── */
+
+  .badge-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--card);
+    border: 1px solid var(--border);
+  }
+
+  .badge.openai { border-color: var(--openai); color: var(--openai); }
+  .badge.anthropic { border-color: var(--anthropic); color: var(--anthropic); }
+  .badge.zai { border-color: var(--zai); color: var(--zai); }
+
+  /* ── Footer ── */
+
+  .slide-footer {
+    margin-top: auto;
+    padding-top: 32px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  @media (max-width: 720px) {
+    .slide { padding: 40px 24px; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 22px; }
+    .card-grid { grid-template-columns: 1fr; }
+    .syntax-row { grid-template-columns: 1fr; }
+    .flow { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 1 — Title
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">oneloop</div>
+  <h1>Directive &amp; Multi-Model<br>Orchestration System</h1>
+  <p class="subtitle">
+    Prompt-level control plane for provider routing, consensus, and debate —<br>
+    parsed before any model call, independent of skills.
+  </p>
+  <div class="card-grid">
+    <div class="provider-card openai">
+      <div class="name">OpenAI</div>
+      <div class="model">gpt-5.5 · Responses API</div>
+      <div class="role">Reasoning, tool use, synthesis</div>
+    </div>
+    <div class="provider-card anthropic">
+      <div class="name">Anthropic</div>
+      <div class="model">claude-sonnet-4-6 · Messages API</div>
+      <div class="role">Reasoning, tool use, critique</div>
+    </div>
+    <div class="provider-card zai">
+      <div class="name">Z.AI</div>
+      <div class="model">glm-5.1 · PaaS API</div>
+      <div class="role">Reasoning, tool use, evidence</div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>Status: implemented · simplified parser</span>
+    <span>oneloop v0.1.0</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 2 — The Core Idea
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Core Idea</div>
+  <h2>Directives Are a Pre-Processing Layer</h2>
+  <p>
+    Directives are <strong>not</strong> sent to the model. They are parsed from the user's
+    input <strong>before</strong> any provider call to decide <em>which</em> provider(s) to use
+    and <em>how</em> to orchestrate them. The model never sees <code>#!</code>.
+  </p>
+
+  <div class="flow">
+    <div class="flow-step active">User types input</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step active">Parse <code>#!</code> directives</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">Select provider(s)</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">Send prompt body to model(s)</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">Return result</div>
+  </div>
+
+  <div class="card">
+    <h3>Key Principle</h3>
+    <p style="margin-bottom: 0;">
+      <strong>Directives control runtime orchestration.</strong> Skills control model behavior.
+      A skill teaches the agent <em>how</em> to review code; a directive decides <em>which</em>
+      providers review it. They never overlap.
+    </p>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>2</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 3 — Syntax Quick Reference
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Syntax</div>
+  <h2>Quick Reference</h2>
+
+  <div class="syntax-grid">
+    <div class="syntax-row">
+      <div class="input">#!anthropic review this file</div>
+      <div class="desc"><strong>Provider shorthand.</strong> Routes to Anthropic. Body: "review this file". Equivalent to <code>#!provider anthropic</code>.</div>
+    </div>
+    <div class="syntax-row">
+      <div class="input">#!anthropic openai zai compare these</div>
+      <div class="desc"><strong>Multi-provider shorthand.</strong> Three known providers → consensus mode. Body: "compare these". Equivalent to <code>#!consensus anthropic openai zai</code>.</div>
+    </div>
+    <div class="syntax-row">
+      <div class="input">#!provider openai<br><br>explain this module</div>
+      <div class="desc"><strong>Explicit routing.</strong> Single provider, multi-line body after a blank line. Uses full agent loop with tools.</div>
+    </div>
+    <div class="syntax-row">
+      <div class="input">#!consensus anthropic openai<br>#!judge openai<br><br>Should we use Lua?</div>
+      <div class="desc"><strong>Consensus with judge.</strong> Both providers answer independently, then OpenAI synthesizes the final answer.</div>
+    </div>
+    <div class="syntax-row">
+      <div class="input">#!debate anthropic openai zai<br>#!rounds 2<br>#!judge anthropic</div>
+      <div class="desc"><strong>Debate mode.</strong> Initial answers → 2 rounds of critique/revision → judge synthesis. Maximum 3 rounds.</div>
+    </div>
+    <div class="syntax-row">
+      <div class="input">#!consensus anthropic openai<br>#!tools none<br>#!judge openai</div>
+      <div class="desc"><strong>Tool control.</strong> <code>none</code> disables tools. <code>#!tools read web_search</code> allows read-only tools. Default for consensus/debate is no tools.</div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>3</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 4 — Single Provider Mode
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Mode 1</div>
+  <h2>Single Provider — <code>#!provider</code></h2>
+  <p>
+    Routes a normal agent request to one specific provider. This is the <strong>only mode
+    that runs the full agent loop</strong> — tools, multi-turn conversation, session history,
+    auto-compaction, everything.
+  </p>
+
+  <pre><span class="cm"># Route to Anthropic with inline body</span>
+<span class="kw">#!anthropic</span> review this function
+
+<span class="cm"># Route to OpenAI with multi-line body</span>
+<span class="kw">#!provider openai</span>
+
+Read src/main.rs and explain the CLI structure.</pre>
+
+  <div class="card">
+    <table>
+      <tr><th>Property</th><th>Behavior</th></tr>
+      <tr><td>Session history</td><td>✅ Full history sent to provider</td></tr>
+      <tr><td>Tool loop</td><td>✅ Full loop (read, write, edit, bash, web_search)</td></tr>
+      <tr><td>Multi-turn</td><td>✅ Up to 50 iterations</td></tr>
+      <tr><td>Auto-compaction</td><td>✅ Triggers at 85% context window</td></tr>
+      <tr><td>Retry with fallback</td><td>✅ 3 retries, then interactive provider switch</td></tr>
+    </table>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>4</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 5 — Consensus Mode
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Mode 2</div>
+  <h2>Consensus — Ask Many, Synthesize Once</h2>
+  <p>
+    Each provider answers the same question <strong>independently and in parallel</strong>.
+    A judge provider then reads all answers and produces a final synthesis that identifies
+    agreements, disagreements, and a recommendation.
+  </p>
+
+  <div class="flow">
+    <div class="flow-step">User prompt</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step active" style="border-color: var(--openai);">OpenAI</div>
+    <div class="flow-arrow">↘</div>
+    <div class="flow-step active" style="border-color: var(--anthropic);">Anthropic</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step active" style="border-color: var(--accent);">Judge synthesis</div>
+    <div class="flow-arrow">↗</div>
+    <div class="flow-step active" style="border-color: var(--zai);">Z.AI</div>
+    <div class="flow-arrow">↗</div>
+    <div class="flow-step" style="visibility: hidden;">.</div>
+  </div>
+
+  <div class="consensus-output">
+    <div class="provider-header openai">── OpenAI ──</div>
+    <div class="provider-response">
+      I'd recommend Lua plugins first. The REPL-driven development cycle is faster
+      for iteration, and the lifecycle hooks (on_tool_call, on_compact) can be tested
+      immediately without restarting oneloop…
+    </div>
+    <div class="provider-header anthropic">── Anthropic ──</div>
+    <div class="provider-response">
+      Markdown skills should come first. They're zero-friction — drop a .md file and
+      the agent gains a new capability. No runtime sandboxing concerns, no security
+      surface from arbitrary code execution…
+    </div>
+    <div class="provider-header zai">── Z.AI ──</div>
+    <div class="provider-response">
+      Both have merit, but skills first reduces time-to-value. Users can teach oneloop
+      project-specific conventions immediately. Lua plugins should follow as the
+      extensibility path for power users…
+    </div>
+    <div class="consensus-final">
+      <div class="provider-header">── Consensus (OpenAI) ──</div>
+      <div class="provider-response">
+        <strong>Recommendation: Ship markdown skills first, then Lua plugins.</strong><br><br>
+        All three models agree that skills offer lower friction for the majority of users.
+        Anthropic and Z.AI emphasize the zero-setup nature of dropping .md files; OpenAI
+        highlights the faster iteration cycle of Lua. The practical tradeoff is that skills
+        can't intercept tool calls or lifecycle events — that's where Lua fills the gap.
+        Suggested path: skills loader → safety plugin (Lua) → memory plugin (Lua).
+      </div>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>5</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 6 — Debate Mode
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Mode 3</div>
+  <h2>Debate — Critique, Revise, Then Decide</h2>
+  <p>
+    Like consensus, but with <strong>structured critique/revision rounds</strong> before the
+    final synthesis. Each provider sees the others' answers and is forced to identify weaknesses
+    in their own reasoning. Controlled by <code>#!rounds</code> (default 1, max 3).
+  </p>
+
+  <div class="timeline">
+    <div class="timeline-step">
+      <div class="step-title">Round 1 — Initial Answers</div>
+      <div class="step-desc">
+        All providers answer independently in parallel. No cross-contamination.
+      </div>
+    </div>
+    <div class="timeline-step">
+      <div class="step-title">Round 2 — Critique / Revision</div>
+      <div class="step-desc">
+        Each provider receives the full transcript and must critique the others,
+        identify gaps in their own reasoning, and provide a revised position.
+      </div>
+    </div>
+    <div class="timeline-step">
+      <div class="step-title">Round 3 (if <code>#!rounds 2</code>) — Deepened Critique</div>
+      <div class="step-desc">
+        Second critique round using all prior critiques and revisions. Forces deeper
+        engagement with counterarguments.
+      </div>
+    </div>
+    <div class="timeline-step">
+      <div class="step-title">Final — Judge Synthesis</div>
+      <div class="step-desc">
+        Judge provider reads the full debate transcript and produces the final consensus.
+      </div>
+    </div>
+  </div>
+
+  <pre><span class="kw">#!debate</span> anthropic openai zai
+<span class="kw">#!rounds</span> 2
+<span class="kw">#!judge</span> anthropic
+
+Should oneloop add plugin hooks before skills?</pre>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>6</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 7 — Provider Capabilities
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Providers</div>
+  <h2>Provider Matrix</h2>
+
+  <div class="card">
+    <table>
+      <tr>
+        <th></th>
+        <th style="color: var(--openai);">OpenAI</th>
+        <th style="color: var(--anthropic);">Anthropic</th>
+        <th style="color: var(--zai);">Z.AI</th>
+      </tr>
+      <tr>
+        <td><strong>Default model</strong></td>
+        <td>gpt-5.5</td>
+        <td>claude-sonnet-4-6</td>
+        <td>glm-5.1</td>
+      </tr>
+      <tr>
+        <td><strong>API format</strong></td>
+        <td>Responses API<code>/v1/responses</code></td>
+        <td>Messages API<code>/v1/messages</code></td>
+        <td>PaaS API<code>/v4</code></td>
+      </tr>
+      <tr>
+        <td><strong>Tool calls</strong></td>
+        <td>function_call items</td>
+        <td>tool_use blocks</td>
+        <td>function calls</td>
+      </tr>
+      <tr>
+        <td><strong>System prompt</strong></td>
+        <td><code>instructions</code> field</td>
+        <td><code>system</code> field</td>
+        <td>system message</td>
+      </tr>
+      <tr>
+        <td><strong>Reasoning effort</strong></td>
+        <td>Configurable (low/med/high)</td>
+        <td>Model default</td>
+        <td>Model default</td>
+      </tr>
+      <tr>
+        <td><strong>Auth</strong></td>
+        <td>API key</td>
+        <td>API key</td>
+        <td>API key</td>
+      </tr>
+      <tr>
+        <td><strong>Custom base URL</strong></td>
+        <td>✅ <code>ONELOOP_OPENAI_BASE_URL</code></td>
+        <td>❌</td>
+        <td>✅ <code>ONELOOP_ZAI_BASE_URL</code></td>
+      </tr>
+    </table>
+  </div>
+
+  <p>
+    Default selection order: <strong>Z.AI → OpenAI → Anthropic</strong>.
+    Override with <code>ONELOOP_PROVIDER</code> env var or per-prompt with <code>#!provider</code>.
+  </p>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>7</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 8 — Mode Comparison
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Comparison</div>
+  <h2>Mode Behavior Matrix</h2>
+
+  <div class="card">
+    <table>
+      <tr>
+        <th></th>
+        <th><code>#!provider</code></th>
+        <th><code>#!consensus</code></th>
+        <th><code>#!debate</code></th>
+      </tr>
+      <tr>
+        <td><strong>Providers</strong></td>
+        <td>1</td>
+        <td>2+</td>
+        <td>2+</td>
+      </tr>
+      <tr>
+        <td><strong>Session history</strong></td>
+        <td><span class="status done">Full</span></td>
+        <td><span class="status partial">Current prompt only</span></td>
+        <td><span class="status partial">Current prompt only</span></td>
+      </tr>
+      <tr>
+        <td><strong>Tool loop</strong></td>
+        <td><span class="status done">Full loop</span></td>
+        <td><span class="status partial">None (sent but not executed)</span></td>
+        <td><span class="status partial">None (sent but not executed)</span></td>
+      </tr>
+      <tr>
+        <td><strong>Multi-turn</strong></td>
+        <td><span class="status done">Up to 50 iterations</span></td>
+        <td><span class="status todo">Single call per provider</span></td>
+        <td><span class="status todo">Single call per round</span></td>
+      </tr>
+      <tr>
+        <td><strong>Auto-compaction</strong></td>
+        <td><span class="status done">Yes</span></td>
+        <td><span class="status todo">N/A</span></td>
+        <td><span class="status todo">N/A</span></td>
+      </tr>
+      <tr>
+        <td><strong>Parallel execution</strong></td>
+        <td>N/A (single provider)</td>
+        <td><span class="status done">Yes</span></td>
+        <td><span class="status done">Yes</span></td>
+      </tr>
+      <tr>
+        <td><strong>Judge synthesis</strong></td>
+        <td>N/A</td>
+        <td><span class="status done">Yes</span></td>
+        <td><span class="status done">Yes</span></td>
+      </tr>
+      <tr>
+        <td><strong>Output format</strong></td>
+        <td>Plain text</td>
+        <td>Labeled sections + consensus</td>
+        <td>Labeled rounds + final consensus</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>8</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 9 — Implementation Status
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Status</div>
+  <h2>Implementation Status</h2>
+
+  <div class="card" style="margin-bottom: 32px;">
+    <h3 style="margin-bottom: 16px;">✅ Done</h3>
+    <table>
+      <tr><td><strong>Directive parser</strong></td><td>Parse <code>#!</code> block, extract mode + body, validate conflicts</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Provider shorthand</strong></td><td><code>#!anthropic</code> → single, <code>#!anthropic openai</code> → consensus</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Consensus mode</strong></td><td>Parallel calls, labeled output, judge synthesis</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Debate mode</strong></td><td>Multi-round critique/revision with judge synthesis</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Interactive body input</strong></td><td><code>#!</code> with no body → multi-line input with <code>·</code> prompt</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Directive summary</strong></td><td>Prints resolved mode before execution</td><td><span class="status done">done</span></td></tr>
+      <tr><td><strong>Parser simplification</strong></td><td>Collapsed 6 functions → 1 <code>split_providers</code> helper</td><td><span class="status done">done</span></td></tr>
+    </table>
+  </div>
+
+  <div class="card" style="margin-bottom: 32px;">
+    <h3 style="margin-bottom: 16px; color: var(--amber);">⚠ Known Limitations</h3>
+    <table>
+      <tr><td><strong>Tool loop in consensus/debate</strong></td><td>Providers can't execute read/web_search during orchestration. No tool loop exists in <code>collect_provider_responses()</code>.</td><td><span class="status partial">partial</span></td></tr>
+      <tr><td><strong>Session history in multi-model</strong></td><td>Consensus/debate sends only current prompt — no conversation context.</td><td><span class="status partial">by design</span></td></tr>
+      <tr><td><strong><code>#!tools</code> enforcement</strong></td><td>Parsed and validated, but tool definitions sent to providers are not executed when returned.</td><td><span class="status partial">partial</span></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom: 16px; color: var(--muted);">📋 Next Up</h3>
+    <table>
+      <tr><td><strong>Lua plugin system</strong></td><td>REPL-driven plugins with lifecycle hooks</td><td><span class="status todo">todo</span></td></tr>
+      <tr><td><strong>Memory plugin</strong></td><td>Persistent memory.md surviving compaction</td><td><span class="status todo">todo</span></td></tr>
+      <tr><td><strong>Safety plugin</strong></td><td>Intercept dangerous tool calls</td><td><span class="status todo">todo</span></td></tr>
+      <tr><td><strong>Skills loader</strong></td><td>Load .md skills into system prompt</td><td><span class="status todo">todo</span></td></tr>
+    </table>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>9</span>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     SLIDE 10 — Parser Internals
+     ════════════════════════════════════════════════════════════════════ -->
+
+<section class="slide">
+  <div class="label">Internals</div>
+  <h2>Simplified Parser Architecture</h2>
+  <p>
+    After the refactor: one core helper, one state struct, one match block.
+    374 → 318 lines (−15%). All 11 tests pass unchanged.
+  </p>
+
+  <pre><span class="kw">pub fn</span> parse_prompt(input: &str) → Result&lt;PromptDirectives&gt; {
+    <span class="cm">// No #! → default single mode, full prompt is body</span>
+    <span class="kw">if</span> !input.starts_with(<span class="str">"#!"</span>) { <span class="kw">return</span> default_single(input); }
+
+    <span class="cm">// Walk lines, parse directive block, collect body</span>
+    <span class="kw">for</span> line <span class="kw">in</span> lines {
+        <span class="kw">if</span> starts_with(<span class="str">"#!"</span>) → parse_directive_line()
+        <span class="kw">else</span>          → body
+    }
+
+    validate(&state)  <span class="cm">// one pass: judge/rounds vs mode compatibility</span>
+    <span class="kw">return</span> PromptDirectives { mode, judge, rounds, tools, prompt }
+}</pre>
+
+  <div class="card-grid" style="grid-template-columns: 1fr 1fr;">
+    <div class="card" style="margin-bottom: 0;">
+      <h3><code>split_providers(tokens)</code></h3>
+      <p style="margin-bottom: 0;">
+        The one helper. Greedily collects known provider names from the front of a token list.
+        Returns <code>(providers, remaining_body)</code>. Used by <code>#!provider</code>,
+        <code>#!consensus</code>, <code>#!debate</code>, and provider shorthand — all four paths
+        share the same logic.
+      </p>
+    </div>
+    <div class="card" style="margin-bottom: 0;">
+      <h3><code>State::set_mode()</code></h3>
+      <p style="margin-bottom: 0;">
+        Rejects mode conflicts at insertion time. If mode is already set, bails immediately.
+        Eliminates the old <code>resolve_mode()</code> pass — if parsing succeeds, the mode is
+        already resolved. No post-hoc reconciliation needed.
+      </p>
+    </div>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Directive System</span>
+    <span>10</span>
+  </div>
+</section>
+
+</body>
+</html>
