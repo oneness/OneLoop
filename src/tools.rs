@@ -39,16 +39,16 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn with_builtin_tools() -> Self {
-        Self {
+    pub fn with_builtin_tools() -> Result<Self> {
+        Ok(Self {
             tools: vec![
                 Arc::new(read::ReadTool),
                 Arc::new(write::WriteTool),
                 Arc::new(edit::EditTool),
                 Arc::new(bash::BashTool),
-                Arc::new(web_search::WebSearchTool::new()),
+                Arc::new(web_search::WebSearchTool::new()?),
             ],
-        }
+        })
     }
 
     pub fn names(&self) -> Vec<&'static str> {

@@ -102,13 +102,13 @@ impl App {
 
     pub async fn run(self, prompt: Option<String>) -> Result<()> {
         let provider_registry = ProviderRegistry::new()?;
-        let tool_registry = ToolRegistry::with_builtin_tools();
+        let tool_registry = ToolRegistry::with_builtin_tools()?;
         let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
 
         match prompt {
             Some(prompt) => run_directed_prompt(&mut agent, &prompt).await,
             None => {
-                println!("oneloop");
+                println!("OneLoop");
                 println!("{}", agent.summary());
                 println!();
                 println!(

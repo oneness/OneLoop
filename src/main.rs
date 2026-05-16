@@ -49,9 +49,9 @@ async fn main() -> Result<()> {
 fn login(provider: &str) -> Result<()> {
     match provider {
         "anthropic" => {
-            println!("Anthropic login for oneloop");
+            println!("Anthropic login for OneLoop");
             println!();
-            println!("Note: oneloop uses Anthropic API-key authentication.");
+            println!("Note: OneLoop uses Anthropic API-key authentication.");
             println!("It does not implement claude.ai subscription login.");
             println!();
             let key = rpassword::prompt_password("Enter ANTHROPIC_API_KEY: ")?;
@@ -63,7 +63,7 @@ fn login(provider: &str) -> Result<()> {
             Ok(())
         }
         "zai" => {
-            println!("Z.AI login for oneloop");
+            println!("Z.AI login for OneLoop");
             println!();
             let key = rpassword::prompt_password("Enter ZAI_API_KEY: ")?;
             if key.trim().is_empty() {
@@ -74,7 +74,7 @@ fn login(provider: &str) -> Result<()> {
             Ok(())
         }
         "openai" => {
-            println!("OpenAI login for oneloop");
+            println!("OpenAI login for OneLoop");
             println!();
             let key = rpassword::prompt_password("Enter OPENAI_API_KEY: ")?;
             if key.trim().is_empty() {

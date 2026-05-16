@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "zai"];
 const MAX_ROUNDS: usize = 3;
@@ -116,8 +116,7 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
             if val == "none" {
                 tools = Some(ToolMode::None);
             } else {
-                let names: Vec<String> =
-                    val.split(',').map(|s| s.trim().to_string()).collect();
+                let names: Vec<String> = val.split(',').map(|s| s.trim().to_string()).collect();
                 tools = Some(ToolMode::AllowList(names));
             }
         } else if let Some(kv) = token.strip_prefix("format:") {
@@ -150,10 +149,7 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
     let mode = resolve_mode(mode_name, providers)?;
 
     // Cross-validate.
-    let is_multi = matches!(
-        &mode,
-        RunMode::Consensus { .. } | RunMode::Debate { .. }
-    );
+    let is_multi = matches!(&mode, RunMode::Consensus { .. } | RunMode::Debate { .. });
     let is_debate = matches!(&mode, RunMode::Debate { .. });
 
     if judge.is_some() && !is_multi {
@@ -280,10 +276,7 @@ mod tests {
         let got = parsed("#!consensus anthropic openai tools:read,web_search#! hello");
         assert_eq!(
             got.tools,
-            ToolMode::AllowList(vec![
-                "read".to_string(),
-                "web_search".to_string()
-            ])
+            ToolMode::AllowList(vec!["read".to_string(), "web_search".to_string()])
         );
     }
 

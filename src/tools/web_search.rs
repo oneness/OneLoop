@@ -16,14 +16,14 @@ pub struct WebSearchTool {
 }
 
 impl WebSearchTool {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         let base_url = std::env::var("ONELOOP_SEARX_URL")
             .unwrap_or_else(|_| "http://localhost:8080".to_string());
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .expect("failed to build web search HTTP client");
-        Self { base_url, client }
+            .context("failed to build web search HTTP client")?;
+        Ok(Self { base_url, client })
     }
 }
 

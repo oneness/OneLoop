@@ -138,7 +138,10 @@ impl Provider for ZaiProvider {
         let response = self
             .client
             .post(url)
-            .header("Authorization", format!("Bearer {api_key}", api_key = self.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {api_key}", api_key = self.api_key),
+            )
             .json(&body)
             .send()
             .await

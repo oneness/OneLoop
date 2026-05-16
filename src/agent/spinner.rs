@@ -28,7 +28,9 @@ impl SpinnerGuard {
     }
 
     pub fn stop(&self) {
-        self.abort.lock().expect("spinner lock poisoned").abort();
+        if let Ok(abort) = self.abort.lock() {
+            abort.abort();
+        }
         eprint!("\x1b[2K\r");
     }
 
@@ -38,7 +40,9 @@ impl SpinnerGuard {
     pub fn stop_callback(&self) -> Box<dyn FnOnce() + Send> {
         let abort = self.abort.clone();
         Box::new(move || {
-            abort.lock().expect("spinner lock poisoned").abort();
+            if let Ok(abort) = abort.lock() {
+                abort.abort();
+            }
             eprint!("\x1b[2K\r");
         })
     }
@@ -50,7 +54,9 @@ impl SpinnerGuard {
         let label = label.to_string();
         Box::new(move || {
             let new_handle = tokio::spawn(Self::spin_loop(label));
-            *abort.lock().expect("spinner lock poisoned") = new_handle.abort_handle();
+            if let Ok(mut abort) = abort.lock() {
+                *abort = new_handle.abort_handle();
+            }
         })
     }
 }

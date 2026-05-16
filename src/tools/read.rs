@@ -47,9 +47,10 @@ impl Tool for ReadTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        if !tokio::fs::try_exists(&path).await.with_context(|| {
-            format!("failed to check file existence: {}", path.display())
-        })? {
+        if !tokio::fs::try_exists(&path)
+            .await
+            .with_context(|| format!("failed to check file existence: {}", path.display()))?
+        {
             return Ok(ToolResult {
                 content: format!(
                     "file not found: {}\nUse `bash` with `find` or `grep` to search for it, e.g.: find . -name \"*{}*\" -type f",

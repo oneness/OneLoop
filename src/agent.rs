@@ -13,8 +13,8 @@ use std::time::Instant;
 use anyhow::Result;
 use futures::future::join_all;
 use serde_json::json;
-use std::sync::Arc;
 use std::env;
+use std::sync::Arc;
 
 use crate::{
     config::Config,

@@ -8,11 +8,11 @@ use std::env;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use futures::future::join_all;
 
 use crate::agent::spinner::SpinnerGuard;
-use crate::agent::{messages, AgentContext};
+use crate::agent::{AgentContext, messages};
 use crate::directives::ToolMode;
 use crate::providers::{ProviderRegistry, ProviderRequest};
 use crate::tools::{ToolRegistry, ToolResult};
@@ -162,14 +162,8 @@ pub async fn run_debate(
         cwd: ctx.cwd,
     };
 
-    let mut transcript = collect_provider_responses(
-        &pctx,
-        providers,
-        prompt,
-        "initial answer",
-        tools,
-    )
-    .await?;
+    let mut transcript =
+        collect_provider_responses(&pctx, providers, prompt, "initial answer", tools).await?;
     let mut output = format!(
         "── Round 1: Initial Answers ──\n\n{}",
         format_labeled_responses(&transcript)
@@ -334,7 +328,10 @@ async fn collect_provider_responses(
                             .unwrap_or("");
 
                         let label = crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
-                        let cached = cache.lock().expect("evidence cache poisoned").has(evidence_tool, &evidence_args);
+                        let cached = cache
+                            .lock()
+                            .map(|cache| cache.has(evidence_tool, &evidence_args))
+                            .unwrap_or(false);
                         let cache_tag = if cached { " (cached)" } else { "" };
 
                         let result = crate::agent::evidence::execute(

@@ -5,9 +5,9 @@
 //! and shares results across all providers.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
 use crate::directives::ToolMode;
@@ -55,10 +55,8 @@ impl EvidenceCache {
     }
 
     pub fn insert(&mut self, tool: &str, args: &Value, content: String, is_error: bool) {
-        self.entries.insert(
-            Self::key(tool, args),
-            CachedEvidence { content, is_error },
-        );
+        self.entries
+            .insert(Self::key(tool, args), CachedEvidence { content, is_error });
     }
 }
 
@@ -153,10 +151,16 @@ pub async fn execute(
 
     // Check cache.
     {
-        let cache_guard = cache.lock().expect("evidence cache poisoned");
+        let Ok(cache_guard) = cache.lock() else {
+            return ToolResult {
+                content: "evidence cache unavailable: lock poisoned".to_string(),
+                is_error: true,
+            };
+        };
         if cache_guard.has(evidence_tool, args)
-            && let Some(cached) =
-                cache_guard.entries.get(&EvidenceCache::key(evidence_tool, args))
+            && let Some(cached) = cache_guard
+                .entries
+                .get(&EvidenceCache::key(evidence_tool, args))
         {
             return ToolResult {
                 content: format!("{}\n(cached)", cached.content),
@@ -170,13 +174,13 @@ pub async fn execute(
 
     // Cache result.
     {
-        let mut cache = cache.lock().expect("evidence cache poisoned");
-        cache.insert(
-            evidence_tool,
-            args,
-            result.content.clone(),
-            result.is_error,
-        );
+        let Ok(mut cache) = cache.lock() else {
+            return ToolResult {
+                content: format!("{}\n(cache unavailable: lock poisoned)", result.content),
+                is_error: true,
+            };
+        };
+        cache.insert(evidence_tool, args, result.content.clone(), result.is_error);
     }
 
     result
@@ -265,25 +269,101 @@ async fn execute_inner(
 
 static SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        "cat", "head", "tail", "less", "wc", "file", "stat", "ls", "tree", "du", "df",
-        "find", "grep", "rg", "ag", "ack", "fd", "which", "type", "git",
-        "sort", "uniq", "cut", "tr", "awk", "sed", "jq", "yq", "xargs",
-        "echo", "printf", "date", "uname", "hostname", "whoami", "env", "printenv", "pwd",
-        "diff", "comm", "paste", "tee", "column", "fmt", "fold", "expand", "unexpand",
-        "basename", "dirname", "realpath", "readlink", "test", "[",
-        "nl", "od", "hexdump", "xxd", "strings",
-        "md5sum", "sha256sum", "shasum", "cksum",
+        "cat",
+        "head",
+        "tail",
+        "less",
+        "wc",
+        "file",
+        "stat",
+        "ls",
+        "tree",
+        "du",
+        "df",
+        "find",
+        "grep",
+        "rg",
+        "ag",
+        "ack",
+        "fd",
+        "which",
+        "type",
+        "git",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "awk",
+        "sed",
+        "jq",
+        "yq",
+        "xargs",
+        "echo",
+        "printf",
+        "date",
+        "uname",
+        "hostname",
+        "whoami",
+        "env",
+        "printenv",
+        "pwd",
+        "diff",
+        "comm",
+        "paste",
+        "tee",
+        "column",
+        "fmt",
+        "fold",
+        "expand",
+        "unexpand",
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        "test",
+        "[",
+        "nl",
+        "od",
+        "hexdump",
+        "xxd",
+        "strings",
+        "md5sum",
+        "sha256sum",
+        "shasum",
+        "cksum",
     ])
 });
 
 static GIT_READ_ONLY: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        "log", "diff", "show", "status", "branch", "tag", "remote", "stash",
-        "blame", "shortlog", "describe", "reflog",
-        "ls-files", "ls-tree", "ls-remote",
-        "rev-list", "rev-parse", "name-rev", "merge-base", "cherry",
-        "grep", "cat-file", "show-ref", "for-each-ref",
-        "count-objects", "verify-pack", "fsck", "whatchanged",
+        "log",
+        "diff",
+        "show",
+        "status",
+        "branch",
+        "tag",
+        "remote",
+        "stash",
+        "blame",
+        "shortlog",
+        "describe",
+        "reflog",
+        "ls-files",
+        "ls-tree",
+        "ls-remote",
+        "rev-list",
+        "rev-parse",
+        "name-rev",
+        "merge-base",
+        "cherry",
+        "grep",
+        "cat-file",
+        "show-ref",
+        "for-each-ref",
+        "count-objects",
+        "verify-pack",
+        "fsck",
+        "whatchanged",
     ])
 });
 

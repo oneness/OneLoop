@@ -55,9 +55,10 @@ impl Tool for EditTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        if !tokio::fs::try_exists(&path).await.with_context(|| {
-            format!("failed to check file existence: {}", path.display())
-        })? {
+        if !tokio::fs::try_exists(&path)
+            .await
+            .with_context(|| format!("failed to check file existence: {}", path.display()))?
+        {
             return Err(anyhow!("file does not exist: {}", path.display()));
         }
 
