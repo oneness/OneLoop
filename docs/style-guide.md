@@ -1,6 +1,6 @@
-# oneloop — Rust Style Guide
+# OneLoop — Rust Style Guide
 
-This guide defines the coding conventions for the oneloop project. The goal is
+This guide defines the coding conventions for the OneLoop project. The goal is
 clean, idiomatic, functional-leaning Rust that is consistent across the codebase.
 
 ## References

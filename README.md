@@ -1,4 +1,4 @@
-# oneloop
+# OneLoop
 
 A tiny, extensible coding agent.
 
@@ -41,7 +41,7 @@ Runs a single prompt and exits.
 
 Stores API keys in `~/.oneloop/auth.json`.
 
-`./ol` is a thin wrapper that runs oneloop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `web_search`.
+`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `web_search`.
 
 ## Directives
 

@@ -1,4 +1,4 @@
-# oneloop architecture
+# OneLoop architecture
 
 ## Core
 
