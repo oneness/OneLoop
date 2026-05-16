@@ -452,10 +452,10 @@ impl Agent {
         tools: &ToolMode,
     ) -> Result<Vec<(String, String)>> {
         let tool_definitions = self.orchestration_tool_definitions(tools);
-        let max_tool_iterations: usize = env::var("ONELOOP_ORCHESTRATION_MAX_TOOL_ITERATIONS")
+        let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(5);
+            .unwrap_or(50);
 
         let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
         let provider_registry = self.provider_registry.clone();
@@ -473,7 +473,7 @@ impl Agent {
                 let cwd = cwd.clone();
                 let tool_definitions = tool_definitions.clone();
                 let prompt_text = prompt.to_string();
-                let max_iterations = max_tool_iterations;
+                let max_iterations = max_iterations;
 
                 tokio::spawn(async move {
                     let mut req = ProviderRequest {

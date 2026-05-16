@@ -154,4 +154,6 @@ Consensus and debate modes run a full tool loop for each provider:
 5. When the provider responds with no tool calls, that's the final answer.
 
 This ensures providers can read files and search the web to ground their
-answers in real evidence instead of hallucinating context.
+answers in real evidence instead of hallucinating context. The iteration
+limit is the same `ONELOOP_MAX_ITERATIONS` env var (default: 50) used by
+the main agent loop.
