@@ -531,12 +531,16 @@ impl Agent {
                         }
 
                         // Append tool call + result messages.
+                        // Only include assistant text if non-empty — Anthropic rejects
+                        // empty text blocks ("text content blocks must be non-empty").
                         use crate::agent::messages::{
                             AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
                         };
-                        req.messages.push(Message::Assistant(AssistantMessage {
-                            content: response.content.clone(),
-                        }));
+                        if !response.content.trim().is_empty() {
+                            req.messages.push(Message::Assistant(AssistantMessage {
+                                content: response.content.clone(),
+                            }));
+                        }
                         for tc in &response.tool_calls {
                             req.messages.push(Message::ToolCall(MsgToolCall {
                                 id: tc.id.clone(),

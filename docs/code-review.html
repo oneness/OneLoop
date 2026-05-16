@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>oneloop — Code Review</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f9fb;
+    --card: #ffffff;
+    --border: #e2e5eb;
+    --text: #1a1d26;
+    --muted: #5c6170;
+    --accent: #3b5bdb;
+    --green: #16a34a;
+    --amber: #d97706;
+    --red: #dc2626;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .slide {
+    max-width: 920px; margin: 0 auto; padding: 64px 48px;
+    min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
+  }
+  .slide + .slide {
+    border-top: 1px solid var(--border);
+  }
+  h1 { font-size: 36px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 8px; }
+  h2 { font-size: 24px; font-weight: 600; color: var(--accent); margin-bottom: 12px; }
+  h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .subtitle { font-size: 18px; color: var(--muted); margin-bottom: 40px; }
+  .label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1.2px; color: var(--muted); margin-bottom: 8px;
+  }
+  p { margin-bottom: 12px; color: var(--muted); font-size: 15px; }
+  p strong { color: var(--text); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  .severity {
+    display: inline-block; padding: 2px 10px; border-radius: 4px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-right: 8px;
+  }
+  .severity.bug { background: rgba(220,38,38,0.08); color: var(--red); border: 1px solid rgba(220,38,38,0.2); }
+  .severity.warn { background: rgba(217,119,6,0.08); color: var(--amber); border: 1px solid rgba(217,119,6,0.2); }
+  .severity.info { background: rgba(59,91,219,0.08); color: var(--accent); border: 1px solid rgba(59,91,219,0.2); }
+  .severity.ok { background: rgba(22,163,74,0.08); color: var(--green); border: 1px solid rgba(22,163,74,0.2); }
+
+  .file-tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    padding: 2px 8px; border-radius: 4px; background: var(--surface);
+    border: 1px solid var(--border); color: var(--muted);
+  }
+
+  pre {
+    background: #1a1d26; color: #e2e5eb; border-radius: 8px;
+    padding: 16px 20px; font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; line-height: 1.6; overflow-x: auto; margin: 12px 0;
+  }
+  pre .comment { color: #5c6170; }
+  pre .keyword { color: #3b5bdb; }
+  pre .string { color: #16a34a; }
+  pre .highlight { background: rgba(220,38,38,0.15); display: inline; padding: 1px 0; }
+
+  code {
+    font-family: 'JetBrains Mono', monospace; font-size: 13px;
+    background: var(--surface); padding: 1px 6px; border-radius: 4px;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
+  th { text-align: left; padding: 10px 14px; border-bottom: 2px solid var(--border);
+       font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+
+  .stat-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 12px; margin-bottom: 24px;
+  }
+  .stat-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; text-align: center;
+  }
+  .stat-box .number { font-size: 32px; font-weight: 700; }
+  .stat-box .desc { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-box.red .number { color: var(--red); }
+  .stat-box.amber .number { color: var(--amber); }
+  .stat-box.blue .number { color: var(--accent); }
+  .stat-box.green .number { color: var(--green); }
+
+  .finding { margin-bottom: 20px; }
+  .finding-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+
+  .slide-footer {
+    margin-top: auto; padding-top: 32px; font-size: 12px; color: var(--muted);
+    display: flex; justify-content: space-between;
+  }
+
+  @media (max-width: 720px) {
+    .slide { padding: 40px 24px; }
+    .stat-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1 — Summary -->
+<section class="slide">
+  <div class="label">code review</div>
+  <h1>oneloop — Code Review</h1>
+  <p class="subtitle">Repo-level review of commit 2cb81df (main). 17 source files, ~3,200 LOC.</p>
+
+  <div class="stat-grid">
+    <div class="stat-box red">
+      <div class="number">1</div>
+      <div class="desc">Bug</div>
+    </div>
+    <div class="stat-box amber">
+      <div class="number">3</div>
+      <div class="desc">Warnings</div>
+    </div>
+    <div class="stat-box blue">
+      <div class="number">4</div>
+      <div class="desc">Suggestions</div>
+    </div>
+    <div class="stat-box green">
+      <div class="number">24</div>
+      <div class="desc">Tests Pass</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom: 12px;">Architecture snapshot</h3>
+    <table>
+      <tr><th>Layer</th><th>Files</th><th>Role</th></tr>
+      <tr><td><strong>Entry</strong></td><td><code>main.rs</code>, <code>app.rs</code></td><td>CLI, REPL, Ctrl+C handling</td></tr>
+      <tr><td><strong>Agent</strong></td><td><code>agent.rs</code>, <code>agent/*</code> (5 files)</td><td>Loop, orchestration, session, compaction, evidence</td></tr>
+      <tr><td><strong>Providers</strong></td><td><code>providers.rs</code>, <code>providers/*</code> (3 files)</td><td>OpenAI, Anthropic, Z.AI adapters</td></tr>
+      <tr><td><strong>Tools</strong></td><td><code>tools.rs</code>, <code>tools/*</code> (5 files)</td><td>read, write, edit, bash, web_search</td></tr>
+      <tr><td><strong>Directives</strong></td><td><code>directives.rs</code></td><td>#!...#! parser</td></tr>
+      <tr><td><strong>Infra</strong></td><td><code>config.rs</code>, <code>auth.rs</code>, <code>output.rs</code></td><td>Config, credentials, truncation</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom: 8px;">What's solid</h3>
+    <p style="margin-bottom: 4px;">✅ Clean module boundaries — agent, providers, tools are well separated</p>
+    <p style="margin-bottom: 4px;">✅ Append-only JSONL session model — simple and resilient</p>
+    <p style="margin-bottom: 4px;">✅ Evidence agent pattern — good deduplication, safe shell validation</p>
+    <p style="margin-bottom: 4px;">✅ Directive parser — comprehensive validation, 14 tests</p>
+    <p style="margin-bottom: 0;">✅ Retry + interactive fallback — thoughtful UX on provider failure</p>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Code Review</span>
+    <span>1 / 3</span>
+  </div>
+</section>
+
+<!-- SLIDE 2 — Bug + Warnings -->
+<section class="slide">
+  <div class="label">findings</div>
+  <h2>Bug &amp; Warnings</h2>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity bug">BUG</span>
+      <strong>Empty assistant text blocks crash Anthropic API</strong>
+    </div>
+    <p><span class="file-tag">src/agent.rs:537</span> <span class="file-tag">src/providers/anthropic.rs:213</span></p>
+    <p>When Anthropic responds with <code>tool_calls</code> but <strong>no text content</strong> (common for Claude models), the orchestration evidence loop sends an <code>AssistantMessage { content: "" }</code>. Anthropic's API rejects empty text blocks: <em>"text content blocks must be non-empty"</em>.</p>
+    <pre><span class="comment">// agent.rs:537 — always appends, even if content is ""</span>
+req.messages.push(Message::Assistant(AssistantMessage {
+    <span class="highlight">content: response.content.clone(),  // can be ""</span>
+}));</pre>
+    <p><strong>Fix:</strong> Skip the Assistant message when content is empty and tool calls are present. Anthropic allows assistant messages with only <code>tool_use</code> blocks.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity warn">WARN</span>
+      <strong>Main agent loop has the same empty-content risk</strong>
+    </div>
+    <p><span class="file-tag">src/agent.rs:714</span></p>
+    <p>In <code>run_once_with</code>, empty assistant content is guarded (<code>if !response.content.trim().is_empty()</code>), but the guard only controls printing and session storage. If a future change sends the message history back to Anthropic directly (not via session replay), the same crash would occur. The guard is correct today but fragile.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity warn">WARN</span>
+      <strong>Evidence cache uses std::sync::Mutex in async context</strong>
+    </div>
+    <p><span class="file-tag">src/agent/evidence.rs:16</span></p>
+    <p>The <code>EvidenceCache</code> uses <code>std::sync::Mutex</code> which is fine for quick lock/unlock, but <code>execute()</code> calls <code>cache.lock().unwrap().has()</code> and then drops the lock before doing async work. If someone adds a call that holds the lock across an <code>.await</code>, it will deadlock silently. Consider documenting the contract or switching to <code>tokio::sync::Mutex</code>.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity warn">WARN</span>
+      <strong>Tool definitions hardcoded in evidence tool schema</strong>
+    </div>
+    <p><span class="file-tag">src/agent/evidence.rs:72-95</span></p>
+    <p>The <code>request_evidence</code> tool definition lists available tools as a hardcoded enum (<code>"read", "web_search", "shell"</code>) in its JSON schema. If tools are added or removed, this must be manually synced. Should derive from the <code>allowed_tools()</code> set or the <code>ToolRegistry</code>.</p>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Code Review</span>
+    <span>2 / 3</span>
+  </div>
+</section>
+
+<!-- SLIDE 3 — Suggestions + Verdict -->
+<section class="slide">
+  <div class="label">improvements</div>
+  <h2>Suggestions</h2>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity info">SUGGEST</span>
+      <strong>Format directives are parsed but never applied</strong>
+    </div>
+    <p><span class="file-tag">src/directives.rs</span> <span class="file-tag">src/app.rs</span></p>
+    <p>The parser supports <code>format:md</code> and <code>format:html</code> and stores them in <code>PromptDirectives.format</code>. But <code>run_directives()</code> in <code>app.rs</code> never reads <code>directives.format</code> — the output format field is ignored entirely. Either wire it up or remove it from the parser to avoid misleading users.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity info">SUGGEST</span>
+      <strong>Orchestration doesn't propagate errors to the user</strong>
+    </div>
+    <p><span class="file-tag">src/agent.rs:468</span></p>
+    <p>If a provider task panics or fails inside the spawned orchestration tasks, the error surfaces as <code>"provider task failed"</code> with a tokio JoinError. The original error (e.g. Anthropic 400) is swallowed. Consider logging the per-provider error before the generic message.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity info">SUGGEST</span>
+      <strong>Debate transcript grows unbounded in context</strong>
+    </div>
+    <p><span class="file-tag">src/agent.rs:383</span></p>
+    <p>Each debate round calls <code>format_debate_round_prompt()</code> which includes the full transcript. With 3 providers × 3 rounds, this can be very large. Consider truncating earlier rounds or only sending the latest N responses.</p>
+  </div>
+
+  <div class="finding">
+    <div class="finding-header">
+      <span class="severity info">SUGGEST</span>
+      <strong>No request timeout on provider calls</strong>
+    </div>
+    <p><span class="file-tag">src/providers/anthropic.rs</span> <span class="file-tag">src/providers/openai.rs</span> <span class="file-tag">src/providers/zai.rs</span></p>
+    <p>None of the provider HTTP clients set a request timeout. A hung provider connection will block the agent indefinitely (until the retry logic kicks in on the next attempt). Consider adding a 60-120s timeout to each <code>reqwest::Client</code>.</p>
+  </div>
+
+  <div class="card" style="margin-top: 24px;">
+    <h3 style="margin-bottom: 8px;">Verdict</h3>
+    <p style="font-size: 16px; margin-bottom: 0;">
+      <strong>The codebase is well-structured for its size.</strong> One real bug (empty Anthropic text blocks) that should be fixed immediately — it will crash any orchestration where Claude responds with tool calls only. The warnings are low-risk but worth addressing. Suggestions are quality-of-life improvements for later.
+    </p>
+  </div>
+
+  <div class="slide-footer">
+    <span>oneloop — Code Review</span>
+    <span>3 / 3</span>
+  </div>
+</section>
+
+</body>
+</html>

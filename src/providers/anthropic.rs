@@ -188,13 +188,19 @@ fn to_anthropic_messages(messages: Vec<Message>) -> Vec<AnthropicMessage> {
                 "user",
                 AnthropicInputBlock::Text { text: user.content },
             ),
-            Message::Assistant(assistant) => push_anthropic_block(
-                &mut result,
-                "assistant",
-                AnthropicInputBlock::Text {
-                    text: assistant.content,
-                },
-            ),
+            Message::Assistant(assistant) => {
+                // Anthropic rejects empty text blocks. Skip if content is empty
+                // (e.g. model responded with tool calls only, no text).
+                if !assistant.content.trim().is_empty() {
+                    push_anthropic_block(
+                        &mut result,
+                        "assistant",
+                        AnthropicInputBlock::Text {
+                            text: assistant.content,
+                        },
+                    );
+                }
+            }
             Message::ToolCall(tool_call) => {
                 seen_tool_use_ids.insert(tool_call.id.clone());
                 push_anthropic_block(
