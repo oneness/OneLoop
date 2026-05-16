@@ -1,7 +1,13 @@
+//! Evidence agent for multi-model orchestration.
+//!
+//! Instead of giving providers direct tool access, they ask the main agent
+//! to gather evidence on their behalf. The main agent executes, caches,
+//! and shares results across all providers.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, LazyLock};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::agent::AgentContext;
 use crate::directives::ToolMode;
@@ -69,23 +75,21 @@ pub fn allowed_tools(mode: &ToolMode) -> HashSet<&'static str> {
     match mode {
         ToolMode::Default => HashSet::from(["read", "web_search", "shell"]),
         ToolMode::None => HashSet::new(),
-        ToolMode::AllowList(names) => {
-            // Map known string names to static str where possible.
-            names.iter().filter_map(|n| match n.as_str() {
+        ToolMode::AllowList(names) => names
+            .iter()
+            .filter_map(|n| match n.as_str() {
                 "read" => Some("read"),
                 "web_search" => Some("web_search"),
                 "shell" => Some("shell"),
                 _ => None,
-            }).collect()
-        }
+            })
+            .collect(),
     }
 }
 
 // ── Tool definition ───────────────────────────────────────────────────
 
 /// The single tool definition presented to providers during orchestration.
-/// Instead of giving providers direct tool access, they ask the main agent
-/// to gather evidence on their behalf.
 pub fn tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: "request_evidence".to_string(),
@@ -94,7 +98,8 @@ pub fn tool_definition() -> ToolDefinition {
                       The agent will execute the request and return results. \
                       Available tools: 'read' (file contents, args: {path}), \
                       'web_search' (web search, args: {query}), \
-                      'shell' (read-only shell command like find/grep/git log, args: {command}).".to_string(),
+                      'shell' (read-only shell command like find/grep/git log, args: {command})."
+            .to_string(),
         schema: json!({
             "type": "object",
             "properties": {
@@ -150,7 +155,8 @@ pub async fn execute(
     {
         let cache_guard = cache.lock().expect("evidence cache poisoned");
         if cache_guard.has(evidence_tool, args)
-            && let Some(cached) = cache_guard.entries.get(&EvidenceCache::key(evidence_tool, args))
+            && let Some(cached) =
+                cache_guard.entries.get(&EvidenceCache::key(evidence_tool, args))
         {
             return ToolResult {
                 content: format!("{}\n(cached)", cached.content),
@@ -367,7 +373,6 @@ mod tests {
         assert_eq!(cached.content, "file contents here");
         assert!(!cached.is_error);
 
-        // Same args → same cache entry.
         let cached2 = cache.get("read", &args).unwrap();
         assert_eq!(cached2.content, "file contents here");
     }
@@ -380,7 +385,6 @@ mod tests {
 
         cache.insert("read", &args1, "content".to_string(), false);
 
-        // Different key order → same cache hit.
         assert!(cache.get("read", &args2).is_some());
     }
 

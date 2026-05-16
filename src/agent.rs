@@ -2,12 +2,15 @@ pub mod compaction;
 pub mod evidence;
 pub mod messages;
 pub mod metrics;
+pub mod orchestration;
 pub mod session;
+
+mod spinner;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
@@ -20,86 +23,12 @@ use crate::{
     tools::{ToolRegistry, ToolResult},
 };
 
+use spinner::SpinnerGuard;
+
 /// Context passed to tool executions.
 #[derive(Debug, Clone)]
 pub struct AgentContext {
     pub cwd: PathBuf,
-}
-
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// RAII guard for a spinner task. Aborts the spinner and clears the line on drop.
-struct SpinnerGuard {
-    handle: std::sync::Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
-}
-
-impl SpinnerGuard {
-    fn new(label: &str) -> Self {
-        let label = label.to_string();
-        let handle = tokio::spawn(async move {
-            let mut i = 0;
-            loop {
-                let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
-                eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                i += 1;
-            }
-        });
-        Self {
-            handle: std::sync::Arc::new(std::sync::Mutex::new(Some(handle))),
-        }
-    }
-
-    fn stop(&self) {
-        if let Ok(mut handle) = self.handle.lock()
-            && let Some(handle) = handle.take()
-        {
-            handle.abort();
-            eprint!("\x1b[2K\r");
-        }
-    }
-
-    /// Returns a callback that stops the spinner, suitable for passing to
-    /// `complete_with_retry` so it can halt the animation before showing an
-    /// interactive prompt.
-    fn stop_callback(self: &SpinnerGuard) -> Box<dyn FnOnce() + Send> {
-        let handle = self.handle.clone();
-        Box::new(move || {
-            if let Ok(mut handle) = handle.lock()
-                && let Some(h) = handle.take()
-            {
-                h.abort();
-                eprint!("\x1b[2K\r");
-            }
-        })
-    }
-
-    /// Returns a callback that starts a new spinner, used after an interactive
-    /// prompt to resume the animation.
-    fn start_callback(self: &SpinnerGuard, label: &str) -> Box<dyn FnOnce() + Send> {
-        let handle = self.handle.clone();
-        let label = label.to_string();
-        Box::new(move || {
-            let new_handle = tokio::spawn(async move {
-                let mut i = 0;
-                loop {
-                    let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
-                    eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
-                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                    i += 1;
-                }
-            });
-            if let Ok(mut handle) = handle.lock() {
-                *handle = Some(new_handle);
-            }
-        })
-    }
-}
-
-impl Drop for SpinnerGuard {
-    fn drop(&mut self) {
-        self.stop();
-    }
 }
 
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
@@ -143,32 +72,6 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     }
 }
 
-fn format_labeled_responses(responses: &[(String, String)]) -> String {
-    responses
-        .iter()
-        .map(|(provider, content)| format!("── {provider} ──\n{}", content.trim()))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn format_synthesis_prompt(prompt: &str, responses: &[(String, String)], label: &str) -> String {
-    format!(
-        "The user asked:\n\n{prompt}\n\nSeveral models answered independently:\n\n{}\n\nSynthesize a final {label}. Identify agreements, disagreements, tradeoffs, and a practical recommendation. Do not simply average the answers; prefer the best-supported reasoning.",
-        format_labeled_responses(responses)
-    )
-}
-
-fn format_debate_round_prompt(
-    prompt: &str,
-    transcript: &[(String, String)],
-    round: usize,
-) -> String {
-    format!(
-        "The user asked:\n\n{prompt}\n\nDebate transcript so far:\n\n{}\n\nThis is critique/revision round {round}. Critique the other responses, identify where your previous reasoning may be incomplete, and provide a revised position.",
-        format_labeled_responses(transcript)
-    )
-}
-
 pub struct Agent {
     config: Config,
     provider_registry: Arc<ProviderRegistry>,
@@ -206,9 +109,6 @@ impl Agent {
     }
 
     /// Check if auto-compaction is needed and perform it.
-    /// Called after each agent loop completes. If the context is over threshold,
-    /// it calls the provider to generate a summary, rotates the session, and
-    /// injects the summary as the initial context.
     pub async fn auto_compact_if_needed(&mut self, provider_override: Option<&str>) -> Result<()> {
         let system_prompt_chars = self
             .config
@@ -227,9 +127,6 @@ impl Agent {
             compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
         let compact_start = Instant::now();
 
-        // Build a lightweight version of the conversation for the compaction call.
-        // Tool results can be huge (file contents, command output) — replace them
-        // with one-line summaries so the compaction LLM call is fast.
         let lightweight = compaction::strip_tool_outputs(self.session.messages());
 
         let spinner = SpinnerGuard::new("compacting...");
@@ -267,23 +164,16 @@ impl Agent {
 
         let summary = response.content;
 
-        // Preserve recent user messages so the next session has verbatim context.
-        // Must collect before rotating since rotate() creates an empty session.
         let recent_user_messages =
             compaction::collect_recent_user_messages(self.session.messages());
 
-        // Rotate to a new session with the summary.
         self.session = self.session.rotate()?;
-
-        // Update metrics to point to new session file.
         self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
 
-        // Replay recent user messages verbatim.
         for user_msg in &recent_user_messages {
             self.session.push_user(user_msg.clone())?;
         }
 
-        // Inject the structured summary as the final user message.
         self.session
             .push_user(format!("{}{}", compaction::SUMMARY_PREFIX, summary))?;
         self.session.push_assistant(
@@ -323,30 +213,14 @@ impl Agent {
         judge: Option<String>,
         tools: ToolMode,
     ) -> Result<()> {
-        providers
-            .iter()
-            .try_for_each(|provider| self.provider_registry.validate_provider(provider))?;
-        if let Some(judge) = &judge {
-            self.provider_registry.validate_provider(judge)?;
-        }
-        self.validate_orchestration_tools(&tools)?;
-        self.session.push_user(prompt.clone())?;
-
-        let responses = self
-            .collect_provider_responses(&providers, &prompt, "consensus", &tools)
-            .await?;
-        let initial_output = format_labeled_responses(&responses);
-        println!("{initial_output}");
-        self.session.push_assistant(initial_output)?;
-
-        let judge = judge.unwrap_or_else(|| providers[0].clone());
-        let synthesis = self
-            .synthesize_consensus(&judge, &prompt, &responses, "Consensus")
-            .await?;
-        let output = format!("── Consensus ({judge}) ──\n{synthesis}");
-        println!("\n{output}");
-        self.session.push_assistant(output)?;
-        Ok(())
+        let mut ctx = orchestration::OrchestrationCtx {
+            provider_registry: &self.provider_registry,
+            tool_registry: &self.tool_registry,
+            system_prompt: &self.config.system_prompt,
+            cwd: &self.config.cwd,
+            session: &mut self.session,
+        };
+        orchestration::run_consensus(&mut ctx, &prompt, &providers, &judge, &tools).await
     }
 
     pub async fn run_debate(
@@ -357,281 +231,14 @@ impl Agent {
         rounds: usize,
         tools: ToolMode,
     ) -> Result<()> {
-        providers
-            .iter()
-            .try_for_each(|provider| self.provider_registry.validate_provider(provider))?;
-        if let Some(judge) = &judge {
-            self.provider_registry.validate_provider(judge)?;
-        }
-        self.validate_orchestration_tools(&tools)?;
-        self.session.push_user(prompt.clone())?;
-
-        let mut transcript = self
-            .collect_provider_responses(&providers, &prompt, "initial answer", &tools)
-            .await?;
-        let mut output = format!(
-            "── Round 1: Initial Answers ──\n\n{}",
-            format_labeled_responses(&transcript)
-        );
-        println!("{output}");
-
-        for round in 1..=rounds {
-            let debate_prompt = format_debate_round_prompt(&prompt, &transcript, round);
-            let critiques = self
-                .collect_provider_responses(&providers, &debate_prompt, "critique/revision", &tools)
-                .await?;
-            let section = format!(
-                "── Round {}: Critiques/Revisions ──\n\n{}",
-                round + 1,
-                format_labeled_responses(&critiques)
-            );
-            println!("\n{section}");
-            output.push_str("\n\n");
-            output.push_str(&section);
-            transcript.extend(critiques);
-        }
-
-        self.session.push_assistant(output)?;
-
-        let judge = judge.unwrap_or_else(|| providers[0].clone());
-        let synthesis = self
-            .synthesize_consensus(&judge, &prompt, &transcript, "Final Consensus")
-            .await?;
-        let output = format!("── Final Consensus ({judge}) ──\n{synthesis}");
-        println!("\n{output}");
-        self.session.push_assistant(output)?;
-        Ok(())
-    }
-    fn validate_orchestration_tools(&self, tools: &ToolMode) -> Result<()> {
-        match tools {
-            ToolMode::Default | ToolMode::None => Ok(()),
-            ToolMode::AllowList(names) => {
-                let allowed = ["read", "web_search", "shell"];
-                let unsupported: Vec<&str> = names
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|name| !allowed.contains(name))
-                    .collect();
-                if !unsupported.is_empty() {
-                    bail!(
-                        "only read-only evidence tools allowed in orchestration: {}",
-                        unsupported.join(", ")
-                    );
-                }
-                Ok(())
-            }
-        }
-    }
-
-    async fn collect_provider_responses(
-        &self,
-        providers: &[String],
-        prompt: &str,
-        purpose: &str,
-        tools: &ToolMode,
-    ) -> Result<Vec<(String, String)>> {
-        // If tools:none, run a simple single-call per provider (no evidence loop).
-        if matches!(tools, ToolMode::None) {
-            return self
-                .collect_provider_responses_no_tools(providers, prompt, purpose)
-                .await;
-        }
-
-        let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(50);
-
-        let allowed = crate::agent::evidence::allowed_tools(tools);
-        let cache = crate::agent::evidence::shared_cache();
-        let evidence_tool_def = crate::agent::evidence::tool_definition();
-
-        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
-
-        // Run providers in parallel, each with its own evidence loop.
-        let handles: Vec<_> = providers
-            .iter()
-            .map(|provider_name| {
-                let provider_name = provider_name.clone();
-                let provider_registry = self.provider_registry.clone();
-                let tool_registry = self.tool_registry.clone();
-                let system_prompt = self.config.system_prompt.clone();
-                let cwd = self.config.cwd.clone();
-                let cache = cache.clone();
-                let allowed = allowed.clone();
-                let evidence_tool_def = evidence_tool_def.clone();
-                let prompt_text = prompt.to_string();
-
-                tokio::spawn(async move {
-                    let mut req = ProviderRequest {
-                        system_prompt,
-                        messages: vec![messages::Message::User(messages::UserMessage {
-                            content: prompt_text,
-                        })],
-                        tools: vec![evidence_tool_def],
-                    };
-                    let provider_label = provider_name.clone();
-                    let ctx = AgentContext { cwd };
-
-                    for iteration in 0..max_iterations {
-                        let response = provider_registry
-                            .complete_once(&provider_name, req.clone())
-                            .await?;
-
-                        // No tool calls → final answer.
-                        if response.tool_calls.is_empty() {
-                            return Ok::<_, anyhow::Error>((provider_label, response.content));
-                        }
-
-                        // Process each evidence request through the cache.
-                        let mut tool_results: Vec<ToolResult> = Vec::new();
-                        for tc in &response.tool_calls {
-                            if tc.name != "request_evidence" {
-                                tool_results.push(ToolResult {
-                                    content: "Unknown tool. Use request_evidence to request information.".to_string(),
-                                    is_error: true,
-                                });
-                                continue;
-                            }
-
-                            let evidence_tool = tc.arguments.get("tool")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let evidence_args = tc.arguments.get("args")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Object(Default::default()));
-                            let description = tc.arguments.get("description")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-
-                            let label = crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
-                            let cached = cache.lock().expect("evidence cache poisoned").has(evidence_tool, &evidence_args);
-                            let cache_tag = if cached { " (cached)" } else { "" };
-
-                            let result = crate::agent::evidence::execute(
-                                evidence_tool,
-                                &evidence_args,
-                                &allowed,
-                                &cache,
-                                &tool_registry,
-                                &ctx,
-                            )
-                            .await;
-
-                            if result.is_error {
-                                eprintln!("\x1b[90m    {provider_label} ✗ {label}{cache_tag}\x1b[0m");
-                            } else {
-                                let lines = result.content.lines().count();
-                                let bytes = result.content.len();
-                                eprintln!("\x1b[90m    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}\x1b[0m");
-                            }
-
-                            tool_results.push(result);
-                        }
-
-                        // Append tool call + result messages.
-                        // Only include assistant text if non-empty — Anthropic rejects
-                        // empty text blocks ("text content blocks must be non-empty").
-                        use crate::agent::messages::{
-                            AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
-                        };
-                        if !response.content.trim().is_empty() {
-                            req.messages.push(Message::Assistant(AssistantMessage {
-                                content: response.content.clone(),
-                            }));
-                        }
-                        for tc in &response.tool_calls {
-                            req.messages.push(Message::ToolCall(MsgToolCall {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                            }));
-                        }
-                        for (tc, result) in response.tool_calls.iter().zip(tool_results) {
-                            req.messages.push(Message::ToolResult(ToolResultMessage {
-                                tool_call_id: tc.id.clone(),
-                                tool_name: tc.name.clone(),
-                                content: result.content,
-                                is_error: result.is_error,
-                            }));
-                        }
-
-                        if iteration == max_iterations - 1 {
-                            return Ok((provider_label, response.content));
-                        }
-                    }
-
-                    Ok((provider_label, String::new()))
-                })
-            })
-            .collect();
-
-        let results = join_all(handles).await;
-        spinner.stop();
-        results
-            .into_iter()
-            .map(|res| match res {
-                Ok(Ok(v)) => Ok(v),
-                Ok(Err(e)) => Err(e),
-                Err(join_err) => bail!("provider task failed: {join_err}"),
-            })
-            .collect()
-    }
-
-    /// Simple single-call per provider, no tools.
-    async fn collect_provider_responses_no_tools(
-        &self,
-        providers: &[String],
-        prompt: &str,
-        purpose: &str,
-    ) -> Result<Vec<(String, String)>> {
-        let request = ProviderRequest {
-            system_prompt: self.config.system_prompt.clone(),
-            messages: vec![messages::Message::User(messages::UserMessage {
-                content: prompt.to_string(),
-            })],
-            tools: Vec::new(),
+        let mut ctx = orchestration::OrchestrationCtx {
+            provider_registry: &self.provider_registry,
+            tool_registry: &self.tool_registry,
+            system_prompt: &self.config.system_prompt,
+            cwd: &self.config.cwd,
+            session: &mut self.session,
         };
-
-        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
-        let provider_registry = self.provider_registry.clone();
-        let handles: Vec<_> = providers
-            .iter()
-            .map(|provider_name| {
-                let provider_name = provider_name.clone();
-                let provider_registry = provider_registry.clone();
-                let request = request.clone();
-                async move {
-                    let response = provider_registry
-                        .complete_once(&provider_name, request)
-                        .await?;
-                    Ok::<_, anyhow::Error>((provider_name, response.content))
-                }
-            })
-            .collect();
-
-        let results = join_all(handles).await;
-        spinner.stop();
-        results.into_iter().collect()
-    }
-    async fn synthesize_consensus(
-        &self,
-        judge: &str,
-        prompt: &str,
-        responses: &[(String, String)],
-        label: &str,
-    ) -> Result<String> {
-        let content = format_synthesis_prompt(prompt, responses, label);
-        let request = ProviderRequest {
-            system_prompt: self.config.system_prompt.clone(),
-            messages: vec![messages::Message::User(messages::UserMessage { content })],
-            tools: Vec::new(),
-        };
-
-        let spinner = SpinnerGuard::new("synthesizing consensus...");
-        let response = self.provider_registry.complete_once(judge, request).await;
-        spinner.stop();
-        response.map(|response| response.content)
+        orchestration::run_debate(&mut ctx, &prompt, &providers, &judge, rounds, &tools).await
     }
 
     pub async fn run_once_with(
@@ -681,7 +288,6 @@ impl Agent {
                 .await
             {
                 Ok((used_provider, response)) => {
-                    // Persist the provider for subsequent iterations.
                     active_provider = Some(used_provider);
                     response
                 }
@@ -727,13 +333,9 @@ impl Agent {
                 break;
             }
 
-            // Record tool calls in session, then execute in parallel.
-            // Session records must be sequential (JSONL ordering), but execution
-            // can happen concurrently — e.g. two `read` calls at the same time.
             let tool_calls = response.tool_calls;
             let tool_start = Instant::now();
 
-            // Log all tool calls to session first.
             for tc in &tool_calls {
                 self.session.push_tool_call(
                     tc.id.clone(),
@@ -742,10 +344,8 @@ impl Agent {
                 )?;
             }
 
-            // Start a spinner while tools execute.
             let tool_spinner = SpinnerGuard::new("running tools...");
 
-            // Spawn all tool executions as separate tasks.
             let handles: Vec<_> = tool_calls
                 .iter()
                 .map(|tc| {
@@ -759,7 +359,6 @@ impl Agent {
                 })
                 .collect();
 
-            // Await all handles in spawn order — preserves original ordering.
             let results: Vec<_> = join_all(handles)
                 .await
                 .into_iter()
@@ -776,12 +375,10 @@ impl Agent {
                 })
                 .collect();
 
-            // Stop tool spinner before printing results.
             tool_spinner.stop();
 
             let tool_duration = tool_start.elapsed();
 
-            // Log tool execution metrics.
             self.metrics.log(
                 "tool_exec",
                 json!({
@@ -791,7 +388,6 @@ impl Agent {
                 }),
             );
 
-            // Now log results to session and print feedback in order.
             for (tc, result) in tool_calls.iter().zip(results) {
                 let tool_label = format_tool_call(&tc.name, &tc.arguments);
 
