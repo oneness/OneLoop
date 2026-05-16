@@ -1,4 +1,5 @@
 pub mod compaction;
+pub mod evidence;
 pub mod messages;
 pub mod metrics;
 pub mod session;
@@ -109,13 +110,6 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
             format!("bash: {cmd}")
-        }
-        "shell_query" => {
-            let cmd = arguments
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("query: {cmd}")
         }
         "read" => {
             let path = arguments
@@ -408,47 +402,24 @@ impl Agent {
         self.session.push_assistant(output)?;
         Ok(())
     }
-
     fn validate_orchestration_tools(&self, tools: &ToolMode) -> Result<()> {
         match tools {
             ToolMode::Default | ToolMode::None => Ok(()),
             ToolMode::AllowList(names) => {
-                let available = self.tool_registry.names();
+                let allowed = ["read", "web_search", "shell"];
                 let unsupported: Vec<&str> = names
                     .iter()
                     .map(String::as_str)
-                    .filter(|name| !matches!(*name, "read" | "web_search" | "shell_query"))
+                    .filter(|name| !allowed.contains(name))
                     .collect();
                 if !unsupported.is_empty() {
                     bail!(
-                        "only read-only tools allowed in multi-model orchestration: {}",
+                        "only read-only evidence tools allowed in orchestration: {}",
                         unsupported.join(", ")
                     );
                 }
-                let unknown: Vec<&str> = names
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|name| !available.contains(name))
-                    .collect();
-                if !unknown.is_empty() {
-                    bail!("unknown tools: {}", unknown.join(", "));
-                }
                 Ok(())
             }
-        }
-    }
-
-    /// Resolve tool definitions for orchestration modes.
-    /// Default = read + web_search. Explicit tools:none = empty.
-    fn orchestration_tool_definitions(&self, tools: &ToolMode) -> Vec<crate::tools::ToolDefinition> {
-        match tools {
-            ToolMode::Default => self.tool_registry.definitions_for(&[
-                "read".to_string(),
-                "web_search".to_string(),
-                "shell_query".to_string(),
-            ]),
-            ToolMode::None => Vec::new(),
-            ToolMode::AllowList(names) => self.tool_registry.definitions_for(names),
         }
     }
 
@@ -459,27 +430,36 @@ impl Agent {
         purpose: &str,
         tools: &ToolMode,
     ) -> Result<Vec<(String, String)>> {
-        let tool_definitions = self.orchestration_tool_definitions(tools);
+        // If tools:none, run a simple single-call per provider (no evidence loop).
+        if matches!(tools, ToolMode::None) {
+            return self
+                .collect_provider_responses_no_tools(providers, prompt, purpose)
+                .await;
+        }
+
         let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(50);
 
-        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
-        let provider_registry = self.provider_registry.clone();
-        let tool_registry = self.tool_registry.clone();
-        let system_prompt = self.config.system_prompt.clone();
-        let cwd = self.config.cwd.clone();
+        let allowed = crate::agent::evidence::allowed_tools(tools);
+        let cache = crate::agent::evidence::shared_cache();
+        let evidence_tool_def = crate::agent::evidence::tool_definition();
 
+        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
+
+        // Run providers in parallel, each with its own evidence loop.
         let handles: Vec<_> = providers
             .iter()
             .map(|provider_name| {
                 let provider_name = provider_name.clone();
-                let provider_registry = provider_registry.clone();
-                let tool_registry = tool_registry.clone();
-                let system_prompt = system_prompt.clone();
-                let cwd = cwd.clone();
-                let tool_definitions = tool_definitions.clone();
+                let provider_registry = self.provider_registry.clone();
+                let tool_registry = self.tool_registry.clone();
+                let system_prompt = self.config.system_prompt.clone();
+                let cwd = self.config.cwd.clone();
+                let cache = cache.clone();
+                let allowed = allowed.clone();
+                let evidence_tool_def = evidence_tool_def.clone();
                 let prompt_text = prompt.to_string();
                 let max_iterations = max_iterations;
 
@@ -489,9 +469,10 @@ impl Agent {
                         messages: vec![messages::Message::User(messages::UserMessage {
                             content: prompt_text,
                         })],
-                        tools: tool_definitions,
+                        tools: vec![evidence_tool_def],
                     };
                     let provider_label = provider_name.clone();
+                    let ctx = AgentContext { cwd };
 
                     for iteration in 0..max_iterations {
                         let response = provider_registry
@@ -503,54 +484,53 @@ impl Agent {
                             return Ok::<_, anyhow::Error>((provider_label, response.content));
                         }
 
-                        // Execute tool calls in parallel.
-                        let tool_results: Vec<ToolResult> = {
-                            let handles: Vec<_> = response
-                                .tool_calls
-                                .iter()
-                                .map(|tc| {
-                                    let name = tc.name.clone();
-                                    let arguments = tc.arguments.clone();
-                                    let ctx = AgentContext { cwd: cwd.clone() };
-                                    let registry = tool_registry.clone();
-                                    tokio::spawn(async move {
-                                        registry.execute(&name, arguments, &ctx).await
-                                    })
-                                })
-                                .collect();
+                        // Process each evidence request through the cache.
+                        let mut tool_results: Vec<ToolResult> = Vec::new();
+                        for tc in &response.tool_calls {
+                            if tc.name != "request_evidence" {
+                                tool_results.push(ToolResult {
+                                    content: "Unknown tool. Use request_evidence to request information.".to_string(),
+                                    is_error: true,
+                                });
+                                continue;
+                            }
 
-                            join_all(handles)
-                                .await
-                                .into_iter()
-                                .map(|res| match res {
-                                    Ok(Ok(r)) => r,
-                                    Ok(Err(e)) => ToolResult {
-                                        content: format!("Tool execution failed: {e:#}"),
-                                        is_error: true,
-                                    },
-                                    Err(join_err) => ToolResult {
-                                        content: format!("Tool task failed: {join_err}"),
-                                        is_error: true,
-                                    },
-                                })
-                                .collect()
-                        };
+                            let evidence_tool = tc.arguments.get("tool")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let evidence_args = tc.arguments.get("args")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Object(Default::default()));
+                            let description = tc.arguments.get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
 
-                        // Print tool activity.
-                        for (tc, result) in response.tool_calls.iter().zip(&tool_results) {
-                            let label = format_tool_call(&tc.name, &tc.arguments);
+                            let label = crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
+                            let cached = cache.lock().unwrap().has(evidence_tool, &evidence_args);
+                            let cache_tag = if cached { " (cached)" } else { "" };
+
+                            let result = crate::agent::evidence::execute(
+                                evidence_tool,
+                                &evidence_args,
+                                &allowed,
+                                &cache,
+                                &tool_registry,
+                                &ctx,
+                            )
+                            .await;
+
                             if result.is_error {
-                                eprintln!("\x1b[90m    {provider_label} ✗ {label}\x1b[0m");
+                                eprintln!("\x1b[90m    {provider_label} ✗ {label}{cache_tag}\x1b[0m");
                             } else {
                                 let lines = result.content.lines().count();
                                 let bytes = result.content.len();
-                                eprintln!(
-                                    "\x1b[90m    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes)\x1b[0m"
-                                );
+                                eprintln!("\x1b[90m    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}\x1b[0m");
                             }
+
+                            tool_results.push(result);
                         }
 
-                        // Append tool results to conversation for next iteration.
+                        // Append tool call + result messages.
                         use crate::agent::messages::{
                             AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
                         };
@@ -573,7 +553,6 @@ impl Agent {
                             }));
                         }
 
-                        // Last iteration — return whatever content we have.
                         if iteration == max_iterations - 1 {
                             return Ok((provider_label, response.content));
                         }
@@ -586,7 +565,6 @@ impl Agent {
 
         let results = join_all(handles).await;
         spinner.stop();
-        // Flatten JoinError + inner error.
         results
             .into_iter()
             .map(|res| match res {
@@ -597,6 +575,42 @@ impl Agent {
             .collect()
     }
 
+    /// Simple single-call per provider, no tools.
+    async fn collect_provider_responses_no_tools(
+        &self,
+        providers: &[String],
+        prompt: &str,
+        purpose: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let request = ProviderRequest {
+            system_prompt: self.config.system_prompt.clone(),
+            messages: vec![messages::Message::User(messages::UserMessage {
+                content: prompt.to_string(),
+            })],
+            tools: Vec::new(),
+        };
+
+        let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
+        let provider_registry = self.provider_registry.clone();
+        let handles: Vec<_> = providers
+            .iter()
+            .map(|provider_name| {
+                let provider_name = provider_name.clone();
+                let provider_registry = provider_registry.clone();
+                let request = request.clone();
+                async move {
+                    let response = provider_registry
+                        .complete_once(&provider_name, request)
+                        .await?;
+                    Ok::<_, anyhow::Error>((provider_name, response.content))
+                }
+            })
+            .collect();
+
+        let results = join_all(handles).await;
+        spinner.stop();
+        results.into_iter().collect()
+    }
     async fn synthesize_consensus(
         &self,
         judge: &str,
