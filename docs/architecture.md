@@ -80,11 +80,14 @@ Anthropic API-key auth is supported, but not `claude.ai` subscription login.
 ```
 src/
   main.rs           CLI entry point, login command
-  agent.rs          Agent loop, spinner, AgentContext, metrics
+  agent.rs          Agent struct, run_once_with, auto_compact_if_needed
   agent/
+    spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
+    orchestration.rs Consensus, debate, multi-provider evidence loops
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, file discovery
     compaction.rs   Token estimation, tool output stripping, compaction
+    evidence.rs     Evidence cache, safety checks, tool execution
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL, command routing, Ctrl+C handling
   auth.rs           API key storage in ~/.oneloop/auth.json
@@ -105,6 +108,6 @@ src/
     web_search.rs   SearXNG web search
 docs/
   architecture.md   This file
+  overview.html     Executive presentation (browser, space-bar nav)
   style-guide.md    Coding conventions and lint config
-  plugins.md        Plugin system design and example plugins
 ```

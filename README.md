@@ -2,30 +2,11 @@
 
 A tiny, extensible coding agent.
 
-## Philosophy
+## Quick links
 
-- tiny functional core
-- one clear agent loop
-- a few durable primitives
-- everything else built on top
-- terminal first
-- easy to shape to a workflow
-
-## Scope
-
-oneloop starts small:
-
-- multiple providers (Z.AI, OpenAI, Anthropic)
-- `#!` directives for provider routing and multi-model consensus/debate orchestration
-- five tools: read, write, edit, bash, web_search
-- linear append-only session model with `/clear` to rotate
-- AGENTS.md context loading
-- interactive CLI with animated spinner
-- date-based session persistence
-- auto-compaction when context nears limit
-- retry with interactive fallback to alternative providers
-- parallel tool execution
-- per-session metrics logging
+- **[Overview](docs/overview.html)** — executive presentation (open in browser, space-bar to navigate)
+- **[Architecture](docs/architecture.md)** — how the agent loop, providers, tools, and sessions work
+- **[Style guide](docs/style-guide.md)** — coding conventions and lint config
 
 ## Usage
 
@@ -62,7 +43,7 @@ Stores API keys in `~/.oneloop/auth.json`.
 
 `./ol` is a thin wrapper that runs oneloop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `web_search`.
 
-## Current behavior
+## Directives
 
 Directives use `#!directive words#!` followed by the user message:
 
@@ -76,19 +57,6 @@ Tokens between `#!...#!` are space-separated: provider names, mode keywords
 (`consensus`, `debate`), and key:value modifiers (`judge:openai`, `rounds:2`,
 `tools:none`, `format:md`, `format:html`). No `#!` at all means plain prompt
 with default provider.
-- sessions are persisted as JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`
-- `/clear` rotates to a new session file (e.g. `YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`); old sessions are preserved on disk
-- on restart, the latest session file for today is opened automatically
-- an animated braille spinner shows progress while thinking and during tool execution
-- tool results show ✓/✗ with line and byte counts
-- `read` and `bash` truncate large output before it goes back into the model context
-- `AGENTS.md` in the current project directory is loaded as the system prompt
-- `#!provider` routes one prompt to a specific provider
-- `oneloop login <provider>` stores API keys in `~/.oneloop/auth.json`
-- multiple tool calls from a single response execute in parallel
-- auto-compaction triggers at 85% of context window with a structured handoff summary
-- on provider failure, retries up to 3 times then prompts to pick an alternative provider
-- per-session metrics logged to `.oneloop/metrics/<session>.jsonl`
 
 ## Provider selection
 
@@ -101,22 +69,14 @@ Default order:
 Override with environment variables:
 
 - `ONELOOP_PROVIDER=zai|openai|anthropic` — force a specific provider
-- `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override (defaults to `claude-sonnet-4-6`)
-- `ONELOOP_OPENAI_MODEL` — OpenAI model override (defaults to `gpt-5.4`)
-- `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override (defaults to `https://api.openai.com/v1`)
-- `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models (`low`, `medium`, `high`; defaults to `medium`)
-- `ONELOOP_ZAI_MODEL` — Z.AI model override (defaults to `glm-5.1`)
-- `ONELOOP_ZAI_BASE_URL` — Z.AI base URL override (defaults to `https://api.z.ai/api/coding/paas/v4`)
+- `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override
+- `ONELOOP_OPENAI_MODEL` — OpenAI model override
+- `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override
+- `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models
+- `ONELOOP_ZAI_MODEL` — Z.AI model override
+- `ONELOOP_ZAI_BASE_URL` — Z.AI base URL override
 
 Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`ZAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
-
-## Important note on Anthropic login
-
-oneloop does **not** implement `claude.ai` subscription login.
-Anthropic's official docs state that third-party developers are not allowed to offer `claude.ai` login for their own products unless specially approved. So oneloop currently supports Anthropic API-key auth only.
-
-- [Directive and multi-model orchestration spec](docs/directives.md)
-- [Plugin system design](docs/plugins.md)
 
 ## Development
 
