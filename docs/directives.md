@@ -46,8 +46,8 @@ multiple providers are listed, consensus is assumed.
 ```text
 judge:<provider>      Judge for final synthesis (consensus/debate only)
 rounds:<1-3>          Number of critique/revision rounds (debate only)
-tools:none            Disable tools during orchestration (default: read + web_search)
-tools:read,web_search Allow specific tools (the default)
+tools:none            Disable tools during orchestration (default: read + web_search + shell_query)
+tools:read,web_search Allow specific tools (the default includes shell_query too)
 format:md             Request markdown-formatted output
 format:html           Request HTML-formatted output
 ```
@@ -94,9 +94,10 @@ Initial answers → 2 rounds of critique/revision → Anthropic synthesizes.
 #!anthropic openai tools:none#! compare these approaches
 ```
 
-By default, consensus and debate providers get `read` and `web_search` tools
-with a full tool loop — they can read files and search the web to gather
-evidence before answering. Use `tools:none` to disable this.
+By default, consensus and debate providers get `read`, `web_search`, and
+`shell_query` tools with a full tool loop — they can read files, search
+the web, and run read-only shell commands (find, grep, git log, etc.) to
+gather evidence before answering. Use `tools:none` to disable this.
 
 ### Format control
 
@@ -147,7 +148,7 @@ The parser in `src/directives.rs` is a single `parse_prompt()` function:
 
 Consensus and debate modes run a full tool loop for each provider:
 
-1. Send prompt with `read` + `web_search` tool definitions.
+1. Send prompt with `read` + `web_search` + `shell_query` tool definitions.
 2. If the provider responds with tool calls, execute them.
 3. Send tool results back to the provider for the next iteration.
 4. Repeat up to `ONELOOP_ORCHESTRATION_MAX_TOOL_ITERATIONS` (default: 5).

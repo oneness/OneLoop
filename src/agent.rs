@@ -110,6 +110,13 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
                 .unwrap_or("?");
             format!("bash: {cmd}")
         }
+        "shell_query" => {
+            let cmd = arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("query: {cmd}")
+        }
         "read" => {
             let path = arguments
                 .get("path")
@@ -410,7 +417,7 @@ impl Agent {
                 let unsupported: Vec<&str> = names
                     .iter()
                     .map(String::as_str)
-                    .filter(|name| !matches!(*name, "read" | "web_search"))
+                    .filter(|name| !matches!(*name, "read" | "web_search" | "shell_query"))
                     .collect();
                 if !unsupported.is_empty() {
                     bail!(
@@ -438,6 +445,7 @@ impl Agent {
             ToolMode::Default => self.tool_registry.definitions_for(&[
                 "read".to_string(),
                 "web_search".to_string(),
+                "shell_query".to_string(),
             ]),
             ToolMode::None => Vec::new(),
             ToolMode::AllowList(names) => self.tool_registry.definitions_for(names),

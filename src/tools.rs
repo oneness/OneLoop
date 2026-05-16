@@ -1,6 +1,7 @@
 pub mod bash;
 pub mod edit;
 pub mod read;
+pub mod shell_query;
 pub mod web_search;
 pub mod write;
 
@@ -47,6 +48,7 @@ impl ToolRegistry {
                 Arc::new(edit::EditTool),
                 Arc::new(bash::BashTool),
                 Arc::new(web_search::WebSearchTool::new()),
+                Arc::new(shell_query::ShellQueryTool),
             ],
         }
     }
