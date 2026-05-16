@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Principles
+
+Read [`PRINCIPLES.md`](PRINCIPLES.md) first. Every decision should align with those principles. When in doubt, simplicity wins.
+
 ## Environment
 
 - I use NixOS.

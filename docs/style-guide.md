@@ -5,6 +5,7 @@ clean, idiomatic, functional-leaning Rust that is consistent across the codebase
 
 ## References
 
+- [PRINCIPLES.md](../PRINCIPLES.md) — project soul and engineering direction
 - [Apollo Rust Best Practices](https://github.com/apollographql/rust-best-practices)
 - [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
 - [Rust Analyzer Style Guide](https://rust-analyzer.github.io/book/contributing/style.html)
