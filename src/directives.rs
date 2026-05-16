@@ -1,7 +1,9 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "zai"];
 const MAX_ROUNDS: usize = 3;
+
+// ── Public types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptDirectives {
@@ -9,6 +11,7 @@ pub struct PromptDirectives {
     pub judge: Option<String>,
     pub rounds: usize,
     pub tools: ToolMode,
+    pub format: OutputFormat,
     pub prompt: String,
 }
 
@@ -26,287 +29,318 @@ pub enum ToolMode {
     AllowList(Vec<String>),
 }
 
-#[derive(Debug, Default)]
-struct State {
-    mode: Option<RunMode>,
-    judge: Option<String>,
-    rounds: Option<usize>,
-    tools: Option<ToolMode>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputFormat {
+    Plain,
+    Md,
+    Html,
 }
 
-impl State {
-    fn set_mode(&mut self, mode: RunMode) -> Result<()> {
-        if self.mode.is_some() {
-            bail!("incompatible directives: only one mode allowed");
-        }
-        self.mode = Some(mode);
-        Ok(())
-    }
-}
+// ── Parser ────────────────────────────────────────────────────────────
 
+/// Parse user input into a `PromptDirectives`.
+///
+/// Syntax: `#!<directive words>#! <user message>`
+///
+/// - No `#!` at all → default single mode, full input is the body.
+/// - `#!...#!` → directive tokens between the markers, body after closing `#!`.
 pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
     let trimmed = input.trim();
+
+    // No directive marker → plain prompt with default single mode.
     if !trimmed.starts_with("#!") {
         return Ok(PromptDirectives {
             mode: RunMode::Single { provider: None },
             judge: None,
             rounds: 1,
             tools: ToolMode::Default,
+            format: OutputFormat::Plain,
             prompt: trimmed.to_string(),
         });
     }
 
-    let mut state = State::default();
-    let mut body_lines: Vec<String> = Vec::new();
-    let mut in_directives = true;
+    // Find the closing #!.
+    let after_open = &trimmed[2..]; // skip opening "#!"
+    let Some(close_pos) = after_open.find("#!") else {
+        bail!("directive missing closing #! — use: #!<directive words>#! <your message>");
+    };
 
-    for line in trimmed.lines() {
-        let line = line.trim_end();
-        if in_directives && line.starts_with("#!") {
-            if let Some(inline) = parse_directive_line(line, &mut state)? {
-                in_directives = false;
-                body_lines.push(inline);
+    let directive_text = after_open[..close_pos].trim();
+    let body = after_open[close_pos + 2..].trim().to_string();
+
+    if directive_text.is_empty() {
+        bail!("directive between #! ... #! is empty");
+    }
+    if body.is_empty() {
+        bail!("prompt body after #! is empty");
+    }
+
+    let tokens: Vec<&str> = directive_text.split_whitespace().collect();
+
+    // Collect tokens into categories.
+    let mut providers: Vec<String> = Vec::new();
+    let mut mode_name: Option<&str> = None;
+    let mut judge: Option<String> = None;
+    let mut rounds: Option<usize> = None;
+    let mut tools: Option<ToolMode> = None;
+    let mut format: Option<OutputFormat> = None;
+
+    for token in &tokens {
+        // key:value pairs
+        if let Some(kv) = token.strip_prefix("judge:") {
+            if judge.is_some() {
+                bail!("duplicate judge: directive");
             }
-        } else if in_directives && line.trim().is_empty() {
-            continue;
+            let provider = kv.trim().to_string();
+            if provider.is_empty() {
+                bail!("judge: requires a provider name");
+            }
+            judge = Some(provider);
+        } else if let Some(kv) = token.strip_prefix("rounds:") {
+            if rounds.is_some() {
+                bail!("duplicate rounds: directive");
+            }
+            let r: usize = kv
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("rounds: must be a positive integer"))?;
+            if r == 0 || r > MAX_ROUNDS {
+                bail!("rounds: must be between 1 and {MAX_ROUNDS}");
+            }
+            rounds = Some(r);
+        } else if let Some(kv) = token.strip_prefix("tools:") {
+            if tools.is_some() {
+                bail!("duplicate tools: directive");
+            }
+            let val = kv.trim();
+            if val == "none" {
+                tools = Some(ToolMode::None);
+            } else {
+                let names: Vec<String> =
+                    val.split(',').map(|s| s.trim().to_string()).collect();
+                tools = Some(ToolMode::AllowList(names));
+            }
+        } else if let Some(kv) = token.strip_prefix("format:") {
+            if format.is_some() {
+                bail!("duplicate format: directive");
+            }
+            let val = kv.trim();
+            format = Some(match val {
+                "md" | "markdown" => OutputFormat::Md,
+                "html" => OutputFormat::Html,
+                other => bail!("unknown format: {other} (supported: md, html)"),
+            });
+        }
+        // Mode keywords
+        else if *token == "consensus" || *token == "debate" {
+            if mode_name.is_some() {
+                bail!("only one mode (consensus or debate) allowed");
+            }
+            mode_name = Some(token);
+        }
+        // Provider names
+        else if is_known_provider(token) {
+            providers.push(token.to_string());
         } else {
-            in_directives = false;
-            body_lines.push(line.to_string());
+            bail!("unknown directive token: {token}");
         }
     }
 
-    let prompt = body_lines.join("\n").trim().to_string();
-    if prompt.is_empty() {
-        bail!("directive prompt body is empty");
+    // Resolve mode.
+    let mode = resolve_mode(mode_name, providers)?;
+
+    // Cross-validate.
+    let is_multi = matches!(
+        &mode,
+        RunMode::Consensus { .. } | RunMode::Debate { .. }
+    );
+    let is_debate = matches!(&mode, RunMode::Debate { .. });
+
+    if judge.is_some() && !is_multi {
+        bail!("judge: is only valid with consensus or debate mode");
+    }
+    if rounds.is_some() && !is_debate {
+        bail!("rounds: is only valid with debate mode");
     }
 
-    validate(&state)?;
-
     Ok(PromptDirectives {
-        mode: state.mode.unwrap_or(RunMode::Single { provider: None }),
-        judge: state.judge,
-        rounds: state.rounds.unwrap_or(1),
-        tools: state.tools.unwrap_or(ToolMode::Default),
-        prompt,
+        mode,
+        judge,
+        rounds: rounds.unwrap_or(1),
+        tools: tools.unwrap_or(ToolMode::Default),
+        format: format.unwrap_or(OutputFormat::Plain),
+        prompt: body,
     })
 }
 
-/// Split tokens into (known providers, remaining words as inline body).
-fn split_providers(tokens: &[&str]) -> (Vec<String>, Option<String>) {
-    let n = tokens
-        .iter()
-        .take_while(|t| is_known_provider(t))
-        .count();
-    let providers: Vec<String> = tokens[..n].iter().map(ToString::to_string).collect();
-    let body = (tokens.len() > n).then(|| tokens[n..].join(" "));
-    (providers, body)
-}
+fn resolve_mode(mode_name: Option<&str>, providers: Vec<String>) -> Result<RunMode> {
+    match (mode_name, providers.len()) {
+        // Explicit consensus with providers.
+        (Some("consensus"), n) if n >= 2 => Ok(RunMode::Consensus { providers }),
+        (Some("consensus"), _) => bail!("consensus requires at least two provider names"),
 
-/// Join remaining tokens as inline body.
-fn body_from(tokens: &[&str]) -> Option<String> {
-    (!tokens.is_empty()).then(|| tokens.join(" "))
-}
+        // Explicit debate with providers.
+        (Some("debate"), n) if n >= 2 => Ok(RunMode::Debate { providers }),
+        (Some("debate"), _) => bail!("debate requires at least two provider names"),
 
-fn parse_directive_line(line: &str, state: &mut State) -> Result<Option<String>> {
-    let rest = line[2..].trim();
-    if rest.is_empty() {
-        bail!("empty directive");
+        // No explicit mode, multiple providers → default to consensus.
+        (None, n) if n >= 2 => Ok(RunMode::Consensus { providers }),
+
+        // No explicit mode, single provider → single mode.
+        (None, 1) => Ok(RunMode::Single {
+            provider: providers.into_iter().next(),
+        }),
+
+        // No mode, no providers → just a plain prompt (single mode, no provider override).
+        (None, 0) => Ok(RunMode::Single { provider: None }),
+
+        // Mode with no providers is nonsensical — but shouldn't reach here.
+        _ => bail!("invalid directive combination"),
     }
-
-    let mut parts = rest.split_whitespace();
-    let Some(name) = parts.next() else {
-        bail!("empty directive");
-    };
-    let args: Vec<&str> = parts.collect();
-
-    match name {
-        // Explicit #!provider — first arg is provider, rest is body
-        "provider" => {
-            let provider = args
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("#!provider requires a provider name"))?;
-            state.set_mode(RunMode::Single {
-                provider: Some(provider.to_string()),
-            })?;
-            Ok(body_from(&args[1..]))
-        }
-
-        // Explicit #!consensus / #!debate — greedily collect providers from args
-        "consensus" | "debate" => {
-            let (providers, body) = split_providers(&args);
-            if providers.len() < 2 {
-                bail!("#!{name} requires at least two provider names");
-            }
-            state.set_mode(if name == "consensus" {
-                RunMode::Consensus { providers }
-            } else {
-                RunMode::Debate { providers }
-            })?;
-            Ok(body)
-        }
-
-        // Provider shorthand — greedy providers from full token list
-        p if is_known_provider(p) => {
-            let tokens: Vec<&str> = std::iter::once(p).chain(args).collect();
-            let (providers, body) = split_providers(&tokens);
-            state.set_mode(if providers.len() == 1 {
-                RunMode::Single {
-                    provider: providers.into_iter().next(),
-                }
-            } else {
-                RunMode::Consensus { providers }
-            })?;
-            Ok(body)
-        }
-
-        "judge" => match args.as_slice() {
-            [p] => {
-                state.judge = Some(p.to_string());
-                Ok(None)
-            }
-            [] => bail!("#!judge requires a provider name"),
-            _ => bail!("#!judge accepts exactly one provider name"),
-        },
-
-        "rounds" => match args.as_slice() {
-            [n] => {
-                let r = n
-                    .parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("#!rounds must be a positive integer"))?;
-                if r == 0 || r > MAX_ROUNDS {
-                    bail!("#!rounds must be between 1 and {MAX_ROUNDS}");
-                }
-                state.rounds = Some(r);
-                Ok(None)
-            }
-            [] => bail!("#!rounds requires a positive integer"),
-            _ => bail!("#!rounds accepts exactly one positive integer"),
-        },
-
-        "tools" => {
-            if args.is_empty() {
-                bail!("#!tools requires `none` or a list of tool names");
-            }
-            state.tools = Some(if args == ["none"] {
-                ToolMode::None
-            } else {
-                ToolMode::AllowList(args.iter().map(ToString::to_string).collect())
-            });
-            Ok(None)
-        }
-
-        other => bail!("unknown directive: {other}"),
-    }
-}
-
-fn validate(state: &State) -> Result<()> {
-    let is_multi = matches!(
-        state.mode,
-        Some(RunMode::Consensus { .. }) | Some(RunMode::Debate { .. })
-    );
-    let is_debate = matches!(state.mode, Some(RunMode::Debate { .. }));
-
-    if state.judge.is_some() && !is_multi {
-        bail!("#!judge is only valid with #!consensus or #!debate");
-    }
-    if state.rounds.is_some() && !is_debate {
-        bail!("#!rounds is only valid with #!debate");
-    }
-    Ok(())
 }
 
 fn is_known_provider(value: &str) -> bool {
     KNOWN_PROVIDERS.contains(&value)
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
-    use super::{PromptDirectives, RunMode, ToolMode, parse_prompt};
+    use super::{OutputFormat, PromptDirectives, RunMode, ToolMode, parse_prompt};
 
     #[test]
     fn plain_prompt_uses_default_single_mode() {
         let got = parsed("hello");
         assert_eq!(got.mode, RunMode::Single { provider: None });
+        assert_eq!(got.prompt, "hello");
     }
 
     #[test]
-    fn provider_directive_routes_single_mode() {
-        let got = parsed("#!provider anthropic\nhello");
+    fn single_provider_shorthand() {
+        let got = parsed("#!anthropic#! explain this");
         assert_eq!(
             got.mode,
             RunMode::Single {
                 provider: Some("anthropic".to_string())
             }
         );
+        assert_eq!(got.prompt, "explain this");
     }
 
     #[test]
-    fn provider_directive_supports_inline_body() {
-        let got = parsed("#!provider anthropic hello there");
-        assert_eq!(got.prompt, "hello there");
-    }
-
-    #[test]
-    fn consensus_directive_collects_providers() {
-        let got = parsed("#!consensus anthropic openai\nhello");
+    fn multi_provider_defaults_to_consensus() {
+        let got = parsed("#!anthropic openai#! should we do this");
         assert_eq!(
             got.mode,
             RunMode::Consensus {
                 providers: vec!["anthropic".to_string(), "openai".to_string()]
             }
         );
-    }
-
-    #[test]
-    fn consensus_directive_supports_inline_body() {
-        let got = parsed("#!consensus anthropic openai should we do this");
         assert_eq!(got.prompt, "should we do this");
     }
 
     #[test]
-    fn debate_directive_uses_rounds() {
-        let got = parsed("#!debate anthropic openai\n#!rounds 2\nhello");
-        assert_eq!(got.rounds, 2);
+    fn explicit_consensus_with_judge() {
+        let got = parsed("#!consensus anthropic openai judge:openai#! hello");
+        assert_eq!(
+            got.mode,
+            RunMode::Consensus {
+                providers: vec!["anthropic".to_string(), "openai".to_string()]
+            }
+        );
+        assert_eq!(got.judge, Some("openai".to_string()));
     }
 
     #[test]
-    fn tools_none_is_parsed() {
-        let got = parsed("#!consensus anthropic openai\n#!tools none\nhello");
+    fn debate_with_rounds_and_judge() {
+        let got = parsed("#!debate anthropic openai zai rounds:2 judge:anthropic#! hello");
+        assert_eq!(
+            got.mode,
+            RunMode::Debate {
+                providers: vec![
+                    "anthropic".to_string(),
+                    "openai".to_string(),
+                    "zai".to_string()
+                ]
+            }
+        );
+        assert_eq!(got.rounds, 2);
+        assert_eq!(got.judge, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn tools_none() {
+        let got = parsed("#!consensus anthropic openai tools:none#! hello");
         assert_eq!(got.tools, ToolMode::None);
     }
 
     #[test]
+    fn tools_allow_list() {
+        let got = parsed("#!consensus anthropic openai tools:read,web_search#! hello");
+        assert_eq!(
+            got.tools,
+            ToolMode::AllowList(vec![
+                "read".to_string(),
+                "web_search".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn format_md() {
+        let got = parsed("#!anthropic format:md#! summarize this");
+        assert_eq!(got.format, OutputFormat::Md);
+    }
+
+    #[test]
+    fn format_html() {
+        let got = parsed("#!anthropic format:html#! summarize this");
+        assert_eq!(got.format, OutputFormat::Html);
+    }
+
+    #[test]
     fn incompatible_modes_fail() {
-        let got = parse_prompt("#!provider anthropic\n#!consensus anthropic openai\nhello");
+        let got = parse_prompt("#!consensus debate anthropic openai#! hello");
         assert!(got.is_err());
     }
 
     #[test]
-    fn provider_shorthand_routes_single_provider() {
-        let got = parsed("#!anthropic hello");
-        assert_eq!(
-            got.mode,
-            RunMode::Single {
-                provider: Some("anthropic".to_string())
-            }
-        );
+    fn judge_on_single_provider_fails() {
+        let got = parse_prompt("#!anthropic judge:openai#! hello");
+        assert!(got.is_err());
     }
 
     #[test]
-    fn provider_shorthand_routes_multiple_providers_to_consensus() {
-        let got = parsed("#!anthropic openai should we do this");
-        assert_eq!(
-            got.mode,
-            RunMode::Consensus {
-                providers: vec!["anthropic".to_string(), "openai".to_string()]
-            }
-        );
+    fn rounds_on_consensus_fails() {
+        let got = parse_prompt("#!consensus anthropic openai rounds:2#! hello");
+        assert!(got.is_err());
     }
 
     #[test]
-    fn provider_shorthand_consensus_preserves_inline_body() {
-        let got = parsed("#!anthropic openai should we do this");
-        assert_eq!(got.prompt, "should we do this");
+    fn missing_close_marker_fails() {
+        let got = parse_prompt("#!anthropic hello");
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn empty_directive_fails() {
+        let got = parse_prompt("#!#!#! hello");
+        // "!" between markers is an unknown token
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn empty_body_fails() {
+        let got = parse_prompt("#!anthropic#!");
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn no_providers_no_mode_is_plain() {
+        let got = parsed("#!format:md#! summarize this file");
+        assert_eq!(got.mode, RunMode::Single { provider: None });
+        assert_eq!(got.format, OutputFormat::Md);
     }
 
     fn parsed(input: &str) -> PromptDirectives {

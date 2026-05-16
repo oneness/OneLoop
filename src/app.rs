@@ -1,7 +1,7 @@
 use std::io::{self, Write as IoWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::{
     agent::Agent,
@@ -26,41 +26,13 @@ pub fn clear_stop_requested() {
     STOP_REQUESTED.store(false, Ordering::Relaxed);
 }
 
-/// Parse interactive commands. Returns (command, rest_of_input) or None if it's not a command.
+/// Parse interactive commands. Returns Some(command) or None if it's not a command.
 fn parse_command(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if trimmed == "/clear" {
         return Some("clear");
     }
     None
-}
-
-fn read_directive_body(first_line: &str) -> Result<String> {
-    eprintln!(
-        "\x1b[90m  directive needs a prompt body. enter body lines, then submit an empty line.\x1b[0m"
-    );
-
-    let mut lines = vec![first_line.to_string()];
-    loop {
-        print!("· ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        let bytes = io::stdin()
-            .read_line(&mut input)
-            .context("failed to read directive body")?;
-        if bytes == 0 {
-            break;
-        }
-
-        let line = input.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        lines.push(line.to_string());
-    }
-
-    Ok(lines.join("\n"))
 }
 
 fn print_directive_summary(directives: &PromptDirectives) {
@@ -164,18 +136,12 @@ impl App {
                                 continue;
                             }
 
-                            let line = if line.starts_with("#!") && parse_prompt(&line).is_err() {
-                                read_directive_body(&line)?
-                            } else {
-                                line
-                            };
-
                             let directives = match parse_prompt(&line) {
                                 Ok(directives) => directives,
                                 Err(e) => {
                                     eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
                                     println!(
-                                        "\x1b[90m  hint: add a prompt after the directive, e.g. `#!consensus anthropic openai Should we do X?`\x1b[0m"
+                                        "\x1b[90m  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file\x1b[0m"
                                     );
                                     println!();
                                     continue;

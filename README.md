@@ -64,11 +64,18 @@ Stores API keys in `~/.oneloop/auth.json`.
 
 ## Current behavior
 
-- `#!<provider>` is shorthand for `#!provider <provider>`
-- `#!<provider> <provider>...` is shorthand for `#!consensus <provider> <provider>...`
-- `#!provider <provider>` routes one prompt to a specific provider
-- `#!consensus <provider> <provider>...` asks multiple providers in parallel and synthesizes an answer
-- `#!debate <provider> <provider>...` runs critique/revision rounds before final synthesis
+Directives use `#!directive words#!` followed by the user message:
+
+- `#!anthropic#! explain this file` — route to Anthropic
+- `#!anthropic openai#! should we do X?` — consensus (2+ providers defaults to consensus)
+- `#!consensus anthropic openai zai judge:openai#! question` — explicit consensus with judge
+- `#!debate anthropic openai rounds:2 judge:anthropic#! question` — debate with 2 rounds
+- `#!anthropic format:md#! summarize` — single provider with markdown output
+
+Tokens between `#!...#!` are space-separated: provider names, mode keywords
+(`consensus`, `debate`), and key:value modifiers (`judge:openai`, `rounds:2`,
+`tools:none`, `format:md`, `format:html`). No `#!` at all means plain prompt
+with default provider.
 - sessions are persisted as JSONL at `.oneloop/sessions/YYYY-MM-DD.jsonl`
 - `/clear` rotates to a new session file (e.g. `YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`); old sessions are preserved on disk
 - on restart, the latest session file for today is opened automatically
