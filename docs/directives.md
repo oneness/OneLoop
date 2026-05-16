@@ -46,8 +46,8 @@ multiple providers are listed, consensus is assumed.
 ```text
 judge:<provider>      Judge for final synthesis (consensus/debate only)
 rounds:<1-3>          Number of critique/revision rounds (debate only)
-tools:none            No tools during orchestration
-tools:read,web_search Allow specific tools
+tools:none            Disable tools during orchestration (default: read + web_search)
+tools:read,web_search Allow specific tools (the default)
 format:md             Request markdown-formatted output
 format:html           Request HTML-formatted output
 ```
@@ -88,11 +88,15 @@ All three answer independently. OpenAI writes the final synthesis.
 
 Initial answers → 2 rounds of critique/revision → Anthropic synthesizes.
 
-### With tools
+### With tools disabled
 
 ```text
 #!anthropic openai tools:none#! compare these approaches
 ```
+
+By default, consensus and debate providers get `read` and `web_search` tools
+with a full tool loop — they can read files and search the web to gather
+evidence before answering. Use `tools:none` to disable this.
 
 ### Format control
 
@@ -138,3 +142,16 @@ The parser in `src/directives.rs` is a single `parse_prompt()` function:
 5. Resolve mode from providers + explicit keyword.
 6. Validate cross-constraints.
 7. Return `PromptDirectives` struct.
+
+### Tool loop in orchestration
+
+Consensus and debate modes run a full tool loop for each provider:
+
+1. Send prompt with `read` + `web_search` tool definitions.
+2. If the provider responds with tool calls, execute them.
+3. Send tool results back to the provider for the next iteration.
+4. Repeat up to `ONELOOP_ORCHESTRATION_MAX_TOOL_ITERATIONS` (default: 5).
+5. When the provider responds with no tool calls, that's the final answer.
+
+This ensures providers can read files and search the web to ground their
+answers in real evidence instead of hallucinating context.

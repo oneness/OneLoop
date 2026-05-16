@@ -9,6 +9,7 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use futures::future::join_all;
 use serde_json::json;
+use std::sync::Arc;
 use std::env;
 
 use crate::{
@@ -169,7 +170,7 @@ fn format_debate_round_prompt(
 
 pub struct Agent {
     config: Config,
-    provider_registry: ProviderRegistry,
+    provider_registry: Arc<ProviderRegistry>,
     tool_registry: ToolRegistry,
     session: session::Session,
     metrics: metrics::Metrics,
@@ -185,7 +186,7 @@ impl Agent {
         let metrics = metrics::Metrics::from_session_path(session.path())?;
         Ok(Self {
             config,
-            provider_registry,
+            provider_registry: Arc::new(provider_registry),
             tool_registry,
             session,
             metrics,
@@ -413,7 +414,7 @@ impl Agent {
                     .collect();
                 if !unsupported.is_empty() {
                     bail!(
-                        "unsupported tools for multi-model orchestration: {}",
+                        "only read-only tools allowed in multi-model orchestration: {}",
                         unsupported.join(", ")
                     );
                 }
@@ -430,6 +431,19 @@ impl Agent {
         }
     }
 
+    /// Resolve tool definitions for orchestration modes.
+    /// Default = read + web_search. Explicit tools:none = empty.
+    fn orchestration_tool_definitions(&self, tools: &ToolMode) -> Vec<crate::tools::ToolDefinition> {
+        match tools {
+            ToolMode::Default => self.tool_registry.definitions_for(&[
+                "read".to_string(),
+                "web_search".to_string(),
+            ]),
+            ToolMode::None => Vec::new(),
+            ToolMode::AllowList(names) => self.tool_registry.definitions_for(names),
+        }
+    }
+
     async fn collect_provider_responses(
         &self,
         providers: &[String],
@@ -437,38 +451,142 @@ impl Agent {
         purpose: &str,
         tools: &ToolMode,
     ) -> Result<Vec<(String, String)>> {
-        let messages = vec![messages::Message::User(messages::UserMessage {
-            content: prompt.to_string(),
-        })];
-        let tool_definitions = match tools {
-            ToolMode::Default | ToolMode::None => Vec::new(),
-            ToolMode::AllowList(names) => self.tool_registry.definitions_for(names),
-        };
-        let request = ProviderRequest {
-            system_prompt: self.config.system_prompt.clone(),
-            messages,
-            tools: tool_definitions,
-        };
+        let tool_definitions = self.orchestration_tool_definitions(tools);
+        let max_tool_iterations: usize = env::var("ONELOOP_ORCHESTRATION_MAX_TOOL_ITERATIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
 
         let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
+        let provider_registry = self.provider_registry.clone();
+        let tool_registry = self.tool_registry.clone();
+        let system_prompt = self.config.system_prompt.clone();
+        let cwd = self.config.cwd.clone();
+
         let handles: Vec<_> = providers
             .iter()
-            .map(|provider| {
-                let provider = provider.clone();
-                let request = request.clone();
-                async move {
-                    let response = self
-                        .provider_registry
-                        .complete_once(&provider, request)
-                        .await?;
-                    Ok::<_, anyhow::Error>((provider, response.content))
-                }
+            .map(|provider_name| {
+                let provider_name = provider_name.clone();
+                let provider_registry = provider_registry.clone();
+                let tool_registry = tool_registry.clone();
+                let system_prompt = system_prompt.clone();
+                let cwd = cwd.clone();
+                let tool_definitions = tool_definitions.clone();
+                let prompt_text = prompt.to_string();
+                let max_iterations = max_tool_iterations;
+
+                tokio::spawn(async move {
+                    let mut req = ProviderRequest {
+                        system_prompt,
+                        messages: vec![messages::Message::User(messages::UserMessage {
+                            content: prompt_text,
+                        })],
+                        tools: tool_definitions,
+                    };
+                    let provider_label = provider_name.clone();
+
+                    for iteration in 0..max_iterations {
+                        let response = provider_registry
+                            .complete_once(&provider_name, req.clone())
+                            .await?;
+
+                        // No tool calls → final answer.
+                        if response.tool_calls.is_empty() {
+                            return Ok::<_, anyhow::Error>((provider_label, response.content));
+                        }
+
+                        // Execute tool calls in parallel.
+                        let tool_results: Vec<ToolResult> = {
+                            let handles: Vec<_> = response
+                                .tool_calls
+                                .iter()
+                                .map(|tc| {
+                                    let name = tc.name.clone();
+                                    let arguments = tc.arguments.clone();
+                                    let ctx = AgentContext { cwd: cwd.clone() };
+                                    let registry = tool_registry.clone();
+                                    tokio::spawn(async move {
+                                        registry.execute(&name, arguments, &ctx).await
+                                    })
+                                })
+                                .collect();
+
+                            join_all(handles)
+                                .await
+                                .into_iter()
+                                .map(|res| match res {
+                                    Ok(Ok(r)) => r,
+                                    Ok(Err(e)) => ToolResult {
+                                        content: format!("Tool execution failed: {e:#}"),
+                                        is_error: true,
+                                    },
+                                    Err(join_err) => ToolResult {
+                                        content: format!("Tool task failed: {join_err}"),
+                                        is_error: true,
+                                    },
+                                })
+                                .collect()
+                        };
+
+                        // Print tool activity.
+                        for (tc, result) in response.tool_calls.iter().zip(&tool_results) {
+                            let label = format_tool_call(&tc.name, &tc.arguments);
+                            if result.is_error {
+                                eprintln!("\x1b[90m    {provider_label} ✗ {label}\x1b[0m");
+                            } else {
+                                let lines = result.content.lines().count();
+                                let bytes = result.content.len();
+                                eprintln!(
+                                    "\x1b[90m    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes)\x1b[0m"
+                                );
+                            }
+                        }
+
+                        // Append tool results to conversation for next iteration.
+                        use crate::agent::messages::{
+                            AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
+                        };
+                        req.messages.push(Message::Assistant(AssistantMessage {
+                            content: response.content.clone(),
+                        }));
+                        for tc in &response.tool_calls {
+                            req.messages.push(Message::ToolCall(MsgToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                            }));
+                        }
+                        for (tc, result) in response.tool_calls.iter().zip(tool_results) {
+                            req.messages.push(Message::ToolResult(ToolResultMessage {
+                                tool_call_id: tc.id.clone(),
+                                tool_name: tc.name.clone(),
+                                content: result.content,
+                                is_error: result.is_error,
+                            }));
+                        }
+
+                        // Last iteration — return whatever content we have.
+                        if iteration == max_iterations - 1 {
+                            return Ok((provider_label, response.content));
+                        }
+                    }
+
+                    Ok((provider_label, String::new()))
+                })
             })
             .collect();
 
         let results = join_all(handles).await;
         spinner.stop();
-        results.into_iter().collect()
+        // Flatten JoinError + inner error.
+        results
+            .into_iter()
+            .map(|res| match res {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(e)) => Err(e),
+                Err(join_err) => bail!("provider task failed: {join_err}"),
+            })
+            .collect()
     }
 
     async fn synthesize_consensus(

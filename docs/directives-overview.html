@@ -373,9 +373,10 @@
     <div class="syntax-row">
       <div class="input">#!anthropic openai tools:none#! compare these approaches</div>
       <div class="desc">
-        <strong>No tools.</strong>
-        Providers answer from reasoning alone. Use <code>tools:read,web_search</code>
-        to allow specific tools.
+        <strong>Explicit no tools.</strong>
+        By default consensus/debate providers get <code>read</code> and
+        <code>web_search</code> so they can gather evidence. Use
+        <code>tools:none</code> to disable.
       </div>
     </div>
 
@@ -405,7 +406,7 @@
       <tr><td><code>debate</code></td><td>Any (requires 2+ providers)</td><td>—</td></tr>
       <tr><td><code>judge:&lt;provider&gt;</code></td><td>consensus or debate</td><td>First listed provider</td></tr>
       <tr><td><code>rounds:&lt;1-3&gt;</code></td><td>debate only</td><td>1</td></tr>
-      <tr><td><code>tools:none</code></td><td>consensus or debate</td><td>none</td></tr>
+      <tr><td><code>tools:none</code></td><td>consensus or debate</td><td><strong>read + web_search</strong></td></tr>
       <tr><td><code>tools:read,web_search</code></td><td>consensus or debate</td><td>—</td></tr>
       <tr><td><code>format:md</code></td><td>Any</td><td>plain</td></tr>
       <tr><td><code>format:html</code></td><td>Any</td><td>plain</td></tr>
@@ -484,8 +485,8 @@
       <tr>
         <td><strong>Tool loop</strong></td>
         <td>Full (read, write, edit, bash, web_search)</td>
-        <td>None</td>
-        <td>None</td>
+        <td>read + web_search (evidence gathering)</td>
+        <td>read + web_search (evidence gathering)</td>
       </tr>
       <tr>
         <td><strong>Rounds</strong></td>
