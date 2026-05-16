@@ -1,5 +1,3 @@
-use std::fs;
-
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -49,7 +47,9 @@ impl Tool for ReadTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        if !path.exists() {
+        if !tokio::fs::try_exists(&path).await.with_context(|| {
+            format!("failed to check file existence: {}", path.display())
+        })? {
             return Ok(ToolResult {
                 content: format!(
                     "file not found: {}\nUse `bash` with `find` or `grep` to search for it, e.g.: find . -name \"*{}*\" -type f",
@@ -62,15 +62,12 @@ impl Tool for ReadTool {
             });
         }
 
-        let content = fs::read_to_string(&path)
+        let content = tokio::fs::read_to_string(&path)
+            .await
             .with_context(|| format!("failed to read file: {}", path.display()))?;
 
         let truncated = truncate_head(&content, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES);
-        let notice = if truncated.truncated {
-            Some(truncation_notice(&truncated))
-        } else {
-            None
-        };
+        let notice = truncated.truncated.then(|| truncation_notice(&truncated));
         let mut final_content = truncated.content;
         if let Some(notice) = notice {
             if !final_content.ends_with('\n') && !final_content.is_empty() {

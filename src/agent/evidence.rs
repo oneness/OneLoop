@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, LazyLock};
 
 use serde_json::{Value, json};
 
@@ -140,7 +140,7 @@ pub async fn execute(
                 "blocked: '{}' is not available in this orchestration. \
                  Allowed tools: {}. Adjust your request.",
                 evidence_tool,
-                allowed.iter().cloned().collect::<Vec<_>>().join(", ")
+                allowed.iter().copied().collect::<Vec<_>>().join(", ")
             ),
             is_error: true,
         };
@@ -257,101 +257,29 @@ async fn execute_inner(
 
 // ── Shell safety ──────────────────────────────────────────────────────
 
-const SAFE_COMMANDS: &[&str] = &[
-    "cat",
-    "head",
-    "tail",
-    "less",
-    "wc",
-    "file",
-    "stat",
-    "ls",
-    "tree",
-    "du",
-    "df",
-    "find",
-    "grep",
-    "rg",
-    "ag",
-    "ack",
-    "fd",
-    "which",
-    "type",
-    "git",
-    "sort",
-    "uniq",
-    "cut",
-    "tr",
-    "awk",
-    "sed",
-    "jq",
-    "yq",
-    "xargs",
-    "echo",
-    "printf",
-    "date",
-    "uname",
-    "hostname",
-    "whoami",
-    "env",
-    "printenv",
-    "pwd",
-    "diff",
-    "comm",
-    "paste",
-    "tee",
-    "column",
-    "fmt",
-    "fold",
-    "expand",
-    "unexpand",
-    "basename",
-    "dirname",
-    "realpath",
-    "readlink",
-    "test",
-    "[",
-    "nl",
-    "od",
-    "hexdump",
-    "xxd",
-    "strings",
-    "md5sum",
-    "sha256sum",
-    "shasum",
-    "cksum",
-];
+static SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "cat", "head", "tail", "less", "wc", "file", "stat", "ls", "tree", "du", "df",
+        "find", "grep", "rg", "ag", "ack", "fd", "which", "type", "git",
+        "sort", "uniq", "cut", "tr", "awk", "sed", "jq", "yq", "xargs",
+        "echo", "printf", "date", "uname", "hostname", "whoami", "env", "printenv", "pwd",
+        "diff", "comm", "paste", "tee", "column", "fmt", "fold", "expand", "unexpand",
+        "basename", "dirname", "realpath", "readlink", "test", "[",
+        "nl", "od", "hexdump", "xxd", "strings",
+        "md5sum", "sha256sum", "shasum", "cksum",
+    ])
+});
 
-const GIT_READ_ONLY: &[&str] = &[
-    "log",
-    "diff",
-    "show",
-    "status",
-    "branch",
-    "tag",
-    "remote",
-    "stash",
-    "blame",
-    "shortlog",
-    "describe",
-    "reflog",
-    "ls-files",
-    "ls-tree",
-    "ls-remote",
-    "rev-list",
-    "rev-parse",
-    "name-rev",
-    "merge-base",
-    "cherry",
-    "grep",
-    "cat-file",
-    "show-ref",
-    "for-each-ref",
-    "count-objects",
-    "verify-pack",
-    "fsck",
-    "whatchanged",
-];
+static GIT_READ_ONLY: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "log", "diff", "show", "status", "branch", "tag", "remote", "stash",
+        "blame", "shortlog", "describe", "reflog",
+        "ls-files", "ls-tree", "ls-remote",
+        "rev-list", "rev-parse", "name-rev", "merge-base", "cherry",
+        "grep", "cat-file", "show-ref", "for-each-ref",
+        "count-objects", "verify-pack", "fsck", "whatchanged",
+    ])
+});
 
 fn base_command(command: &str) -> &str {
     command.split_whitespace().next().unwrap_or("")
@@ -364,7 +292,7 @@ pub fn is_safe_shell_command(command: &str) -> bool {
         let sub = parts.iter().skip(1).find(|p| !p.starts_with('-'));
         return sub.is_some_and(|s| GIT_READ_ONLY.contains(s));
     }
-    SAFE_COMMANDS.contains(&base)
+    SAFE_COMMANDS.contains(base)
 }
 
 // ── Format helper ─────────────────────────────────────────────────────

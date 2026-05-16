@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -54,7 +54,7 @@ impl Tool for WriteTool {
         if let Some(parent) = path.parent()
             && parent != Path::new("")
         {
-            fs::create_dir_all(parent).with_context(|| {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
                 format!(
                     "failed to create parent directories for: {}",
                     path.display()
@@ -62,7 +62,8 @@ impl Tool for WriteTool {
             })?;
         }
 
-        fs::write(&path, input.content)
+        tokio::fs::write(&path, input.content)
+            .await
             .with_context(|| format!("failed to write file: {}", path.display()))?;
 
         Ok(ToolResult {

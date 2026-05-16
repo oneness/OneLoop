@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -10,13 +12,18 @@ use super::{Tool, ToolResult};
 
 pub struct WebSearchTool {
     base_url: String,
+    client: reqwest::Client,
 }
 
 impl WebSearchTool {
     pub fn new() -> Self {
         let base_url = std::env::var("ONELOOP_SEARX_URL")
             .unwrap_or_else(|_| "http://localhost:8080".to_string());
-        Self { base_url }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("failed to build web search HTTP client");
+        Self { base_url, client }
     }
 }
 
@@ -48,6 +55,8 @@ struct SearxResult {
     #[serde(default)]
     engines: Vec<String>,
 }
+
+static WEB_SEARCH_USER_AGENT: LazyLock<String> = LazyLock::new(|| "oneloop/0.1".to_string());
 
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -81,20 +90,13 @@ impl Tool for WebSearchTool {
             "invalid web_search input; expected { query: string, max_results?: number }",
         )?;
 
-        let url = format!(
-            "{}/search?q={}&format=json",
-            self.base_url.trim_end_matches('/'),
-            urlencoding::encode(&input.query)
-        );
+        let url = format!("{}/search", self.base_url.trim_end_matches('/'));
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .context("failed to build HTTP client for web search")?;
-
-        let response = client
-            .get(&url)
-            .header("User-Agent", "oneloop/0.1")
+        let response = self
+            .client
+            .get(url)
+            .query(&[("q", input.query.as_str()), ("format", "json")])
+            .header("User-Agent", WEB_SEARCH_USER_AGENT.as_str())
             .send()
             .await
             .with_context(|| format!("web search request failed for: {}", input.query))?;

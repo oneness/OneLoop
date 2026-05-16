@@ -101,11 +101,7 @@ impl Tool for BashTool {
         }
 
         let truncated = truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES);
-        let notice = if truncated.truncated {
-            Some(truncation_notice(&truncated))
-        } else {
-            None
-        };
+        let notice = truncated.truncated.then(|| truncation_notice(&truncated));
         let mut final_content = truncated.content;
         if let Some(notice) = notice {
             if !final_content.ends_with('\n') && !final_content.is_empty() {

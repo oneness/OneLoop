@@ -148,8 +148,7 @@ impl Provider for OpenAIProvider {
                         "type": "function_call",
                         "call_id": tool_call.id,
                         "name": tool_call.name,
-                        "arguments": serde_json::to_string(&tool_call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string())
+                        "arguments": tool_call.arguments.to_string()
                     }));
                 }
                 Message::ToolResult(tool_result) => {
@@ -189,7 +188,7 @@ impl Provider for OpenAIProvider {
         let response = self
             .client
             .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {api_key}", api_key = self.api_key))
             .json(&body)
             .send()
             .await

@@ -1,5 +1,3 @@
-use std::fs;
-
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -57,11 +55,14 @@ impl Tool for EditTool {
         let relative_path = input.path.trim_start_matches('@');
         let path = ctx.cwd.join(relative_path);
 
-        if !path.exists() {
+        if !tokio::fs::try_exists(&path).await.with_context(|| {
+            format!("failed to check file existence: {}", path.display())
+        })? {
             return Err(anyhow!("file does not exist: {}", path.display()));
         }
 
-        let content = fs::read_to_string(&path)
+        let content = tokio::fs::read_to_string(&path)
+            .await
             .with_context(|| format!("failed to read file: {}", path.display()))?;
 
         let occurrences = content.matches(&input.old_text).count();
@@ -70,14 +71,14 @@ impl Tool for EditTool {
         }
         if occurrences > 1 {
             return Err(anyhow!(
-                "old_text is not unique in file: {} ({} matches)",
-                path.display(),
-                occurrences
+                "old_text is not unique in file: {} ({occurrences} matches)",
+                path.display()
             ));
         }
 
         let updated = content.replacen(&input.old_text, &input.new_text, 1);
-        fs::write(&path, updated)
+        tokio::fs::write(&path, updated)
+            .await
             .with_context(|| format!("failed to write edited file: {}", path.display()))?;
 
         Ok(ToolResult {

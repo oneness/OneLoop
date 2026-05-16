@@ -138,7 +138,7 @@ impl Provider for ZaiProvider {
         let response = self
             .client
             .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {api_key}", api_key = self.api_key))
             .json(&body)
             .send()
             .await
@@ -220,10 +220,7 @@ fn to_zai_messages(messages: Vec<Message>) -> Vec<ZaiMessage> {
                     r#type: "function".to_string(),
                     function: ZaiToolFunction {
                         name: tool_call.name,
-                        arguments: Value::String(
-                            serde_json::to_string(&tool_call.arguments)
-                                .unwrap_or_else(|_| "{}".to_string()),
-                        ),
+                        arguments: Value::String(tool_call.arguments.to_string()),
                     },
                 }]),
             },
