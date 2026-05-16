@@ -36,10 +36,10 @@ impl EvidenceCache {
                 sorted.insert(k.clone(), map[k].clone());
             }
         }
-        format!("{}:{}", tool, serde_json::Value::Object(sorted))
+        format!("{tool}:{}", serde_json::Value::Object(sorted))
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get(&self, tool: &str, args: &Value) -> Option<&CachedEvidence> {
         self.entries.get(&Self::key(tool, args))
     }
@@ -67,13 +67,7 @@ pub fn shared_cache() -> SharedCache {
 /// Resolve which evidence tools are permitted based on the directive's ToolMode.
 pub fn allowed_tools(mode: &ToolMode) -> HashSet<&'static str> {
     match mode {
-        ToolMode::Default => {
-            let mut set = HashSet::new();
-            set.insert("read");
-            set.insert("web_search");
-            set.insert("shell");
-            set
-        }
+        ToolMode::Default => HashSet::from(["read", "web_search", "shell"]),
         ToolMode::None => HashSet::new(),
         ToolMode::AllowList(names) => {
             // Map known string names to static str where possible.
@@ -154,14 +148,14 @@ pub async fn execute(
 
     // Check cache.
     {
-        let cache_guard = cache.lock().unwrap();
-        if cache_guard.has(evidence_tool, args) {
-            if let Some(cached) = cache_guard.entries.get(&EvidenceCache::key(evidence_tool, args)) {
-                return ToolResult {
-                    content: format!("{}\n(cached)", cached.content),
-                    is_error: cached.is_error,
-                };
-            }
+        let cache_guard = cache.lock().expect("evidence cache poisoned");
+        if cache_guard.has(evidence_tool, args)
+            && let Some(cached) = cache_guard.entries.get(&EvidenceCache::key(evidence_tool, args))
+        {
+            return ToolResult {
+                content: format!("{}\n(cached)", cached.content),
+                is_error: cached.is_error,
+            };
         }
     }
 
@@ -170,7 +164,7 @@ pub async fn execute(
 
     // Cache result.
     {
-        let mut cache = cache.lock().unwrap();
+        let mut cache = cache.lock().expect("evidence cache poisoned");
         cache.insert(
             evidence_tool,
             args,
@@ -190,14 +184,11 @@ async fn execute_inner(
 ) -> ToolResult {
     match tool {
         "read" => {
-            let path = match args.get("path").and_then(|v| v.as_str()) {
-                Some(p) => p,
-                None => {
-                    return ToolResult {
-                        content: "read requires a 'path' argument".to_string(),
-                        is_error: true,
-                    }
-                }
+            let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+                return ToolResult {
+                    content: "read requires a 'path' argument".to_string(),
+                    is_error: true,
+                };
             };
             match tool_registry
                 .execute("read", json!({"path": path}), ctx)
@@ -211,14 +202,11 @@ async fn execute_inner(
             }
         }
         "web_search" => {
-            let query = match args.get("query").and_then(|v| v.as_str()) {
-                Some(q) => q,
-                None => {
-                    return ToolResult {
-                        content: "web_search requires a 'query' argument".to_string(),
-                        is_error: true,
-                    }
-                }
+            let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
+                return ToolResult {
+                    content: "web_search requires a 'query' argument".to_string(),
+                    is_error: true,
+                };
             };
             match tool_registry
                 .execute("web_search", json!({"query": query}), ctx)
@@ -232,23 +220,19 @@ async fn execute_inner(
             }
         }
         "shell" => {
-            let command = match args.get("command").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => {
-                    return ToolResult {
-                        content: "shell requires a 'command' argument".to_string(),
-                        is_error: true,
-                    }
-                }
+            let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
+                return ToolResult {
+                    content: "shell requires a 'command' argument".to_string(),
+                    is_error: true,
+                };
             };
             if !is_safe_shell_command(command) {
                 return ToolResult {
                     content: format!(
-                        "blocked: command '{}' is not allowed. \
+                        "blocked: command '{command}' is not allowed. \
                          Only read-only inspection commands are permitted \
                          (find, grep, rg, git log, ls, cat, wc, etc.). \
-                         Rephrase your request or ask for specific information.",
-                        command
+                         Rephrase your request or ask for specific information."
                     ),
                     is_error: true,
                 };
@@ -370,7 +354,7 @@ const GIT_READ_ONLY: &[&str] = &[
 ];
 
 fn base_command(command: &str) -> &str {
-    command.trim_start().split_whitespace().next().unwrap_or("")
+    command.split_whitespace().next().unwrap_or("")
 }
 
 pub fn is_safe_shell_command(command: &str) -> bool {
@@ -378,7 +362,7 @@ pub fn is_safe_shell_command(command: &str) -> bool {
     if base == "git" {
         let parts: Vec<&str> = command.split_whitespace().collect();
         let sub = parts.iter().skip(1).find(|p| !p.starts_with('-'));
-        return sub.is_some_and(|s| GIT_READ_ONLY.contains(&s));
+        return sub.is_some_and(|s| GIT_READ_ONLY.contains(s));
     }
     SAFE_COMMANDS.contains(&base)
 }

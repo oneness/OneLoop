@@ -461,7 +461,6 @@ impl Agent {
                 let allowed = allowed.clone();
                 let evidence_tool_def = evidence_tool_def.clone();
                 let prompt_text = prompt.to_string();
-                let max_iterations = max_iterations;
 
                 tokio::spawn(async move {
                     let mut req = ProviderRequest {
@@ -506,7 +505,7 @@ impl Agent {
                                 .unwrap_or("");
 
                             let label = crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
-                            let cached = cache.lock().unwrap().has(evidence_tool, &evidence_args);
+                            let cached = cache.lock().expect("evidence cache poisoned").has(evidence_tool, &evidence_args);
                             let cache_tag = if cached { " (cached)" } else { "" };
 
                             let result = crate::agent::evidence::execute(

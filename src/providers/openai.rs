@@ -88,8 +88,6 @@ struct ResponsesOutputItem {
 
     // Present when type == "message"
     content: Option<Vec<ResponsesContentPart>>,
-    #[allow(dead_code)]
-    role: Option<String>,
 
     // Present when type == "function_call"
     call_id: Option<String>,
