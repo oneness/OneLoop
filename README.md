@@ -1,6 +1,6 @@
 # OneLoop
 
-A tiny, extensible coding agent.
+A tiny coding agent. One loop, multiple models, five tools, zero config.
 
 ## Quick links
 
