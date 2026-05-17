@@ -6,8 +6,7 @@
 <title>OneLoop — A Tiny Coding Agent</title>
 <style>
   :root {
-    --bg: #ffffff;
-    --surface: #f8f9fb;
+    --bg: #fafbfc;
     --card: #ffffff;
     --border: #e2e5eb;
     --text: #1a1d26;
@@ -15,10 +14,7 @@
     --accent: #3b5bdb;
     --green: #16a34a;
     --amber: #d97706;
-    --red: #dc2626;
-    --openai: #0d8f6f;
-    --anthropic: #b07d4f;
-    --zai: #3b5bdb;
+    --surface: #f0f2f6;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -29,238 +25,128 @@
     color: var(--text);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
+    overflow: hidden;
   }
 
   .slide {
-    max-width: 920px;
-    margin: 0 auto;
-    padding: 64px 48px;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
+    display: none;
+    position: fixed;
+    inset: 0;
     justify-content: center;
+    align-items: center;
+    padding: 48px;
   }
 
-  .slide + .slide {
-    border-top: 1px solid var(--border);
-    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
-  }
+  .slide.active { display: flex; }
 
-  h1 {
-    font-size: 48px;
-    font-weight: 800;
-    letter-spacing: -1px;
-    line-height: 1.1;
-    margin-bottom: 12px;
-  }
-
-  h2 {
-    font-size: 28px;
-    font-weight: 600;
-    letter-spacing: -0.3px;
-    margin-bottom: 12px;
-    color: var(--accent);
-  }
-
-  h3 {
-    font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 8px;
-  }
-
-  .subtitle {
-    font-size: 20px;
-    color: var(--muted);
-    margin-bottom: 48px;
-    max-width: 840px;
+  .box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 56px 64px;
+    max-width: 780px;
+    width: 100%;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.05);
+    text-align: center;
   }
 
   .label {
     font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
-
-  p { margin-bottom: 16px; color: var(--muted); font-size: 16px; }
-  p strong { color: var(--text); }
-
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 28px;
-    margin-bottom: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-
-  .card-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-
-  .card-grid-3 {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-
-  .provider-card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    position: relative;
-    overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-
-  .provider-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-  }
-
-  .provider-card.openai::before { background: var(--openai); }
-  .provider-card.anthropic::before { background: var(--anthropic); }
-  .provider-card.zai::before { background: var(--zai); }
-
-  .provider-card .name {
-    font-size: 18px;
     font-weight: 700;
-    margin-bottom: 2px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    margin-bottom: 20px;
   }
 
-  .provider-card.openai .name { color: var(--openai); }
-  .provider-card.anthropic .name { color: var(--anthropic); }
-  .provider-card.zai .name { color: var(--zai); }
+  h1 {
+    font-size: 56px;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    line-height: 1.1;
+    margin-bottom: 16px;
+  }
 
-  .provider-card .model {
-    font-size: 13px;
+  h2 {
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 16px;
+  }
+
+  h3 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .big {
+    font-size: 22px;
     color: var(--muted);
-    margin-bottom: 8px;
+    line-height: 1.5;
   }
 
-  .feature-card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-  }
-
-  .feature-card .icon {
+  .tagline {
     font-size: 24px;
-    margin-bottom: 8px;
-  }
-
-  .feature-card h3 {
-    margin-bottom: 4px;
-  }
-
-  .feature-card p {
-    font-size: 14px;
+    color: var(--muted);
     margin-bottom: 0;
   }
 
-  pre {
-    background: #f4f5f8;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px 24px;
+  .mono {
     font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
-    font-size: 14px;
-    line-height: 1.7;
-    overflow-x: auto;
-    margin-bottom: 20px;
-    color: var(--text);
-  }
-
-  code {
-    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
-    font-size: 13px;
-  }
-
-  .kw { color: #3b5bdb; }
-  .str { color: #16a34a; }
-  .cm { color: #94a3b8; }
-  .dir { background: rgba(59,91,219,0.08); padding: 2px 6px; border-radius: 4px; }
-
-  .tool-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-
-  .tool-item {
+    font-size: 18px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 18px;
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
+    border-radius: 10px;
+    padding: 24px 32px;
+    text-align: left;
+    color: var(--text);
+    line-height: 1.8;
+    display: inline-block;
+    margin-top: 16px;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
-  .tool-item .tool-name {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--accent);
-    min-width: 80px;
-  }
+  .mono .kw { color: var(--accent); font-weight: 600; }
+  .mono .str { color: var(--green); }
+  .mono .cm { color: #94a3b8; }
 
-  .tool-item .tool-desc {
-    font-size: 14px;
-    color: var(--muted);
-  }
-
-  .flow-row {
+  .flow {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
-    margin-bottom: 20px;
     flex-wrap: wrap;
+    margin: 20px 0;
   }
 
   .flow-box {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 12px 18px;
-    text-align: center;
-    font-size: 14px;
+    padding: 10px 18px;
+    font-size: 15px;
     font-weight: 500;
   }
 
-  .flow-box.active {
+  .flow-box.hi {
     background: var(--accent);
-    color: white;
+    color: #fff;
     border-color: var(--accent);
   }
 
-  .flow-arrow {
-    color: var(--muted);
-    font-size: 18px;
-  }
+  .flow-arrow { color: var(--muted); font-size: 18px; }
 
   table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 20px;
-    font-size: 14px;
+    font-size: 15px;
+    text-align: left;
   }
 
   th {
-    text-align: left;
-    padding: 12px 16px;
+    padding: 10px 16px;
     border-bottom: 2px solid var(--border);
     font-weight: 600;
     color: var(--muted);
@@ -270,365 +156,391 @@
   }
 
   td {
-    padding: 12px 16px;
+    padding: 10px 16px;
     border-bottom: 1px solid var(--border);
   }
 
   tr:last-child td { border-bottom: none; }
 
-  .tag {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-    font-family: 'JetBrains Mono', monospace;
+  .tool-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    text-align: left;
+    margin-top: 16px;
   }
 
-  .tag.blue { background: rgba(59,91,219,0.08); color: var(--accent); }
-  .tag.green { background: rgba(22,163,74,0.08); color: var(--green); }
-  .tag.amber { background: rgba(217,119,6,0.08); color: var(--amber); }
+  .tool-item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 15px;
+  }
 
-  .evidence-flow {
+  .tool-item code {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 14px;
+    min-width: 90px;
+  }
+
+  .tool-item span { color: var(--muted); }
+
+  .principle-num {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 12px;
+  }
+
+  #progress {
+    position: fixed;
+    bottom: 0; left: 0;
+    height: 3px;
+    background: var(--accent);
+    transition: width 0.25s ease;
+    z-index: 100;
+  }
+
+  #controls {
+    position: fixed;
+    bottom: 24px; left: 50%;
+    transform: translateX(-50%);
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 20px 0;
-    flex-wrap: wrap;
+    gap: 24px;
+    z-index: 100;
   }
 
-  .ev-box {
-    background: var(--surface);
+  #controls button {
+    background: var(--card);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 10px 16px;
+    padding: 8px 20px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  #controls button:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #controls button:disabled { opacity: 0.3; cursor: default; background: var(--card); color: var(--muted); border-color: var(--border); }
+
+  #counter {
     font-size: 13px;
+    color: var(--muted);
+    min-width: 50px;
     text-align: center;
   }
 
-  .ev-box.main {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
-    font-weight: 600;
-  }
-
-  .ev-arrow {
-    color: var(--muted);
-    font-size: 16px;
-  }
-
-  .slide-footer {
-    margin-top: auto;
-    padding-top: 32px;
-    font-size: 12px;
-    color: var(--muted);
-    display: flex;
-    justify-content: space-between;
-  }
-
   @media (max-width: 720px) {
-    .slide { padding: 40px 24px; }
-    h1 { font-size: 32px; }
-    h2 { font-size: 22px; }
-    .card-grid, .card-grid-3, .tool-grid { grid-template-columns: 1fr; }
-    .flow-row, .evidence-flow { flex-direction: column; }
+    .box { padding: 36px 28px; }
+    h1 { font-size: 40px; }
+    h2 { font-size: 28px; }
+    .big { font-size: 18px; }
+    .tagline { font-size: 20px; }
+    .mono { font-size: 14px; padding: 16px 20px; }
+    .tool-grid { grid-template-columns: 1fr; }
+    .flow { flex-direction: column; }
   }
 </style>
 </head>
 <body>
 
-<!-- ════════════════════════════════════════════════════════════════════
-     SLIDE 1 — Title + What It Is
-     ════════════════════════════════════════════════════════════════════ -->
+<div id="progress"></div>
+<div id="controls">
+  <button id="prevBtn" onclick="go(-1)">← Prev</button>
+  <span id="counter"></span>
+  <button id="nextBtn" onclick="go(1)">Next →</button>
+</div>
 
+<!-- ═══ 1. Title ═══ -->
 <section class="slide">
-  <div class="label">overview</div>
-  <h1>OneLoop</h1>
-  <p class="subtitle">A tiny coding agent. One loop, multiple models, five tools, zero config.</p>
-
-  <div class="card-grid-3" style="margin-bottom: 32px;">
-    <div class="feature-card">
-      <div class="icon">🔄</div>
-      <h3>One Agent Loop</h3>
-      <p>Think → call tools → feed results back → repeat. That's it. No plugins, no hooks, no middleware.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">🧠</div>
-      <h3>Multi-Model</h3>
-      <p>Route to any provider. Run consensus or debate across models. A judge synthesizes the final answer.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon">🔍</div>
-      <h3>Evidence Agent</h3>
-      <p>Orchestrated providers ask the main agent for context. Cached, shared, deduplicated. No direct tool access.</p>
-    </div>
+  <div class="box">
+    <h1>OneLoop</h1>
+    <p class="tagline">A tiny coding agent.<br>One loop, multiple models, five tools, zero config.</p>
   </div>
+</section>
 
-  <div class="card">
-    <h3 style="margin-bottom: 12px;">Agent Loop</h3>
-    <div class="flow-row">
+<!-- ═══ 2. Agent Loop ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">core idea</div>
+    <h2>One Agent Loop</h2>
+    <p class="big">Think → call tools → feed results back → repeat.<br>No plugins, no hooks, no middleware.</p>
+    <div class="flow" style="margin-top: 28px;">
       <div class="flow-box">User prompt</div>
       <div class="flow-arrow">→</div>
-      <div class="flow-box active">Model thinks</div>
+      <div class="flow-box hi">Model thinks</div>
       <div class="flow-arrow">→</div>
       <div class="flow-box">Tool calls</div>
       <div class="flow-arrow">→</div>
-      <div class="flow-box active">Model thinks</div>
+      <div class="flow-box hi">Model thinks</div>
       <div class="flow-arrow">→</div>
       <div class="flow-box">Response</div>
     </div>
-    <p style="margin-bottom: 0;">
-      Loops until the model stops calling tools (max 50 iterations, env-configurable).
-      All tool calls in a single response execute <strong>in parallel</strong>.
-    </p>
-  </div>
-
-  <div class="card" style="margin-top: 0;">
-    <h3 style="margin-bottom: 12px;">Codebase</h3>
-    <table style="margin-bottom: 0;">
-      <tr><th>Language</th><th>Files</th><th>Code</th><th>Comment</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">25</td><td style="text-align:right;">3,687</td><td style="text-align:right;">161</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">500</td><td style="text-align:right;">9</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">2</td><td style="text-align:right;">196</td><td style="text-align:right;">0</td></tr>
-      <tr style="font-weight:600;"><td>Total</td><td style="text-align:right;">28</td><td style="text-align:right;">4,383</td><td style="text-align:right;">170</td></tr>
-    </table>
-  </div>
-
-  <div class="slide-footer">
-    <span>OneLoop — Overview</span>
-    <span>1 / 4</span>
+    <p class="big" style="font-size:16px; margin-top:8px;">Loops until the model stops calling tools. All calls in a single turn run <strong>in parallel</strong>.</p>
   </div>
 </section>
 
-<!-- ════════════════════════════════════════════════════════════════════
-     SLIDE 2 — Principles
-     ════════════════════════════════════════════════════════════════════ -->
-
+<!-- ═══ 3. Multi-Model ═══ -->
 <section class="slide">
-  <div class="label">principles</div>
-  <h2>Engineering Principles</h2>
-  <p style="margin-bottom: 32px;">The soul of the project. Every decision should align with these.</p>
-
-  <div class="card-grid" style="margin-bottom: 20px;">
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Keep the core tiny</h3>
-      <p style="margin-bottom: 0;">One loop. Few durable primitives. Avoid frameworks inside the framework.</p>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Prefer evidence over confidence</h3>
-      <p style="margin-bottom: 0;">If context is needed, gather it. Do not guess.</p>
-    </div>
-  </div>
-
-  <div class="card-grid" style="margin-bottom: 20px;">
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">The main agent owns safety</h3>
-      <p style="margin-bottom: 0;">Orchestrated providers ask for evidence. They do not get direct tool access.</p>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Default to readable systems</h3>
-      <p style="margin-bottom: 0;">Simple files, explicit flows, minimal magic.</p>
-    </div>
-  </div>
-
-  <div class="card-grid" style="margin-bottom: 20px;">
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Optimize for the terminal</h3>
-      <p style="margin-bottom: 0;">Fast feedback, clear output, no hidden state.</p>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">One control knob</h3>
-      <p style="margin-bottom: 0;">Prefer one env var or one directive over a matrix of settings.</p>
-    </div>
-  </div>
-
-  <div class="card-grid">
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Cache and share</h3>
-      <p style="margin-bottom: 0;">Gathered evidence is deduplicated and shared. Never fetch the same thing twice.</p>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 4px;">Graceful degradation</h3>
-      <p style="margin-bottom: 0;">When something fails, return a clear error. Never panic.</p>
-    </div>
-  </div>
-
-  <div class="slide-footer">
-    <span>OneLoop — Overview</span>
-    <span>2 / 4</span>
+  <div class="box">
+    <div class="label">orchestration</div>
+    <h2>Multi-Model</h2>
+    <p class="big">Route to any provider. Run <strong>consensus</strong> or <strong>debate</strong> across models. A judge synthesizes the final answer.</p>
   </div>
 </section>
 
-<!-- ════════════════════════════════════════════════════════════════════
-     SLIDE 3 — Tools + Directives + Evidence
-     ════════════════════════════════════════════════════════════════════ -->
+<!-- ═══ 4. Evidence Agent ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">safety</div>
+    <h2>Evidence Agent</h2>
+    <p class="big">Orchestrated providers <strong>never</strong> get direct tool access.<br>They ask the main agent for context. Cached, shared, deduplicated.</p>
+  </div>
+</section>
+
+<!-- ═══ 5–12. Principles ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">1</div>
+    <h2>Keep the core tiny</h2>
+    <p class="big">One loop. Few durable primitives.<br>Avoid frameworks inside the framework.</p>
+  </div>
+</section>
 
 <section class="slide">
-  <div class="label">capabilities</div>
-  <h2>Tools &amp; Directives</h2>
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">2</div>
+    <h2>Prefer evidence over confidence</h2>
+    <p class="big">If context is needed, gather it. Do not guess.</p>
+  </div>
+</section>
 
-  <h3 style="margin-bottom: 12px;">Five tools</h3>
-  <div class="tool-grid">
-    <div class="tool-item">
-      <span class="tool-name">read</span>
-      <span class="tool-desc">File contents</span>
-    </div>
-    <div class="tool-item">
-      <span class="tool-name">write</span>
-      <span class="tool-desc">Create or overwrite files</span>
-    </div>
-    <div class="tool-item">
-      <span class="tool-name">edit</span>
-      <span class="tool-desc">Search-and-replace in files</span>
-    </div>
-    <div class="tool-item">
-      <span class="tool-name">bash</span>
-      <span class="tool-desc">Shell commands (full access)</span>
-    </div>
-    <div class="tool-item">
-      <span class="tool-name">web_search</span>
-      <span class="tool-desc">SearXNG web search</span>
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">3</div>
+    <h2>The main agent owns safety</h2>
+    <p class="big">Orchestrated providers ask for evidence.<br>They do not get direct tool access.</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">4</div>
+    <h2>Default to readable systems</h2>
+    <p class="big">Simple files, explicit flows, minimal magic.</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">5</div>
+    <h2>Optimize for the terminal</h2>
+    <p class="big">Fast feedback, clear output, no hidden state.</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">6</div>
+    <h2>One control knob</h2>
+    <p class="big">Prefer one env var or one directive<br>over a matrix of settings.</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">7</div>
+    <h2>Cache and share</h2>
+    <p class="big">Gathered evidence is deduplicated and shared.<br>Never fetch the same thing twice.</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="box">
+    <div class="label">principles</div>
+    <div class="principle-num">8</div>
+    <h2>Graceful degradation</h2>
+    <p class="big">When something fails, return a clear error. Never panic.</p>
+  </div>
+</section>
+
+<!-- ═══ 13. Five Tools ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">tools</div>
+    <h2>Five tools</h2>
+    <div class="tool-grid">
+      <div class="tool-item"><code>read</code> <span>File contents</span></div>
+      <div class="tool-item"><code>write</code> <span>Create or overwrite</span></div>
+      <div class="tool-item"><code>edit</code> <span>Search-and-replace</span></div>
+      <div class="tool-item"><code>bash</code> <span>Shell commands</span></div>
+      <div class="tool-item"><code>web_search</code> <span>SearXNG search</span></div>
+      <div></div>
     </div>
   </div>
+</section>
 
-  <h3 style="margin-bottom: 12px;">Directive syntax</h3>
-  <pre style="margin-bottom: 16px;"><span class="kw">#!</span><span class="str">directive words</span><span class="kw">#!</span> your message here</pre>
-
-  <div class="card-grid" style="margin-bottom: 20px;">
-    <div class="card" style="margin-bottom: 0;">
-      <p style="font-size: 13px; margin-bottom: 8px;"><strong>Single provider</strong></p>
+<!-- ═══ 14. Directive Syntax ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">syntax</div>
+    <h2>Directive syntax</h2>
+    <div class="mono">
+      <span class="kw">#!</span><span class="str">directive words</span><span class="kw">#!</span> your message here
+    </div>
+    <p class="big" style="margin-top: 28px; font-size: 16px; text-align: left;">
+      <strong>Single provider</strong><br>
       <code>#!anthropic#! review this code</code>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <p style="font-size: 13px; margin-bottom: 8px;"><strong>Consensus (auto)</strong></p>
+    </p>
+    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
+      <strong>Consensus</strong><br>
       <code>#!anthropic openai#! should we use X?</code>
-    </div>
-    <div class="card" style="margin-bottom: 0;">
-      <p style="font-size: 13px; margin-bottom: 8px;"><strong>Debate + judge</strong></p>
+    </p>
+    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
+      <strong>Debate + judge</strong><br>
       <code>#!debate a o rounds:2 judge:a#! argue this</code>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3 style="margin-bottom: 12px;">Evidence Agent pattern</h3>
-    <p style="margin-bottom: 12px;">
-      In orchestration modes, providers never get direct tool access. They get one tool:
-      <code>request_evidence</code>. They ask, the main agent gathers.
     </p>
-    <div class="evidence-flow">
-      <div class="ev-box">Provider calls<br><code>request_evidence</code></div>
-      <div class="ev-arrow">→</div>
-      <div class="ev-box main">Main agent<br>checks cache</div>
-      <div class="ev-arrow">→</div>
-      <div class="ev-box">Execute <code>read</code>,<br><code>web_search</code>, or <code>shell</code></div>
-      <div class="ev-arrow">→</div>
-      <div class="ev-box main">Cache &amp;<br>return</div>
-      <div class="ev-arrow">→</div>
-      <div class="ev-box">Provider gets<br>evidence</div>
-    </div>
-    <p style="margin-bottom: 0; font-size: 14px;">
-      Evidence is <strong>deduplicated</strong> (same query = cached result) and <strong>shared</strong>
-      across all providers in the same orchestration. Shell commands pass a safety check
-      (read-only inspection only: find, grep, git log, etc.).
-    </p>
-  </div>
-
-  <div class="slide-footer">
-    <span>OneLoop — Overview</span>
-    <span>3 / 4</span>
   </div>
 </section>
 
-<!-- ════════════════════════════════════════════════════════════════════
-     SLIDE 4 — Sessions + Resilience + Quick Start
-     ════════════════════════════════════════════════════════════════════ -->
-
+<!-- ═══ 15. Evidence Flow ═══ -->
 <section class="slide">
-  <div class="label">reliability</div>
-  <h2>Sessions &amp; Resilience</h2>
-
-  <div class="card-grid" style="margin-bottom: 24px;">
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 8px;">📂 Append-only sessions</h3>
-      <p style="font-size: 14px; margin-bottom: 8px;">
-        Every message, tool call, and result is appended to a JSONL file. No mutation, no corruption.
-      </p>
-      <p style="font-size: 13px; margin-bottom: 0;">
-        <code>.oneloop/sessions/2025-07-11.jsonl</code><br>
-        <code>.oneloop/sessions/2025-07-11-001.jsonl</code>
-      </p>
+  <div class="box">
+    <div class="label">how it works</div>
+    <h2>Evidence flow</h2>
+    <div class="flow">
+      <div class="flow-box">Provider calls<br><code>request_evidence</code></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box hi">Main agent<br>checks cache</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">Execute read,<br>search, or shell</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box hi">Cache &amp; return</div>
     </div>
-    <div class="card" style="margin-bottom: 0;">
-      <h3 style="margin-bottom: 8px;">🔄 Auto-compaction</h3>
-      <p style="font-size: 14px; margin-bottom: 8px;">
-        When context nears the model's limit, the agent compacts: generates a structured summary,
-        rotates to a new session, and replays recent user messages verbatim.
-      </p>
-      <p style="font-size: 13px; margin-bottom: 0;">
-        Triggered at <strong>85%</strong> of context window. Preserves continuity.
-      </p>
+    <p class="big" style="font-size: 16px; margin-top: 16px;">Same query = cached result. Shared across all providers.<br>Shell commands are read-only only (find, grep, git log).</p>
+  </div>
+</section>
+
+<!-- ═══ 16. Sessions ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">reliability</div>
+    <h2>Append-only sessions</h2>
+    <p class="big">Every message, tool call, and result is appended to a JSONL file.<br>No mutation, no corruption.</p>
+    <div class="mono" style="margin-top: 20px; font-size: 15px;">
+      .oneloop/sessions/2025-07-11.jsonl<br>
+      .oneloop/sessions/2025-07-11-001.jsonl
     </div>
   </div>
+</section>
 
-  <div class="card" style="margin-bottom: 24px;">
-    <h3 style="margin-bottom: 12px;">Resilience features</h3>
+<!-- ═══ 17. Auto-Compaction ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">reliability</div>
+    <h2>Auto-compaction</h2>
+    <p class="big">When context nears the model's limit, the agent compacts:<br>generates a summary, rotates to a new session,<br>replays recent user messages verbatim.</p>
+    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">Triggered at <strong>85%</strong> of context window.</p>
+  </div>
+</section>
+
+<!-- ═══ 18. Resilience ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">reliability</div>
+    <h2>Resilience</h2>
     <table>
-      <tr><th>Feature</th><th>Behavior</th></tr>
-      <tr>
-        <td><strong>Retry with fallback</strong></td>
-        <td>On provider failure: retries 3×, then interactively offers alternative providers</td>
-      </tr>
-      <tr>
-        <td><strong>Auto-compaction</strong></td>
-        <td>Summarizes and rotates session at 85% context — no lost context</td>
-      </tr>
-      <tr>
-        <td><strong>Parallel tools</strong></td>
-        <td>Multiple tool calls in one response execute concurrently</td>
-      </tr>
-      <tr>
-        <td><strong>Output truncation</strong></td>
-        <td>Large tool outputs are truncated before re-entering context</td>
-      </tr>
-      <tr>
-        <td><strong>Stop anywhere</strong></td>
-        <td><code>Ctrl+C</code> stops the current request cleanly; session is preserved</td>
-      </tr>
-      <tr>
-        <td><strong>AGENTS.md</strong></td>
-        <td>Loaded as system prompt if present in the project directory</td>
-      </tr>
+      <tr><td><strong>Retry with fallback</strong></td><td>Retries 3×, then offers alternative providers</td></tr>
+      <tr><td><strong>Parallel tools</strong></td><td>Multiple calls execute concurrently</td></tr>
+      <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
+      <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
+      <tr><td><strong>AGENTS.md</strong></td><td>Loaded as system prompt if present</td></tr>
     </table>
   </div>
+</section>
 
-  <div class="card" style="margin-bottom: 24px;">
-    <h3 style="margin-bottom: 12px;">Quick start</h3>
-    <pre style="margin-bottom: 0;"><span class="cm"># Install credentials</span>
-./ol login openai
-./ol login anthropic
-
-<span class="cm"># Interactive mode</span>
-./ol
-
-<span class="cm"># One-shot</span>
-./ol <span class="str">"explain the agent loop"</span>
-
-<span class="cm"># Multi-model consensus</span>
-./ol
-<span class="kw">#!</span><span class="str">anthropic openai</span><span class="kw">#!</span> <span class="str">should we use Rust or Go?</span>
-
-<span class="cm"># Commands</span>
-/clear    <span class="cm">→ wipe context, new session</span>
-Ctrl+C    <span class="cm">→ stop current request</span>
-Ctrl+D    <span class="cm">→ exit</span></pre>
-  </div>
-
-  <div class="slide-footer">
-    <span>OneLoop — Overview</span>
-    <span>4 / 4</span>
+<!-- ═══ 19. Codebase ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">stats</div>
+    <h2>Codebase</h2>
+    <table>
+      <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
+      <tr><td>Rust</td><td style="text-align:right;">25</td><td style="text-align:right;">3,687</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">500</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">2</td><td style="text-align:right;">196</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">28</td><td style="text-align:right;">4,383</td></tr>
+    </table>
   </div>
 </section>
+
+<!-- ═══ 20. Quick Start ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">get started</div>
+    <h2>Quick start</h2>
+    <div class="mono" style="text-align: left;">
+      <span class="cm"># Install credentials</span><br>
+      ./ol login openai<br>
+      ./ol login anthropic<br><br>
+      <span class="cm"># Interactive mode</span><br>
+      ./ol<br><br>
+      <span class="cm"># Multi-model consensus</span><br>
+      <span class="kw">#!</span><span class="str">anthropic openai</span><span class="kw">#!</span> <span class="str">should we use Rust?</span>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  const slides = document.querySelectorAll('.slide');
+  const bar    = document.getElementById('progress');
+  const ctr   = document.getElementById('counter');
+  const prevB = document.getElementById('prevBtn');
+  const nextB = document.getElementById('nextBtn');
+  let cur = 0;
+
+  function show(i) {
+    cur = i;
+    slides.forEach((s, idx) => s.classList.toggle('active', idx === i));
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    ctr.textContent = (i + 1) + ' / ' + slides.length;
+    prevB.disabled = (i === 0);
+    nextB.disabled = (i === slides.length - 1);
+  }
+
+  window.go = function (dir) {
+    var n = cur + dir;
+    if (n >= 0 && n < slides.length) show(n);
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if ((e.key === ' ' && !e.shiftKey) || e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); go(1); }
+    if ((e.key === ' ' && e.shiftKey) || e.key === 'ArrowLeft'  || e.key === 'ArrowUp')     { e.preventDefault(); go(-1); }
+  });
+
+  show(0);
+})();
+</script>
 
 </body>
 </html>
