@@ -141,6 +141,7 @@ impl Agent {
             system_prompt: self.config.system_prompt.clone(),
             messages: compact_messages,
             tools: Vec::new(),
+            model_override: None,
         };
 
         let response = match self
@@ -245,6 +246,7 @@ impl Agent {
         &mut self,
         prompt: String,
         provider_override: Option<&str>,
+        model_override: Option<String>,
     ) -> Result<()> {
         self.session.push_user(prompt)?;
 
@@ -275,6 +277,7 @@ impl Agent {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
                 tools: self.tool_registry.definitions(),
+                model_override: model_override.clone(),
             };
 
             let response = match self

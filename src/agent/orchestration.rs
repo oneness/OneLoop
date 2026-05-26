@@ -225,6 +225,7 @@ async fn synthesize_consensus(
         system_prompt: system_prompt.clone(),
         messages: vec![messages::Message::User(messages::UserMessage { content })],
         tools: Vec::new(),
+        model_override: None,
     };
 
     let spinner = SpinnerGuard::new("synthesizing consensus...");
@@ -292,6 +293,7 @@ async fn collect_provider_responses(
                         content: prompt_text,
                     })],
                     tools: vec![evidence_tool_def],
+                    model_override: None,
                 };
                 let provider_label = provider_name.clone();
                 let ctx = AgentContext { cwd };
@@ -418,6 +420,7 @@ async fn collect_provider_responses_no_tools(
             content: prompt.to_string(),
         })],
         tools: Vec::new(),
+        model_override: None,
     };
 
     let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));

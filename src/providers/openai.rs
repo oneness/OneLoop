@@ -115,6 +115,11 @@ impl Provider for OpenAIProvider {
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
+        let model = request
+            .model_override
+            .as_deref()
+            .unwrap_or(&self.model)
+            .to_string();
         let mut input: Vec<Value> = Vec::new();
 
         for message in request.messages {
@@ -162,7 +167,7 @@ impl Provider for OpenAIProvider {
         }
 
         let body = ResponsesRequest {
-            model: self.model.clone(),
+            model,
             instructions: request.system_prompt,
             input,
             tools: request

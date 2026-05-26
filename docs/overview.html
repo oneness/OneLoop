@@ -409,7 +409,11 @@
     </div>
     <p class="big" style="margin-top: 28px; font-size: 16px; text-align: left;">
       <strong>Single provider</strong><br>
-      <code>#!anthropic#! review this code</code>
+      <code>#!openrouter#! review this code</code>
+    </p>
+    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
+      <strong>Model override</strong><br>
+      <code>#!openrouter model:deepseek/deepseek-v3-0324#! refactor this</code>
     </p>
     <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
       <strong>Consensus</strong><br>
@@ -417,7 +421,7 @@
     </p>
     <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
       <strong>Debate + judge</strong><br>
-      <code>#!debate a o rounds:2 judge:a#! argue this</code>
+      <code>#!debate anthropic openai rounds:2 judge:anthropic#! argue this</code>
     </p>
   </div>
 </section>
@@ -485,10 +489,10 @@
     <h2>Codebase</h2>
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">25</td><td style="text-align:right;">3,687</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">500</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">2</td><td style="text-align:right;">196</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">28</td><td style="text-align:right;">4,383</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">25</td><td style="text-align:right;">4,542</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">550</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">3</td><td style="text-align:right;">349</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">29</td><td style="text-align:right;">5,441</td></tr>
     </table>
   </div>
 </section>
@@ -500,12 +504,12 @@
     <h2>Quick start</h2>
     <div class="mono" style="text-align: left;">
       <span class="cm"># Install credentials</span><br>
-      ./ol login openai<br>
+      ./ol login openrouter<br>
       ./ol login anthropic<br><br>
       <span class="cm"># Interactive mode</span><br>
       ./ol<br><br>
-      <span class="cm"># Multi-model consensus</span><br>
-      <span class="kw">#!</span><span class="str">anthropic openai</span><span class="kw">#!</span> <span class="str">should we use Rust?</span>
+      <span class="cm"># Model override</span><br>
+      <span class="kw">#!</span><span class="str">model:deepseek/deepseek-v3-0324</span><span class="kw">#!</span> <span class="str">refactor this</span>
     </div>
   </div>
 </section>

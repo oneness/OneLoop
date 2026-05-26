@@ -57,7 +57,7 @@ async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Resu
     match directives.mode {
         RunMode::Single { provider } => {
             agent
-                .run_once_with(directives.prompt, provider.as_deref())
+                .run_once_with(directives.prompt, provider.as_deref(), directives.model)
                 .await
         }
         RunMode::Consensus { providers } => {

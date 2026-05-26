@@ -62,15 +62,15 @@ fn login(provider: &str) -> Result<()> {
             println!("Stored Anthropic credentials at {}", path.display());
             Ok(())
         }
-        "zai" => {
-            println!("Z.AI login for OneLoop");
+        "openrouter" => {
+            println!("OpenRouter login for OneLoop");
             println!();
-            let key = rpassword::prompt_password("Enter ZAI_API_KEY: ")?;
+            let key = rpassword::prompt_password("Enter OPENROUTER_API_KEY: ")?;
             if key.trim().is_empty() {
                 bail!("empty API key")
             }
-            let path = auth::store_zai_api_key(key)?;
-            println!("Stored Z.AI credentials at {}", path.display());
+            let path = auth::store_openrouter_api_key(key)?;
+            println!("Stored OpenRouter credentials at {}", path.display());
             Ok(())
         }
         "openai" => {

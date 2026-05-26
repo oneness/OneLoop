@@ -113,8 +113,13 @@ impl Provider for AnthropicProvider {
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
+        let model = request
+            .model_override
+            .as_deref()
+            .unwrap_or(&self.model)
+            .to_string();
         let body = AnthropicRequest {
-            model: self.model.clone(),
+            model,
             max_tokens: 4096,
             system: request.system_prompt,
             messages: to_anthropic_messages(request.messages),

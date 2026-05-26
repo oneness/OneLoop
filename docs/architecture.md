@@ -39,18 +39,19 @@ All five core built-in tools are now implemented.
 
 Currently supported:
 
-- Z.AI via API key
+- OpenRouter via API key (default — access to any model on the OpenRouter catalogue)
 - OpenAI via API key
 - Anthropic via API key
 
 Default selection order (when `ONELOOP_PROVIDER` is not set):
 
-1. Z.AI
+1. OpenRouter
 2. OpenAI
 3. Anthropic
 
 Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` directives.
 Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
+Use `model:` in a single-provider directive to override the model for that prompt.
 
 ## Sessions
 
@@ -69,7 +70,7 @@ On restart, the latest session file for today is opened automatically.
 Credentials are resolved from `~/.oneloop/auth.json` first, then environment variables.
 Currently supported environment variables:
 
-- `ZAI_API_KEY`
+- `OPENROUTER_API_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
@@ -96,8 +97,8 @@ src/
   providers.rs      Provider trait, ProviderRequest/Response types
   providers/
     anthropic.rs    Anthropic Claude provider
-    openai.rs       OpenAI GPT provider
-    zai.rs          Z.AI GLM provider
+    openai.rs       OpenAI GPT provider (Responses API)
+    openrouter.rs   OpenRouter provider (Chat Completions API)
     registry.rs     Provider discovery, selection, retry with fallback
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/

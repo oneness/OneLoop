@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "zai"];
+const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "openrouter"];
 const MAX_ROUNDS: usize = 3;
 
 // ── Public types ──────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ pub struct PromptDirectives {
     pub rounds: usize,
     pub tools: ToolMode,
     pub format: OutputFormat,
+    pub model: Option<String>,
     pub prompt: String,
 }
 
@@ -55,6 +56,7 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
             rounds: 1,
             tools: ToolMode::Default,
             format: OutputFormat::Plain,
+            model: None,
             prompt: trimmed.to_string(),
         });
     }
@@ -84,10 +86,20 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
     let mut rounds: Option<usize> = None;
     let mut tools: Option<ToolMode> = None;
     let mut format: Option<OutputFormat> = None;
+    let mut model: Option<String> = None;
 
     for token in &tokens {
         // key:value pairs
-        if let Some(kv) = token.strip_prefix("judge:") {
+        if let Some(kv) = token.strip_prefix("model:") {
+            if model.is_some() {
+                bail!("duplicate model: directive");
+            }
+            let m = kv.trim().to_string();
+            if m.is_empty() {
+                bail!("model: requires a model name");
+            }
+            model = Some(m);
+        } else if let Some(kv) = token.strip_prefix("judge:") {
             if judge.is_some() {
                 bail!("duplicate judge: directive");
             }
@@ -116,7 +128,15 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
             if val == "none" {
                 tools = Some(ToolMode::None);
             } else {
-                let names: Vec<String> = val.split(',').map(|s| s.trim().to_string()).collect();
+                let names: Vec<String> = val
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+                if names.is_empty() {
+                    bail!("tools: requires at least one tool name");
+                }
                 tools = Some(ToolMode::AllowList(names));
             }
         } else if let Some(kv) = token.strip_prefix("format:") {
@@ -158,6 +178,9 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
     if rounds.is_some() && !is_debate {
         bail!("rounds: is only valid with debate mode");
     }
+    if model.is_some() && is_multi {
+        bail!("model: is only valid in single-provider mode");
+    }
 
     Ok(PromptDirectives {
         mode,
@@ -165,6 +188,7 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
         rounds: rounds.unwrap_or(1),
         tools: tools.unwrap_or(ToolMode::Default),
         format: format.unwrap_or(OutputFormat::Plain),
+        model,
         prompt: body,
     })
 }
@@ -250,14 +274,14 @@ mod tests {
 
     #[test]
     fn debate_with_rounds_and_judge() {
-        let got = parsed("#!debate anthropic openai zai rounds:2 judge:anthropic#! hello");
+        let got = parsed("#!debate anthropic openai openrouter rounds:2 judge:anthropic#! hello");
         assert_eq!(
             got.mode,
             RunMode::Debate {
                 providers: vec![
                     "anthropic".to_string(),
                     "openai".to_string(),
-                    "zai".to_string()
+                    "openrouter".to_string()
                 ]
             }
         );
@@ -334,6 +358,50 @@ mod tests {
         let got = parsed("#!format:md#! summarize this file");
         assert_eq!(got.mode, RunMode::Single { provider: None });
         assert_eq!(got.format, OutputFormat::Md);
+    }
+
+    #[test]
+    fn model_override_single_provider() {
+        let got = parsed("#!openrouter model:deepseek/deepseek-v3-0324#! explain this");
+        assert_eq!(
+            got.mode,
+            RunMode::Single {
+                provider: Some("openrouter".to_string())
+            }
+        );
+        assert_eq!(got.model, Some("deepseek/deepseek-v3-0324".to_string()));
+        assert_eq!(got.prompt, "explain this");
+    }
+
+    #[test]
+    fn model_override_no_provider() {
+        let got = parsed("#!model:deepseek/deepseek-v3-0324#! explain this");
+        assert_eq!(got.mode, RunMode::Single { provider: None });
+        assert_eq!(got.model, Some("deepseek/deepseek-v3-0324".to_string()));
+    }
+
+    #[test]
+    fn model_override_in_consensus_fails() {
+        let got = parse_prompt("#!consensus anthropic openai model:gpt-4o#! hello");
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn tools_allowlist_double_comma_filters_empty() {
+        // Double comma should not produce an empty-string entry — it's silently
+        // collapsed, giving the same result as a single comma.
+        let got = parsed("#!tools:read,,bash#! hello");
+        assert_eq!(
+            got.tools,
+            ToolMode::AllowList(vec!["read".to_string(), "bash".to_string()])
+        );
+    }
+
+    #[test]
+    fn tools_allowlist_only_commas_errors() {
+        // A value of only commas produces no valid names after filtering.
+        let got = parse_prompt("#!tools:,#! hello");
+        assert!(got.is_err());
     }
 
     fn parsed(input: &str) -> PromptDirectives {

@@ -5,7 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use super::{
-    AnthropicProvider, OpenAIProvider, Provider, ProviderRequest, ProviderResponse, ZaiProvider,
+    AnthropicProvider, OpenAIProvider, OpenRouterProvider, Provider, ProviderRequest,
+    ProviderResponse,
 };
 use crate::auth;
 
@@ -21,17 +22,12 @@ impl ProviderRegistry {
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
 
         let mut anthropic_index: Option<usize> = None;
-        let mut zai_index: Option<usize> = None;
         let mut openai_index: Option<usize> = None;
+        let mut openrouter_index: Option<usize> = None;
 
         if let Some(key) = auth::resolve_anthropic_api_key() {
             anthropic_index = Some(providers.len());
             providers.push(Box::new(AnthropicProvider::new(key)?));
-        }
-
-        if let Some(key) = auth::resolve_zai_api_key() {
-            zai_index = Some(providers.len());
-            providers.push(Box::new(ZaiProvider::new(key)?));
         }
 
         if let Some(key) = auth::resolve_openai_api_key() {
@@ -39,17 +35,21 @@ impl ProviderRegistry {
             providers.push(Box::new(OpenAIProvider::new(key)?));
         }
 
+        if let Some(key) = auth::resolve_openrouter_api_key() {
+            openrouter_index = Some(providers.len());
+            providers.push(Box::new(OpenRouterProvider::new(key)?));
+        }
+
         let default_index = match preferred.as_deref() {
-            Some("zai") => {
-                zai_index.context("ONELOOP_PROVIDER=zai but no ZAI_API_KEY/auth found")?
-            }
+            Some("openrouter") => openrouter_index
+                .context("ONELOOP_PROVIDER=openrouter but no OPENROUTER_API_KEY/auth found")?,
             Some("anthropic") => anthropic_index
                 .context("ONELOOP_PROVIDER=anthropic but no ANTHROPIC_API_KEY/auth found")?,
             Some("openai") => {
                 openai_index.context("ONELOOP_PROVIDER=openai but no OPENAI_API_KEY/auth found")?
             }
             Some(other) => bail!("unknown provider: {other}"),
-            None => zai_index
+            None => openrouter_index
                 .or(openai_index)
                 .or(anthropic_index)
                 .context("no providers configured — run `oneloop login <provider>` first")?,

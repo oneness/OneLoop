@@ -9,6 +9,8 @@ pub struct ProviderRequest {
     pub system_prompt: Option<String>,
     pub messages: Vec<crate::agent::messages::Message>,
     pub tools: Vec<crate::tools::ToolDefinition>,
+    /// Override the provider's configured model for this request only.
+    pub model_override: Option<String>,
 }
 
 /// Response from a provider.
@@ -27,14 +29,14 @@ pub trait Provider: Send + Sync {
 
 pub mod anthropic;
 pub mod openai;
+pub mod openrouter;
 pub mod registry;
-pub mod zai;
 
 // Re-export key types for convenience.
 pub use anthropic::AnthropicProvider;
 pub use openai::OpenAIProvider;
+pub use openrouter::OpenRouterProvider;
 pub use registry::ProviderRegistry;
-pub use zai::ZaiProvider;
 
 /// Extract a concise error message from a provider JSON error response.
 /// Falls back to truncating the raw text at 200 characters.
