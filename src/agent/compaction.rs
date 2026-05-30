@@ -1,4 +1,8 @@
 use std::env;
+use std::fs;
+use std::path::Path;
+
+use anyhow::Result;
 
 use super::messages::{AssistantMessage, Message, UserMessage};
 
@@ -142,6 +146,74 @@ fn summarize_tool_arguments(name: &str, arguments: &serde_json::Value) -> String
             .to_string(),
         _ => arguments.to_string(),
     }
+}
+
+/// The prompt sent to the model to extract memory facts from a compaction summary.
+pub const MEMORY_EXTRACTION_PROMPT: &str = r#"You are given a session summary. Extract a short bullet list of facts worth remembering in future sessions: user preferences, project decisions, recurring constraints, or anything the user would not want to repeat explaining.
+
+Rules:
+- Each bullet must be one line, starting with "- "
+- Only include facts that generalise beyond this single task (skip task-specific details)
+- If there is nothing worth keeping, respond with exactly: (nothing)
+- Do not include any other text, headers, or explanation"#;
+
+/// The maximum number of lines to keep in memory.md before trimming.
+const MEMORY_MAX_LINES: usize = 200;
+
+/// Build the memory extraction user message from a compaction summary.
+pub fn memory_extraction_message(summary: &str) -> String {
+    format!("Session summary:\n\n{summary}\n\n{MEMORY_EXTRACTION_PROMPT}")
+}
+
+/// Append new memory facts to memory.md and trim to MEMORY_MAX_LINES.
+/// `new_facts` is the raw model response; lines not starting with "- " are skipped.
+/// Does nothing if the response is "(nothing)" or contains no valid bullet lines.
+pub fn append_and_trim_memory(cwd: &Path, new_facts: &str) -> Result<()> {
+    let trimmed = new_facts.trim();
+    if trimmed == "(nothing)" {
+        return Ok(());
+    }
+
+    // Strip code fences and normalize indentation so the filter is robust
+    // against models that wrap output in ```markdown blocks or indent bullets.
+    let bullets: Vec<String> = trimmed
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .map(|l| l.trim_start().to_string())
+        .filter(|l| l.starts_with("- "))
+        .collect();
+
+    if bullets.is_empty() {
+        return Ok(());
+    }
+
+    let memory_path = crate::config::memory_path(cwd);
+    let dir = memory_path.parent().unwrap();
+    fs::create_dir_all(dir)?;
+
+    let existing = match fs::read_to_string(&memory_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Don't overwrite a file we can't read — propagate the error.
+        Err(e) => return Err(e.into()),
+    };
+    let mut lines: Vec<String> = existing
+        .lines()
+        .map(String::from)
+        .collect();
+
+    for bullet in bullets {
+        lines.push(bullet);
+    }
+
+    // Trim oldest lines when over the cap.
+    if lines.len() > MEMORY_MAX_LINES {
+        let drop = lines.len() - MEMORY_MAX_LINES;
+        lines.drain(..drop);
+    }
+
+    fs::write(&memory_path, lines.join("\n") + "\n")?;
+    Ok(())
 }
 
 /// Collect recent user messages from history (most recent first), up to

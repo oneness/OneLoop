@@ -464,6 +464,7 @@
     <h2>Auto-compaction</h2>
     <p class="big">When context nears the model's limit, the agent compacts:<br>generates a summary, rotates to a new session,<br>replays recent user messages verbatim.</p>
     <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">Triggered at <strong>85%</strong> of context window.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">A second cheap call distils the summary into <strong>memory.md</strong> —<br>durable facts that survive across sessions.</p>
   </div>
 </section>
 
@@ -478,6 +479,7 @@
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
       <tr><td><strong>AGENTS.md</strong></td><td>Loaded as system prompt if present</td></tr>
+      <tr><td><strong>memory.md</strong></td><td>Durable facts appended at compaction, loaded at startup</td></tr>
     </table>
   </div>
 </section>

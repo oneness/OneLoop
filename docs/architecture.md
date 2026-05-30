@@ -53,6 +53,14 @@ Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` d
 Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
 Use `model:` in a single-provider directive to override the model for that prompt.
 
+## Memory
+
+`.oneloop/memory.md` is a plain markdown file of bullet-point facts the agent accumulates across sessions. It is loaded at startup and appended to the system prompt under a `## Memory` heading, alongside `AGENTS.md`.
+
+Memory is updated automatically at compaction time via a second, cheap LLM call that receives only the compaction summary (not the full context) and extracts durable facts — user preferences, project decisions, recurring constraints. The response is appended to `memory.md`; the file is trimmed to 200 lines oldest-first if it grows past that.
+
+The file is human-readable and hand-editable. Delete lines to forget things, add lines to seed memory before the first compaction.
+
 ## Sessions
 
 Sessions are linear append-only JSONL files stored at:
@@ -87,12 +95,12 @@ src/
     orchestration.rs Consensus, debate, multi-provider evidence loops
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, file discovery
-    compaction.rs   Token estimation, tool output stripping, compaction
+    compaction.rs   Token estimation, tool output stripping, compaction, memory extraction
     evidence.rs     Evidence cache, safety checks, tool execution
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL, command routing, Ctrl+C handling
   auth.rs           API key storage in ~/.oneloop/auth.json
-  config.rs         System prompt loading from AGENTS.md
+  config.rs         System prompt assembly from AGENTS.md + .oneloop/memory.md
   output.rs         Output truncation utilities
   providers.rs      Provider trait, ProviderRequest/Response types
   providers/

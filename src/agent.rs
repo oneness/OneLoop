@@ -165,6 +165,48 @@ impl Agent {
 
         let summary = response.content;
 
+        // Memory extraction: send the compaction summary (not the full context)
+        // to a second, cheap call that distils durable facts into memory.md.
+        // Always uses the default provider (None) — memory is infrastructure,
+        // not user-directed, so the provider_override from the prompt must not
+        // carry over (it may name a provider that is rate-limited or unconfigured).
+        let memory_request = ProviderRequest {
+            system_prompt: None,
+            messages: vec![messages::Message::User(messages::UserMessage {
+                content: compaction::memory_extraction_message(&summary),
+            })],
+            tools: Vec::new(),
+            model_override: None,
+        };
+        // complete_once: single attempt, no retries, no interactive stdin prompt.
+        // Memory extraction is a background step — it must never block the loop.
+        match self
+            .provider_registry
+            .complete_once(self.provider_registry.active_name(), memory_request)
+            .await
+            .map(|r| ("memory".to_string(), r))
+        {
+            Ok((_provider, memory_response)) => {
+                match compaction::append_and_trim_memory(
+                    &self.config.cwd,
+                    &memory_response.content,
+                ) {
+                    Ok(()) => {
+                        // Reload system prompt so new memory is visible for the
+                        // remainder of this session, not just the next startup.
+                        self.config.system_prompt =
+                            crate::config::build_system_prompt(&self.config.cwd);
+                    }
+                    Err(e) => {
+                        eprintln!("\x1b[33m  ⚠ memory update failed: {e:#}\x1b[0m");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("\x1b[33m  ⚠ memory extraction failed: {e:#}\x1b[0m");
+            }
+        }
+
         let recent_user_messages =
             compaction::collect_recent_user_messages(self.session.messages());
 
@@ -182,8 +224,14 @@ impl Agent {
                 .to_string(),
         )?;
 
+        let system_prompt_chars_after = self
+            .config
+            .system_prompt
+            .as_ref()
+            .map(String::len)
+            .unwrap_or(0);
         let tokens_after =
-            compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
+            compaction::estimate_tokens(self.session.messages(), system_prompt_chars_after);
         let compact_duration = compact_start.elapsed();
 
         self.metrics.log(
