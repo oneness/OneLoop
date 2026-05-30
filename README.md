@@ -31,6 +31,15 @@ Commands:
 
 Runs a single prompt and exits.
 
+### Piped input
+
+```bash
+git diff | ./ol "summarise these changes"
+cat error.log | ./ol "what is causing this?"
+```
+
+When stdin is a pipe, its content is prepended to the prompt and the agent runs non-interactively.
+
 ### Login
 
 ```bash
