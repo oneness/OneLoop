@@ -64,8 +64,8 @@ impl Tool for WebSearchTool {
         "web_search"
     }
 
-    fn description(&self) -> &'static str {
-        "Search the web using a SearXNG meta search engine. Returns ranked results with titles, URLs, and snippets."
+    fn description(&self) -> String {
+        "Search the web using a SearXNG meta search engine. Returns ranked results with titles, URLs, and snippets.".to_string()
     }
 
     fn schema(&self) -> Value {

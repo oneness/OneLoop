@@ -267,7 +267,7 @@
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="tagline">A tiny coding agent.<br>One loop, multiple models, five tools, zero config.</p>
+    <p class="tagline">A tiny coding agent.<br>One loop, multiple models, six tools, zero config.</p>
   </div>
 </section>
 
@@ -383,19 +383,34 @@
   </div>
 </section>
 
-<!-- ═══ 13. Five Tools ═══ -->
+<!-- ═══ 13. Tools ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">tools</div>
-    <h2>Five tools</h2>
+    <h2>Six tools</h2>
     <div class="tool-grid">
       <div class="tool-item"><code>read</code> <span>File contents</span></div>
       <div class="tool-item"><code>write</code> <span>Create or overwrite</span></div>
       <div class="tool-item"><code>edit</code> <span>Search-and-replace</span></div>
       <div class="tool-item"><code>bash</code> <span>Shell commands</span></div>
       <div class="tool-item"><code>web_search</code> <span>SearXNG search</span></div>
-      <div></div>
+      <div class="tool-item"><code>skill</code> <span>Load a playbook on demand</span></div>
     </div>
+  </div>
+</section>
+
+<!-- ═══ 14. Skills ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">skills</div>
+    <h2>Skills</h2>
+    <p class="big">Markdown playbooks the model loads on demand.<br>Not in the system prompt — pulled in only when needed.</p>
+    <div class="mono" style="margin-top: 20px; font-size: 15px; text-align: left;">
+      ~/.oneloop/skills/code-review.md<br>
+      .oneloop/skills/changelog.md<br>
+      .oneloop/skills/migration.md
+    </div>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">The model sees names + descriptions at startup.<br>It calls <code>skill("name")</code> when the task matches — no user action needed.</p>
   </div>
 </section>
 
@@ -480,6 +495,7 @@
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
       <tr><td><strong>AGENTS.md</strong></td><td>Loaded as system prompt if present</td></tr>
       <tr><td><strong>memory.md</strong></td><td>Durable facts appended at compaction, loaded at startup</td></tr>
+      <tr><td><strong>skills/</strong></td><td>Playbooks loaded on demand via the <code>skill</code> tool</td></tr>
     </table>
   </div>
 </section>
@@ -505,13 +521,14 @@
     <div class="label">get started</div>
     <h2>Quick start</h2>
     <div class="mono" style="text-align: left;">
-      <span class="cm"># Install credentials</span><br>
-      ./ol login openrouter<br>
-      ./ol login anthropic<br><br>
-      <span class="cm"># Interactive mode</span><br>
+      <span class="cm"># 1. Add credentials</span><br>
+      ./ol login openrouter<br><br>
+      <span class="cm"># 2. Interactive REPL</span><br>
       ./ol<br><br>
-      <span class="cm"># Model override</span><br>
-      <span class="kw">#!</span><span class="str">model:deepseek/deepseek-v3-0324</span><span class="kw">#!</span> <span class="str">refactor this</span>
+      <span class="cm"># One-shot</span><br>
+      ./ol "explain this codebase"<br><br>
+      <span class="cm"># Pipe into it</span><br>
+      git diff | ./ol "summarise these changes"
     </div>
   </div>
 </section>

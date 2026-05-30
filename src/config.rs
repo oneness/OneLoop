@@ -7,6 +7,7 @@ use std::{
 pub struct Config {
     pub cwd: PathBuf,
     pub system_prompt: Option<String>,
+    pub prompt_sources: Vec<&'static str>,
 }
 
 impl Default for Config {
@@ -16,7 +17,8 @@ impl Default for Config {
             .or_else(|_| env::current_dir())
             .unwrap_or_else(|_| PathBuf::from("."));
         let system_prompt = build_system_prompt(&cwd);
-        Self { cwd, system_prompt }
+        let prompt_sources = prompt_sources(&cwd);
+        Self { cwd, system_prompt, prompt_sources }
     }
 }
 
@@ -35,6 +37,17 @@ pub fn build_system_prompt(cwd: &Path) -> Option<String> {
 
 pub fn memory_path(cwd: &Path) -> PathBuf {
     cwd.join(".oneloop").join("memory.md")
+}
+
+pub fn prompt_sources(cwd: &Path) -> Vec<&'static str> {
+    let mut sources = Vec::new();
+    if load_file(cwd.join("AGENTS.md").as_path()).is_some() {
+        sources.push("AGENTS.md");
+    }
+    if load_file(memory_path(cwd).as_path()).is_some() {
+        sources.push(".oneloop/memory.md");
+    }
+    sources
 }
 
 fn load_file(path: &Path) -> Option<String> {

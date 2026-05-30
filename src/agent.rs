@@ -196,6 +196,8 @@ impl Agent {
                         // remainder of this session, not just the next startup.
                         self.config.system_prompt =
                             crate::config::build_system_prompt(&self.config.cwd);
+                        self.config.prompt_sources =
+                            crate::config::prompt_sources(&self.config.cwd);
                     }
                     Err(e) => {
                         eprintln!("\x1b[33m  ⚠ memory update failed: {e:#}\x1b[0m");
@@ -469,28 +471,25 @@ impl Agent {
         let provider_model = self.provider_registry.active_model();
         let all_providers = self.provider_registry.available_providers().join(", ");
         let tools = self.tool_registry.names().join(", ");
-        let has_system = self
-            .config
-            .system_prompt
-            .as_ref()
-            .is_some_and(|text| !text.trim().is_empty());
-
-        let session_info = if message_count > 0 {
-            format!(
-                "session: {} ({message_count} messages)",
-                self.session.path().display()
-            )
+        let context = if self.config.prompt_sources.is_empty() {
+            "none".to_string()
         } else {
-            format!("session: {} (new)", self.session.path().display())
+            self.config.prompt_sources.join(", ")
         };
 
+        let session_state = if message_count > 0 {
+            format!("{message_count} messages")
+        } else {
+            "new".to_string()
+        };
+        let session_path = self.session.path().display();
+
         format!(
-            "provider: {provider} ({provider_model})\n\
+            "provider : {provider} ({provider_model})\n\
              available: {all_providers}\n\
-             tools: {tools}\n\
-             {session_info}\n\
-             system_prompt: {}",
-            if has_system { "loaded" } else { "none" }
+             tools    : {tools}\n\
+             session  : {session_path} ({session_state})\n\
+             context  : {context}"
         )
     }
 }

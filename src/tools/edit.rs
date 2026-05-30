@@ -22,8 +22,8 @@ impl Tool for EditTool {
         "edit"
     }
 
-    fn description(&self) -> &'static str {
-        "Edit file contents"
+    fn description(&self) -> String {
+        "Edit file contents".to_string()
     }
 
     fn schema(&self) -> Value {

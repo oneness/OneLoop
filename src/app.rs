@@ -102,7 +102,7 @@ impl App {
 
     pub async fn run(self, prompt: Option<String>) -> Result<()> {
         let provider_registry = ProviderRegistry::new()?;
-        let tool_registry = ToolRegistry::with_builtin_tools()?;
+        let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
         let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
 
         match prompt {

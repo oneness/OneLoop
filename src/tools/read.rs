@@ -23,8 +23,8 @@ impl Tool for ReadTool {
         "read"
     }
 
-    fn description(&self) -> &'static str {
-        "Read file contents"
+    fn description(&self) -> String {
+        "Read file contents".to_string()
     }
 
     fn schema(&self) -> Value {

@@ -7,6 +7,8 @@ mod output;
 mod providers;
 mod tools;
 
+use std::io::{self, IsTerminal, Read};
+
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
@@ -35,10 +37,19 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Login { provider }) => login(&provider),
         None => {
-            let prompt = if cli.prompt.is_empty() {
-                None
+            let stdin = if !io::stdin().is_terminal() {
+                let mut buf = String::new();
+                io::stdin().read_to_string(&mut buf)?;
+                if buf.trim().is_empty() { None } else { Some(buf) }
             } else {
-                Some(cli.prompt.join(" "))
+                None
+            };
+            let args = if cli.prompt.is_empty() { None } else { Some(cli.prompt.join(" ")) };
+            let prompt = match (stdin, args) {
+                (None, None) => None,
+                (None, Some(a)) => Some(a),
+                (Some(s), None) => Some(s),
+                (Some(s), Some(a)) => Some(format!("{s}\n\n{a}")),
             };
             let app = app::App::new(config::Config::default());
             app.run(prompt).await

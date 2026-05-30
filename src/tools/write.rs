@@ -23,8 +23,8 @@ impl Tool for WriteTool {
         "write"
     }
 
-    fn description(&self) -> &'static str {
-        "Write file contents"
+    fn description(&self) -> String {
+        "Write file contents".to_string()
     }
 
     fn schema(&self) -> Value {

@@ -53,6 +53,18 @@ Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` d
 Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
 Use `model:` in a single-provider directive to override the model for that prompt.
 
+## Skills
+
+Skill files are markdown files that contain task-specific instructions the agent loads on demand. They are not in the system prompt at startup — instead, the `skill` tool lists them by name and description so the model can pull one in when relevant.
+
+Scan order (project-local shadows global for the same name):
+1. `~/.oneloop/skills/*.md` — global, shared across all projects
+2. `.oneloop/skills/*.md` — project-local
+
+The first non-empty, non-heading line of each file is used as the skill's description in the tool listing. The full file content is returned as the tool result when the model calls `skill("name")`.
+
+If no skill files are found at startup, the `skill` tool is not registered.
+
 ## Memory
 
 `.oneloop/memory.md` is a plain markdown file of bullet-point facts the agent accumulates across sessions. It is loaded at startup and appended to the system prompt under a `## Memory` heading, alongside `AGENTS.md`.
@@ -115,6 +127,7 @@ src/
     write.rs        File writing
     edit.rs         Find-and-replace file editing
     web_search.rs   SearXNG web search
+    skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
 docs/
   architecture.md   This file
   overview.html     Executive presentation (browser, space-bar nav)

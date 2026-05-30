@@ -30,8 +30,8 @@ impl Tool for BashTool {
         "bash"
     }
 
-    fn description(&self) -> &'static str {
-        "Execute a shell command"
+    fn description(&self) -> String {
+        "Execute a shell command".to_string()
     }
 
     fn schema(&self) -> Value {
