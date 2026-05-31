@@ -3,6 +3,7 @@ result/
 .direnv/
 .env
 .oneloop/
+.claude/
 *.o
 *.d
 *.bin
