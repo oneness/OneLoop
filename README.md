@@ -4,7 +4,7 @@ A tiny coding agent. One loop, multiple models, six tools, zero config.
 
 ## Quick links
 
-- **[Overview](docs/overview.html)** — executive presentation (open in browser, space-bar to navigate)
+- **[Overview](https://oneness.github.io/oneloop/)** — executive presentation (space-bar to navigate)
 - **[Architecture](docs/architecture.md)** — how the agent loop, providers, tools, and sessions work
 - **[Style guide](docs/style-guide.md)** — coding conventions and lint config
 

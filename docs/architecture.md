@@ -130,6 +130,6 @@ src/
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
 docs/
   architecture.md   This file
-  overview.html     Executive presentation (browser, space-bar nav)
+  index.html        Executive presentation (GitHub Pages, space-bar nav)
   style-guide.md    Coding conventions and lint config
 ```
