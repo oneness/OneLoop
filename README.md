@@ -96,3 +96,13 @@ Credentials are resolved from `~/.oneloop/auth.json` first, then from environmen
 nix develop
 cargo check
 ```
+
+## Contributing
+
+This project is personal software that I maintain for my own use. I do not accept pull requests.
+
+If it's useful to you: fork it, copy the code, adapt it freely. The only ask is that you keep the copyright notice intact (MIT license).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
