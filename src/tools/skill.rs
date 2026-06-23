@@ -68,7 +68,11 @@ fn collect_skills(dir: &Path, skills: &mut Vec<Skill>) {
             existing.description = description;
             existing.path = path;
         } else {
-            skills.push(Skill { name, description, path });
+            skills.push(Skill {
+                name,
+                description,
+                path,
+            });
         }
     }
 }
@@ -138,7 +142,10 @@ impl Tool for SkillTool {
             Some(skill) => {
                 let content = fs::read_to_string(&skill.path)
                     .with_context(|| format!("failed to read skill: {}", skill.path.display()))?;
-                Ok(ToolResult { content, is_error: false })
+                Ok(ToolResult {
+                    content,
+                    is_error: false,
+                })
             }
         }
     }

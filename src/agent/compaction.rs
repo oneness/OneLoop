@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::messages::{AssistantMessage, Message, UserMessage};
 
@@ -188,7 +188,9 @@ pub fn append_and_trim_memory(cwd: &Path, new_facts: &str) -> Result<()> {
     }
 
     let memory_path = crate::config::memory_path(cwd);
-    let dir = memory_path.parent().unwrap();
+    let dir = memory_path
+        .parent()
+        .with_context(|| format!("memory path has no parent: {}", memory_path.display()))?;
     fs::create_dir_all(dir)?;
 
     let existing = match fs::read_to_string(&memory_path) {
@@ -197,10 +199,7 @@ pub fn append_and_trim_memory(cwd: &Path, new_facts: &str) -> Result<()> {
         // Don't overwrite a file we can't read — propagate the error.
         Err(e) => return Err(e.into()),
     };
-    let mut lines: Vec<String> = existing
-        .lines()
-        .map(String::from)
-        .collect();
+    let mut lines: Vec<String> = existing.lines().map(String::from).collect();
 
     for bullet in bullets {
         lines.push(bullet);

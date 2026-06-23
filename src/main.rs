@@ -40,11 +40,19 @@ async fn main() -> Result<()> {
             let stdin = if !io::stdin().is_terminal() {
                 let mut buf = String::new();
                 io::stdin().read_to_string(&mut buf)?;
-                if buf.trim().is_empty() { None } else { Some(buf) }
+                if buf.trim().is_empty() {
+                    None
+                } else {
+                    Some(buf)
+                }
             } else {
                 None
             };
-            let args = if cli.prompt.is_empty() { None } else { Some(cli.prompt.join(" ")) };
+            let args = if cli.prompt.is_empty() {
+                None
+            } else {
+                Some(cli.prompt.join(" "))
+            };
             let prompt = match (stdin, args) {
                 (None, None) => None,
                 (None, Some(a)) => Some(a),

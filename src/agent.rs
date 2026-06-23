@@ -187,10 +187,8 @@ impl Agent {
             .map(|r| ("memory".to_string(), r))
         {
             Ok((_provider, memory_response)) => {
-                match compaction::append_and_trim_memory(
-                    &self.config.cwd,
-                    &memory_response.content,
-                ) {
+                match compaction::append_and_trim_memory(&self.config.cwd, &memory_response.content)
+                {
                     Ok(()) => {
                         // Reload system prompt so new memory is visible for the
                         // remainder of this session, not just the next startup.

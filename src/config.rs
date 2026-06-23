@@ -18,7 +18,11 @@ impl Default for Config {
             .unwrap_or_else(|_| PathBuf::from("."));
         let system_prompt = build_system_prompt(&cwd);
         let prompt_sources = prompt_sources(&cwd);
-        Self { cwd, system_prompt, prompt_sources }
+        Self {
+            cwd,
+            system_prompt,
+            prompt_sources,
+        }
     }
 }
 
@@ -52,5 +56,9 @@ pub fn prompt_sources(cwd: &Path) -> Vec<&'static str> {
 
 fn load_file(path: &Path) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
-    if content.trim().is_empty() { None } else { Some(content) }
+    if content.trim().is_empty() {
+        None
+    } else {
+        Some(content)
+    }
 }
