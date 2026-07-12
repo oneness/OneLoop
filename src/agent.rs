@@ -21,7 +21,7 @@ use crate::{
     providers::{ProviderRegistry, ProviderRequest},
     tools::{ToolRegistry, ToolResult},
 };
-use crate::output::{DIM, GREEN, RED, RESET, YELLOW};
+use crate::output::{DIM, RED, RESET};
 
 use spinner::SpinnerGuard;
 
@@ -107,151 +107,7 @@ impl Agent {
 
     /// Check if auto-compaction is needed and perform it.
     pub async fn auto_compact_if_needed(&mut self, provider_override: Option<&str>) -> Result<()> {
-        let system_prompt_chars = self
-            .config
-            .system_prompt
-            .as_ref()
-            .map(String::len)
-            .unwrap_or(0);
-
-        if !compaction::should_compact(self.session.messages(), system_prompt_chars) {
-            return Ok(());
-        }
-
-        println!("{YELLOW}  ⚠ context near limit — auto-compacting...{RESET}");
-
-        let tokens_before =
-            compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
-        let compact_start = Instant::now();
-
-        let lightweight = compaction::strip_tool_outputs(self.session.messages());
-
-        let spinner = SpinnerGuard::new("compacting...");
-
-        use crate::agent::messages::{Message, UserMessage};
-        let mut compact_messages = lightweight;
-        compact_messages.push(Message::User(UserMessage {
-            content: compaction::compaction_user_message(),
-        }));
-
-        let request = ProviderRequest {
-            system_prompt: self.config.system_prompt.clone(),
-            messages: compact_messages,
-            tools: Vec::new(),
-            model_override: None,
-        };
-
-        let response = match self
-            .provider_registry
-            .complete_with_retry(
-                provider_override,
-                request,
-                Some(spinner.stop_callback()),
-                Some(spinner.start_callback("compacting...")),
-            )
-            .await
-        {
-            Ok((_used_provider, response)) => response,
-            Err(e) => {
-                spinner.stop();
-                eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
-                return Ok(());
-            }
-        };
-        spinner.stop();
-
-        let summary = response.content;
-
-        // Memory extraction: send the compaction summary (not the full context)
-        // to a second, cheap call that distils durable facts into memory.md.
-        // Always uses the default provider (None) — memory is infrastructure,
-        // not user-directed, so the provider_override from the prompt must not
-        // carry over (it may name a provider that is rate-limited or unconfigured).
-        let memory_request = ProviderRequest {
-            system_prompt: None,
-            messages: vec![messages::Message::User(messages::UserMessage {
-                content: compaction::memory_extraction_message(&summary),
-            })],
-            tools: Vec::new(),
-            model_override: None,
-        };
-        // complete_once: single attempt, no retries, no interactive stdin prompt.
-        // Memory extraction is a background step — it must never block the loop.
-        match self
-            .provider_registry
-            .complete_once(self.provider_registry.active_name(), memory_request)
-            .await
-            .map(|r| ("memory".to_string(), r))
-        {
-            Ok((_provider, memory_response)) => {
-                match compaction::append_and_trim_memory(&self.config.cwd, &memory_response.content)
-                {
-                    Ok(()) => {
-                        // Reload system prompt so new memory is visible for the
-                        // remainder of this session, not just the next startup.
-                        self.config.system_prompt = crate::config::build_system_prompt(
-                            &self.config.cwd,
-                            &self.tool_registry.names(),
-                        );
-                        self.config.prompt_sources =
-                            crate::config::prompt_sources(&self.config.cwd);
-                    }
-                    Err(e) => {
-                        eprintln!("{YELLOW}  ⚠ memory update failed: {e:#}{RESET}");
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("{YELLOW}  ⚠ memory extraction failed: {e:#}{RESET}");
-            }
-        }
-
-        let recent_user_messages =
-            compaction::collect_recent_user_messages(self.session.messages());
-
-        self.session = self.session.rotate()?;
-        self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
-
-        for user_msg in &recent_user_messages {
-            self.session.push_user(user_msg.clone())?;
-        }
-
-        self.session
-            .push_user(format!("{}{}", compaction::SUMMARY_PREFIX, summary))?;
-        self.session.push_assistant(
-            "Understood. I have the context from the previous session. Ready to continue."
-                .to_string(),
-        )?;
-
-        let system_prompt_chars_after = self
-            .config
-            .system_prompt
-            .as_ref()
-            .map(String::len)
-            .unwrap_or(0);
-        let tokens_after =
-            compaction::estimate_tokens(self.session.messages(), system_prompt_chars_after);
-        let compact_duration = compact_start.elapsed();
-
-        self.metrics.log(
-            "compaction",
-            json!({
-                "duration_ms": compact_duration.as_millis(),
-                "tokens_before": tokens_before,
-                "tokens_after": tokens_after,
-            }),
-        );
-
-        println!(
-            "{GREEN}  ✓ compacted — new session: {} ({} recent messages preserved){RESET}",
-            self.session.path().display(),
-            recent_user_messages.len()
-        );
-        println!(
-            "{DIM}  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.{RESET}"
-        );
-
-        Ok(())
+        compaction::auto_compact_if_needed(self, provider_override).await
     }
 
     pub async fn run_consensus(
@@ -390,79 +246,80 @@ impl Agent {
                 break;
             }
 
-            let tool_calls = response.tool_calls;
-            let tool_start = Instant::now();
+            self.execute_tool_calls(response.tool_calls).await?;
+        }
 
-            for tc in &tool_calls {
-                self.session.push_tool_call(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    tc.arguments.clone(),
-                )?;
-            }
+        Ok(())
+    }
 
-            let tool_spinner = SpinnerGuard::new("running tools...");
+    /// Record, execute in parallel, and report one batch of tool calls.
+    async fn execute_tool_calls(&mut self, tool_calls: Vec<messages::ToolCall>) -> Result<()> {
+        let tool_start = Instant::now();
 
-            let handles: Vec<_> = tool_calls
-                .iter()
-                .map(|tc| {
-                    let name = tc.name.clone();
-                    let arguments = tc.arguments.clone();
-                    let ctx = AgentContext {
-                        cwd: self.config.cwd.clone(),
-                    };
-                    let registry = self.tool_registry.clone();
-                    tokio::spawn(async move { registry.execute(&name, arguments, &ctx).await })
-                })
-                .collect();
+        for tc in &tool_calls {
+            self.session
+                .push_tool_call(tc.id.clone(), tc.name.clone(), tc.arguments.clone())?;
+        }
 
-            let results: Vec<_> = join_all(handles)
-                .await
-                .into_iter()
-                .map(|res| match res {
-                    Ok(Ok(r)) => r,
-                    Ok(Err(e)) => ToolResult {
-                        content: format!("Tool execution failed: {e:#}"),
-                        is_error: true,
-                    },
-                    Err(join_err) => ToolResult {
-                        content: format!("Tool task failed: {join_err}"),
-                        is_error: true,
-                    },
-                })
-                .collect();
+        let spinner = SpinnerGuard::new("running tools...");
 
-            tool_spinner.stop();
+        let handles: Vec<_> = tool_calls
+            .iter()
+            .map(|tc| {
+                let name = tc.name.clone();
+                let arguments = tc.arguments.clone();
+                let ctx = AgentContext {
+                    cwd: self.config.cwd.clone(),
+                };
+                let registry = self.tool_registry.clone();
+                tokio::spawn(async move { registry.execute(&name, arguments, &ctx).await })
+            })
+            .collect();
 
-            let tool_duration = tool_start.elapsed();
+        let results: Vec<_> = join_all(handles)
+            .await
+            .into_iter()
+            .map(|res| match res {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => ToolResult {
+                    content: format!("Tool execution failed: {e:#}"),
+                    is_error: true,
+                },
+                Err(join_err) => ToolResult {
+                    content: format!("Tool task failed: {join_err}"),
+                    is_error: true,
+                },
+            })
+            .collect();
 
-            self.metrics.log(
-                "tool_exec",
-                json!({
-                    "duration_ms": tool_duration.as_millis(),
-                    "tools": tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
-                    "success": results.iter().all(|r| !r.is_error),
-                }),
-            );
+        spinner.stop();
 
-            for (tc, result) in tool_calls.iter().zip(results) {
-                let tool_label = format_tool_call(&tc.name, &tc.arguments);
+        self.metrics.log(
+            "tool_exec",
+            json!({
+                "duration_ms": tool_start.elapsed().as_millis(),
+                "tools": tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
+                "success": results.iter().all(|r| !r.is_error),
+            }),
+        );
 
-                self.session.push_tool_result(
-                    tc.id.clone(),
-                    tc.name.clone(),
-                    result.content.clone(),
-                    result.is_error,
-                )?;
+        for (tc, result) in tool_calls.iter().zip(results) {
+            let tool_label = format_tool_call(&tc.name, &tc.arguments);
 
-                if result.is_error {
-                    println!("{RED}  ✗ {tool_label}{RESET}");
-                    println!("{}", result.content);
-                } else {
-                    let lines = result.content.lines().count();
-                    let bytes = result.content.len();
-                    println!("{DIM}  ✓ {tool_label} ({lines} lines, {bytes} bytes){RESET}");
-                }
+            self.session.push_tool_result(
+                tc.id.clone(),
+                tc.name.clone(),
+                result.content.clone(),
+                result.is_error,
+            )?;
+
+            if result.is_error {
+                println!("{RED}  ✗ {tool_label}{RESET}");
+                println!("{}", result.content);
+            } else {
+                let lines = result.content.lines().count();
+                let bytes = result.content.len();
+                println!("{DIM}  ✓ {tool_label} ({lines} lines, {bytes} bytes){RESET}");
             }
         }
 

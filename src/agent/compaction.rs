@@ -1,9 +1,15 @@
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 
 use super::messages::{AssistantMessage, Message, UserMessage};
+use super::spinner::SpinnerGuard;
+use super::{Agent, metrics};
+use crate::output::{DIM, GREEN, RED, RESET, YELLOW};
+use crate::providers::ProviderRequest;
 
 /// Approximate characters per token (conservative for mixed code/prose).
 const CHARS_PER_TOKEN: usize = 4;
@@ -35,6 +41,150 @@ Include:
 - Any critical data, examples, or references needed to continue
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work."#;
+
+/// Check whether the session is near the context limit and, if so, hand off:
+/// summarize the session, distil durable facts into memory.md, and start a
+/// fresh session seeded with the summary and recent user messages.
+pub async fn auto_compact_if_needed(
+    agent: &mut Agent,
+    provider_override: Option<&str>,
+) -> Result<()> {
+    let system_prompt_chars = agent
+        .config
+        .system_prompt
+        .as_ref()
+        .map(String::len)
+        .unwrap_or(0);
+
+    if !should_compact(agent.session.messages(), system_prompt_chars) {
+        return Ok(());
+    }
+
+    println!("{YELLOW}  ⚠ context near limit — auto-compacting...{RESET}");
+
+    let tokens_before = estimate_tokens(agent.session.messages(), system_prompt_chars);
+    let compact_start = Instant::now();
+
+    let spinner = SpinnerGuard::new("compacting...");
+
+    let mut compact_messages = strip_tool_outputs(agent.session.messages());
+    compact_messages.push(Message::User(UserMessage {
+        content: compaction_user_message(),
+    }));
+
+    let request = ProviderRequest {
+        system_prompt: agent.config.system_prompt.clone(),
+        messages: compact_messages,
+        tools: Vec::new(),
+        model_override: None,
+    };
+
+    let response = match agent
+        .provider_registry
+        .complete_with_retry(
+            provider_override,
+            request,
+            Some(spinner.stop_callback()),
+            Some(spinner.start_callback("compacting...")),
+        )
+        .await
+    {
+        Ok((_used_provider, response)) => response,
+        Err(e) => {
+            spinner.stop();
+            eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
+            return Ok(());
+        }
+    };
+    spinner.stop();
+
+    let summary = response.content;
+
+    // Memory extraction: send the compaction summary (not the full context)
+    // to a second, cheap call that distils durable facts into memory.md.
+    // Always uses the default provider (None) — memory is infrastructure,
+    // not user-directed, so the provider_override from the prompt must not
+    // carry over (it may name a provider that is rate-limited or unconfigured).
+    let memory_request = ProviderRequest {
+        system_prompt: None,
+        messages: vec![Message::User(UserMessage {
+            content: memory_extraction_message(&summary),
+        })],
+        tools: Vec::new(),
+        model_override: None,
+    };
+    // complete_once: single attempt, no retries, no interactive stdin prompt.
+    // Memory extraction is a background step — it must never block the loop.
+    match agent
+        .provider_registry
+        .complete_once(agent.provider_registry.active_name(), memory_request)
+        .await
+    {
+        Ok(memory_response) => {
+            match append_and_trim_memory(&agent.config.cwd, &memory_response.content) {
+                Ok(()) => {
+                    // Reload system prompt so new memory is visible for the
+                    // remainder of this session, not just the next startup.
+                    agent.config.system_prompt = crate::config::build_system_prompt(
+                        &agent.config.cwd,
+                        &agent.tool_registry.names(),
+                    );
+                    agent.config.prompt_sources = crate::config::prompt_sources(&agent.config.cwd);
+                }
+                Err(e) => {
+                    eprintln!("{YELLOW}  ⚠ memory update failed: {e:#}{RESET}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{YELLOW}  ⚠ memory extraction failed: {e:#}{RESET}");
+        }
+    }
+
+    let recent_user_messages = collect_recent_user_messages(agent.session.messages());
+
+    agent.session = agent.session.rotate()?;
+    agent.metrics = metrics::Metrics::from_session_path(agent.session.path())?;
+
+    for user_msg in &recent_user_messages {
+        agent.session.push_user(user_msg.clone())?;
+    }
+
+    agent
+        .session
+        .push_user(format!("{SUMMARY_PREFIX}{summary}"))?;
+    agent.session.push_assistant(
+        "Understood. I have the context from the previous session. Ready to continue.".to_string(),
+    )?;
+
+    let system_prompt_chars_after = agent
+        .config
+        .system_prompt
+        .as_ref()
+        .map(String::len)
+        .unwrap_or(0);
+    let tokens_after = estimate_tokens(agent.session.messages(), system_prompt_chars_after);
+
+    agent.metrics.log(
+        "compaction",
+        json!({
+            "duration_ms": compact_start.elapsed().as_millis(),
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+        }),
+    );
+
+    println!(
+        "{GREEN}  ✓ compacted — new session: {} ({} recent messages preserved){RESET}",
+        agent.session.path().display(),
+        recent_user_messages.len()
+    );
+    println!(
+        "{DIM}  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.{RESET}"
+    );
+
+    Ok(())
+}
 
 /// Estimate the total token count for a slice of messages.
 pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usize {

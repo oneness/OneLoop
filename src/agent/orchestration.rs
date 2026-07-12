@@ -4,18 +4,20 @@
 //! main agent via `request_evidence`. The main agent executes, caches, and
 //! shares results.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use futures::future::join_all;
 
+use crate::agent::evidence::SharedCache;
 use crate::agent::spinner::SpinnerGuard;
 use crate::agent::{AgentContext, messages};
 use crate::directives::ToolMode;
-use crate::providers::{ProviderRegistry, ProviderRequest};
-use crate::tools::{ToolRegistry, ToolResult};
 use crate::output::{DIM, RESET};
+use crate::providers::{ProviderRegistry, ProviderRequest};
+use crate::tools::{ToolDefinition, ToolRegistry, ToolResult};
 
 /// Shared context for orchestration operations — avoids passing the same
 /// handful of parameters through every function signature.
@@ -276,121 +278,18 @@ async fn collect_provider_responses(
     let handles: Vec<_> = providers
         .iter()
         .map(|provider_name| {
-            let provider_name = provider_name.clone();
-            let provider_registry = pctx.provider_registry.clone();
-            let tool_registry = pctx.tool_registry.clone();
-            let system_prompt = pctx.system_prompt.clone();
-            let cwd = pctx.cwd.to_path_buf();
-            let cache = cache.clone();
-            let allowed = allowed.clone();
-            let evidence_tool_def = evidence_tool_def.clone();
-            let prompt_text = prompt.to_string();
-
-            tokio::spawn(async move {
-                let mut req = ProviderRequest {
-                    system_prompt,
-                    messages: vec![messages::Message::User(messages::UserMessage {
-                        content: prompt_text,
-                    })],
-                    tools: vec![evidence_tool_def],
-                    model_override: None,
-                };
-                let provider_label = provider_name.clone();
-                let ctx = AgentContext { cwd };
-
-                for iteration in 0..max_iterations {
-                    let response = provider_registry
-                        .complete_once(&provider_name, req.clone())
-                        .await?;
-
-                    // No tool calls → final answer.
-                    if response.tool_calls.is_empty() {
-                        return Ok::<_, anyhow::Error>((provider_label, response.content));
-                    }
-
-                    // Process each evidence request through the cache.
-                    let mut tool_results: Vec<ToolResult> = Vec::new();
-                    for tc in &response.tool_calls {
-                        if tc.name != "request_evidence" {
-                            tool_results.push(ToolResult {
-                                content: "Unknown tool. Use request_evidence to request information.".to_string(),
-                                is_error: true,
-                            });
-                            continue;
-                        }
-
-                        let evidence_tool = tc.arguments.get("tool")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let evidence_args = tc.arguments.get("args")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Object(Default::default()));
-                        let description = tc.arguments.get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        let label = crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
-                        let cached = cache
-                            .lock()
-                            .map(|cache| cache.has(evidence_tool, &evidence_args))
-                            .unwrap_or(false);
-                        let cache_tag = if cached { " (cached)" } else { "" };
-
-                        let result = crate::agent::evidence::execute(
-                            evidence_tool,
-                            &evidence_args,
-                            &allowed,
-                            &cache,
-                            &tool_registry,
-                            &ctx,
-                        )
-                        .await;
-
-                        if result.is_error {
-                            eprintln!("{DIM}    {provider_label} ✗ {label}{cache_tag}{RESET}");
-                        } else {
-                            let lines = result.content.lines().count();
-                            let bytes = result.content.len();
-                            eprintln!("{DIM}    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}{RESET}");
-                        }
-
-                        tool_results.push(result);
-                    }
-
-                    // Append tool call + result messages.
-                    // Only include assistant text if non-empty — Anthropic rejects
-                    // empty text blocks ("text content blocks must be non-empty").
-                    use crate::agent::messages::{
-                        AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
-                    };
-                    if !response.content.trim().is_empty() {
-                        req.messages.push(Message::Assistant(AssistantMessage {
-                            content: response.content.clone(),
-                        }));
-                    }
-                    for tc in &response.tool_calls {
-                        req.messages.push(Message::ToolCall(MsgToolCall {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                        }));
-                    }
-                    for (tc, result) in response.tool_calls.iter().zip(tool_results) {
-                        req.messages.push(Message::ToolResult(ToolResultMessage {
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            content: result.content,
-                            is_error: result.is_error,
-                        }));
-                    }
-
-                    if iteration == max_iterations - 1 {
-                        return Ok((provider_label, response.content));
-                    }
-                }
-
-                Ok((provider_label, String::new()))
-            })
+            tokio::spawn(run_evidence_loop(EvidenceLoop {
+                provider_name: provider_name.clone(),
+                provider_registry: pctx.provider_registry.clone(),
+                tool_registry: pctx.tool_registry.clone(),
+                system_prompt: pctx.system_prompt.clone(),
+                cwd: pctx.cwd.to_path_buf(),
+                cache: cache.clone(),
+                allowed: allowed.clone(),
+                evidence_tool_def: evidence_tool_def.clone(),
+                prompt: prompt.to_string(),
+                max_iterations,
+            }))
         })
         .collect();
 
@@ -404,6 +303,148 @@ async fn collect_provider_responses(
             Err(join_err) => bail!("provider task failed: {join_err}"),
         })
         .collect()
+}
+
+/// Owned inputs for one provider's evidence loop; each loop runs as its
+/// own tokio task.
+struct EvidenceLoop {
+    provider_name: String,
+    provider_registry: Arc<ProviderRegistry>,
+    tool_registry: ToolRegistry,
+    system_prompt: Option<String>,
+    cwd: PathBuf,
+    cache: SharedCache,
+    allowed: HashSet<&'static str>,
+    evidence_tool_def: ToolDefinition,
+    prompt: String,
+    max_iterations: usize,
+}
+
+/// Ask one provider repeatedly, serving its request_evidence calls through
+/// the shared cache, until it gives a final answer or iterations run out.
+async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
+    let EvidenceLoop {
+        provider_name,
+        provider_registry,
+        tool_registry,
+        system_prompt,
+        cwd,
+        cache,
+        allowed,
+        evidence_tool_def,
+        prompt,
+        max_iterations,
+    } = task;
+
+    let mut req = ProviderRequest {
+        system_prompt,
+        messages: vec![messages::Message::User(messages::UserMessage {
+            content: prompt,
+        })],
+        tools: vec![evidence_tool_def],
+        model_override: None,
+    };
+    let provider_label = provider_name.clone();
+    let ctx = AgentContext { cwd };
+
+    for iteration in 0..max_iterations {
+        let response = provider_registry
+            .complete_once(&provider_name, req.clone())
+            .await?;
+
+        // No tool calls → final answer.
+        if response.tool_calls.is_empty() {
+            return Ok((provider_label, response.content));
+        }
+
+        // Process each evidence request through the cache.
+        let mut tool_results: Vec<ToolResult> = Vec::new();
+        for tc in &response.tool_calls {
+            if tc.name != "request_evidence" {
+                tool_results.push(ToolResult {
+                    content: "Unknown tool. Use request_evidence to request information."
+                        .to_string(),
+                    is_error: true,
+                });
+                continue;
+            }
+
+            let evidence_tool = tc.arguments.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+            let evidence_args = tc
+                .arguments
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            let description = tc
+                .arguments
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let label =
+                crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
+            let cached = cache
+                .lock()
+                .map(|cache| cache.has(evidence_tool, &evidence_args))
+                .unwrap_or(false);
+            let cache_tag = if cached { " (cached)" } else { "" };
+
+            let result = crate::agent::evidence::execute(
+                evidence_tool,
+                &evidence_args,
+                &allowed,
+                &cache,
+                &tool_registry,
+                &ctx,
+            )
+            .await;
+
+            if result.is_error {
+                eprintln!("{DIM}    {provider_label} ✗ {label}{cache_tag}{RESET}");
+            } else {
+                let lines = result.content.lines().count();
+                let bytes = result.content.len();
+                eprintln!(
+                    "{DIM}    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}{RESET}"
+                );
+            }
+
+            tool_results.push(result);
+        }
+
+        // Append tool call + result messages.
+        // Only include assistant text if non-empty — Anthropic rejects
+        // empty text blocks ("text content blocks must be non-empty").
+        use crate::agent::messages::{
+            AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
+        };
+        if !response.content.trim().is_empty() {
+            req.messages.push(Message::Assistant(AssistantMessage {
+                content: response.content.clone(),
+            }));
+        }
+        for tc in &response.tool_calls {
+            req.messages.push(Message::ToolCall(MsgToolCall {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                arguments: tc.arguments.clone(),
+            }));
+        }
+        for (tc, result) in response.tool_calls.iter().zip(tool_results) {
+            req.messages.push(Message::ToolResult(ToolResultMessage {
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                content: result.content,
+                is_error: result.is_error,
+            }));
+        }
+
+        if iteration == max_iterations - 1 {
+            return Ok((provider_label, response.content));
+        }
+    }
+
+    Ok((provider_label, String::new()))
 }
 
 /// Simple single-call per provider, no tools.
