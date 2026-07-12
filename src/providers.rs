@@ -52,11 +52,26 @@ fn extract_error_message(raw: &str) -> String {
             }
         }
     }
-    // Last resort: truncate raw text
-    let limit = 200;
-    if raw.len() > limit {
-        format!("{}…", &raw[..limit])
+    // Last resort: truncate the raw text.
+    let truncated = crate::output::truncate_at_char_boundary(raw, 200);
+    if truncated.len() < raw.len() {
+        format!("{truncated}…")
     } else {
         raw.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_error_message;
+
+    #[test]
+    fn error_truncation_handles_multibyte_text() {
+        // 199 ASCII bytes, then a two-byte character straddling byte 200 —
+        // the old byte-index slice panicked here.
+        let raw = format!("{}écurité and more trailing text", "x".repeat(199));
+        let msg = extract_error_message(&raw);
+        assert!(msg.ends_with('…'));
+        assert!(msg.starts_with("xxx"));
     }
 }

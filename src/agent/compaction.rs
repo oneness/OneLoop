@@ -100,13 +100,12 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
             }
             Message::ToolResult(tool_result) => {
                 let truncated = if tool_result.content.len() > TOOL_RESULT_MAX_CHARS {
-                    let mut end = TOOL_RESULT_MAX_CHARS;
-                    while end > 0 && !tool_result.content.is_char_boundary(end) {
-                        end -= 1;
-                    }
                     format!(
                         "{}... ({} chars truncated)",
-                        &tool_result.content[..end],
+                        crate::output::truncate_at_char_boundary(
+                            &tool_result.content,
+                            TOOL_RESULT_MAX_CHARS
+                        ),
                         tool_result.content.len()
                     )
                 } else {
@@ -228,13 +227,12 @@ pub fn collect_recent_user_messages(messages: &[Message]) -> Vec<String> {
                 remaining = remaining.saturating_sub(tokens);
             } else {
                 // Partially include this message (truncate to fit).
-                let mut keep_chars = (remaining * CHARS_PER_TOKEN).min(user.content.len());
-                // Walk back to a valid UTF-8 boundary.
-                while keep_chars > 0 && !user.content.is_char_boundary(keep_chars) {
-                    keep_chars -= 1;
-                }
-                if keep_chars > 0 {
-                    selected.push(format!("{}... [truncated]", &user.content[..keep_chars]));
+                let kept = crate::output::truncate_at_char_boundary(
+                    &user.content,
+                    remaining * CHARS_PER_TOKEN,
+                );
+                if !kept.is_empty() {
+                    selected.push(format!("{kept}... [truncated]"));
                 }
                 break;
             }

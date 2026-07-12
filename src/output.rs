@@ -11,6 +11,19 @@ pub fn truncate_tail(input: &str, max_bytes: usize, max_lines: usize) -> String 
     with_notice(truncate(input, max_bytes, max_lines, Keep::Tail))
 }
 
+/// Longest prefix of `input` at most `max_bytes` long that ends on a UTF-8
+/// character boundary — plain byte-index slicing panics mid-character.
+pub fn truncate_at_char_boundary(input: &str, max_bytes: usize) -> &str {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
+}
+
 struct TruncationResult {
     content: String,
     truncated: bool,
@@ -87,4 +100,21 @@ fn with_notice(result: TruncationResult) -> String {
         result.shown_lines, result.original_lines, result.shown_bytes, result.original_bytes
     ));
     content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn char_boundary_truncation_never_splits_a_character() {
+        // "é" is two bytes; byte index 3 falls mid-character.
+        let truncated = truncate_at_char_boundary("aaéé", 3);
+        assert_eq!(truncated, "aa");
+    }
+
+    #[test]
+    fn char_boundary_truncation_returns_short_input_whole() {
+        assert_eq!(truncate_at_char_boundary("abc", 200), "abc");
+    }
 }
