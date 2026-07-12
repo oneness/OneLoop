@@ -77,8 +77,38 @@ impl ToolRegistry {
         ctx: &AgentContext,
     ) -> Result<ToolResult> {
         let Some(tool) = self.tools.iter().find(|tool| tool.name() == name) else {
-            bail!("unknown tool: {name}");
+            // Models sometimes invent tool names from project instructions
+            // (e.g. a CLI mentioned in AGENTS.md) — steer them back.
+            bail!(
+                "unknown tool: {name}. available tools: {}. \
+                 CLI programs are run with the bash tool, not as tool calls.",
+                self.names().join(", ")
+            );
         };
         tool.execute(input, ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn unknown_tool_error_lists_available_tools() {
+        let registry = ToolRegistry::with_builtin_tools(Path::new(".")).unwrap();
+        let ctx = AgentContext {
+            cwd: PathBuf::from("."),
+        };
+
+        let err = registry
+            .execute("semble_search", serde_json::json!({}), &ctx)
+            .await
+            .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown tool: semble_search"));
+        assert!(msg.contains("read"));
+        assert!(msg.contains("bash tool"));
     }
 }

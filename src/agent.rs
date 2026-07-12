@@ -189,8 +189,10 @@ impl Agent {
                     Ok(()) => {
                         // Reload system prompt so new memory is visible for the
                         // remainder of this session, not just the next startup.
-                        self.config.system_prompt =
-                            crate::config::build_system_prompt(&self.config.cwd);
+                        self.config.system_prompt = crate::config::build_system_prompt(
+                            &self.config.cwd,
+                            &self.tool_registry.names(),
+                        );
                         self.config.prompt_sources =
                             crate::config::prompt_sources(&self.config.cwd);
                     }

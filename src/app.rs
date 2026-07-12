@@ -3,7 +3,7 @@ use rustyline::error::ReadlineError;
 
 use crate::{
     agent::Agent,
-    config::Config,
+    config::{self, Config},
     directives::{OutputFormat, PromptDirectives, RunMode, parse_prompt},
     providers::ProviderRegistry,
     tools::ToolRegistry,
@@ -97,9 +97,11 @@ impl App {
         Self { config }
     }
 
-    pub async fn run(self, prompt: Option<String>) -> Result<()> {
+    pub async fn run(mut self, prompt: Option<String>) -> Result<()> {
         let provider_registry = ProviderRegistry::new()?;
         let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
+        self.config.system_prompt =
+            config::build_system_prompt(&self.config.cwd, &tool_registry.names());
         let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
 
         match prompt {
