@@ -1,7 +1,7 @@
-use std::io::{self, Write as IoWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
+use rustyline::error::ReadlineError;
 
 use crate::{
     agent::Agent,
@@ -119,64 +119,68 @@ impl App {
                 );
                 println!();
 
+                // A raw-mode line editor instead of stdin's canonical mode,
+                // which silently drops input past the tty's 4096-byte line
+                // buffer and locks up the prompt on long pastes.
+                let mut editor = rustyline::DefaultEditor::new()?;
+
                 loop {
-                    print!("> ");
-                    io::stdout().flush()?;
+                    let line = match editor.readline("> ") {
+                        Ok(input) => input.trim().to_string(),
+                        // Ctrl+C at the prompt discards the current line.
+                        Err(ReadlineError::Interrupted) => continue,
+                        // Ctrl+D exits.
+                        Err(ReadlineError::Eof) => break,
+                        Err(e) => return Err(e.into()),
+                    };
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let _ = editor.add_history_entry(&line);
 
-                    let mut input = String::new();
-                    match io::stdin().read_line(&mut input) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            let line = input.trim().to_string();
-                            if line.is_empty() {
-                                continue;
-                            }
+                    // Check for built-in commands.
+                    if let Some(ReplCommand::Clear) = parse_command(&line) {
+                        agent.clear_session()?;
+                        println!();
+                        continue;
+                    }
 
-                            // Check for built-in commands.
-                            if let Some(ReplCommand::Clear) = parse_command(&line) {
-                                agent.clear_session()?;
-                                println!();
-                                continue;
-                            }
-
-                            let directives = match parse_prompt(&line) {
-                                Ok(directives) => directives,
-                                Err(e) => {
-                                    eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
-                                    println!(
-                                        "\x1b[90m  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file\x1b[0m"
-                                    );
-                                    println!();
-                                    continue;
-                                }
-                            };
-                            let compact_provider_override =
-                                provider_override(&directives).map(String::from);
-
-                            // Clear any previous stop flag and arm the Ctrl+C handler.
-                            clear_stop_requested();
-
-                            // Use select to race the agent run against Ctrl+C.
-                            tokio::select! {
-                                result = run_directives(&mut agent, directives) => {
-                                    if let Err(e) = result {
-                                        eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
-                                    }
-                                }
-                                _ = tokio::signal::ctrl_c() => {
-                                    STOP_REQUESTED.store(true, Ordering::Relaxed);
-                                    println!("\x1b[33m  ⏹ stopped\x1b[0m");
-                                }
-                            }
-
-                            // Auto-compact if context is near limit.
-                            agent
-                                .auto_compact_if_needed(compact_provider_override.as_deref())
-                                .await?;
-
+                    let directives = match parse_prompt(&line) {
+                        Ok(directives) => directives,
+                        Err(e) => {
+                            eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                            println!(
+                                "\x1b[90m  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file\x1b[0m"
+                            );
                             println!();
+                            continue;
+                        }
+                    };
+                    let compact_provider_override =
+                        provider_override(&directives).map(String::from);
+
+                    // Clear any previous stop flag and arm the Ctrl+C handler.
+                    clear_stop_requested();
+
+                    // Use select to race the agent run against Ctrl+C.
+                    tokio::select! {
+                        result = run_directives(&mut agent, directives) => {
+                            if let Err(e) = result {
+                                eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            STOP_REQUESTED.store(true, Ordering::Relaxed);
+                            println!("\x1b[33m  ⏹ stopped\x1b[0m");
                         }
                     }
+
+                    // Auto-compact if context is near limit.
+                    agent
+                        .auto_compact_if_needed(compact_provider_override.as_deref())
+                        .await?;
+
+                    println!();
                 }
 
                 Ok(())
