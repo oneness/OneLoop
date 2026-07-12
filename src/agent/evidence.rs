@@ -297,7 +297,6 @@ static SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "sed",
         "jq",
         "yq",
-        "xargs",
         "echo",
         "printf",
         "date",
@@ -310,7 +309,6 @@ static SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "diff",
         "comm",
         "paste",
-        "tee",
         "column",
         "fmt",
         "fold",
@@ -367,15 +365,29 @@ static GIT_READ_ONLY: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ])
 });
 
-fn base_command(command: &str) -> &str {
-    command.split_whitespace().next().unwrap_or("")
+/// Sequences that can smuggle writes past the per-stage base-command check:
+/// command substitution, chaining, backgrounding, and redirection.
+const BLOCKED_SEQUENCES: &[&str] = &["$(", "`", ";", "&", ">", "<", "\n"];
+
+/// Best-effort guardrail, not a security boundary. It stops a cooperating
+/// model from running obviously state-changing commands, but some allowed
+/// commands retain exec escape hatches (`awk 'system(...)'`, `sed e`,
+/// `find -exec`). Treat it as a seatbelt, not a sandbox.
+pub fn is_safe_shell_command(command: &str) -> bool {
+    if BLOCKED_SEQUENCES.iter().any(|seq| command.contains(seq)) {
+        return false;
+    }
+    // Check every stage of a pipeline, not just the first command.
+    command.split('|').all(is_safe_pipeline_stage)
 }
 
-pub fn is_safe_shell_command(command: &str) -> bool {
-    let base = base_command(command);
+fn is_safe_pipeline_stage(stage: &str) -> bool {
+    let mut words = stage.split_whitespace();
+    let Some(base) = words.next() else {
+        return false;
+    };
     if base == "git" {
-        let parts: Vec<&str> = command.split_whitespace().collect();
-        let sub = parts.iter().skip(1).find(|p| !p.starts_with('-'));
+        let sub = words.find(|word| !word.starts_with('-'));
         return sub.is_some_and(|s| GIT_READ_ONLY.contains(s));
     }
     SAFE_COMMANDS.contains(base)
@@ -439,6 +451,23 @@ mod tests {
         assert!(!is_safe_shell_command("mv file.txt /tmp"));
         assert!(!is_safe_shell_command("chmod 777 file"));
         assert!(!is_safe_shell_command("docker run ubuntu"));
+    }
+
+    #[test]
+    fn chained_and_substituted_commands_fail() {
+        assert!(!is_safe_shell_command("cat x; rm -rf /"));
+        assert!(!is_safe_shell_command("cat x && rm -rf /"));
+        assert!(!is_safe_shell_command("echo $(rm -rf /)"));
+        assert!(!is_safe_shell_command("cat `whoami`"));
+        assert!(!is_safe_shell_command("echo pwned > /etc/passwd"));
+        assert!(!is_safe_shell_command("grep -r TODO . & rm -rf /"));
+    }
+
+    #[test]
+    fn every_pipeline_stage_is_checked() {
+        assert!(is_safe_shell_command("git log --oneline | head -5"));
+        assert!(!is_safe_shell_command("cat file.txt | python3"));
+        assert!(!is_safe_shell_command("find . -name '*.sh' | xargs rm"));
     }
 
     #[test]

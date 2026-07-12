@@ -4,7 +4,7 @@ use rustyline::error::ReadlineError;
 use crate::{
     agent::Agent,
     config::Config,
-    directives::{PromptDirectives, RunMode, parse_prompt},
+    directives::{OutputFormat, PromptDirectives, RunMode, parse_prompt},
     providers::ProviderRegistry,
     tools::ToolRegistry,
 };
@@ -44,26 +44,22 @@ fn print_directive_summary(directives: &PromptDirectives) {
 
 async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Result<()> {
     print_directive_summary(&directives);
+    let prompt = with_format_instruction(directives.prompt, &directives.format);
     match directives.mode {
         RunMode::Single { provider } => {
             agent
-                .run_once_with(directives.prompt, provider.as_deref(), directives.model)
+                .run_once_with(prompt, provider.as_deref(), directives.model)
                 .await
         }
         RunMode::Consensus { providers } => {
             agent
-                .run_consensus(
-                    directives.prompt,
-                    providers,
-                    directives.judge,
-                    directives.tools,
-                )
+                .run_consensus(prompt, providers, directives.judge, directives.tools)
                 .await
         }
         RunMode::Debate { providers } => {
             agent
                 .run_debate(
-                    directives.prompt,
+                    prompt,
                     providers,
                     directives.judge,
                     directives.rounds,
@@ -72,6 +68,17 @@ async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Resu
                 .await
         }
     }
+}
+
+/// Turn the `format:` directive into a plain instruction appended to the
+/// prompt — the model does the formatting; there is no post-processing.
+fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
+    let instruction = match format {
+        OutputFormat::Plain => return prompt,
+        OutputFormat::Md => "Format your final answer as Markdown.",
+        OutputFormat::Html => "Format your final answer as a single self-contained HTML document.",
+    };
+    format!("{prompt}\n\n{instruction}")
 }
 
 async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {

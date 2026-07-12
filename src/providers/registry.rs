@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{self, Write as IoWrite};
+use std::io::{self, IsTerminal, Write as IoWrite};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -72,6 +72,13 @@ impl ProviderRegistry {
 
     pub fn available_providers(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.name()).collect()
+    }
+
+    /// The model a named provider would use — for metrics and logging.
+    pub fn model_for(&self, name: &str) -> String {
+        self.resolve(Some(name))
+            .map(Provider::model)
+            .unwrap_or_else(|_| "?".to_string())
     }
 
     pub fn resolve(&self, name: Option<&str>) -> Result<&dyn Provider> {
@@ -165,6 +172,12 @@ impl ProviderRegistry {
             bail!(
                 "[{provider_label}] failed after {max_retries} retries and no alternative providers available"
             );
+        }
+
+        // The picker below reads stdin; in non-interactive contexts (piped
+        // input, scripts) there is nobody to answer it — fail instead.
+        if !io::stdin().is_terminal() {
+            bail!("[{provider_label}] failed after {max_retries} retries: {err_msg}");
         }
 
         // Halt any caller-side spinner before showing the interactive prompt.

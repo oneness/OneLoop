@@ -68,7 +68,8 @@ Tokens between `#!...#!` are space-separated: provider names, mode keywords
 (`consensus`, `debate`), and key:value modifiers (`model:provider/name`,
 `judge:openai`, `rounds:2`, `tools:none`, `format:md`, `format:html`). No `#!`
 at all means plain prompt with default provider. `model:` is only valid in
-single-provider mode.
+single-provider mode; `judge:`, `rounds:`, and `tools:` require consensus or
+debate mode.
 
 ## Provider selection
 

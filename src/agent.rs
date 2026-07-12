@@ -313,6 +313,11 @@ impl Agent {
                     .unwrap_or(0),
             );
             let api_start = Instant::now();
+            // For metrics: the provider this request is aimed at, which the
+            // registry default only approximates when an override is active.
+            let requested_provider = active_provider
+                .clone()
+                .unwrap_or_else(|| self.provider_registry.active_name().to_string());
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
@@ -339,8 +344,10 @@ impl Agent {
                     self.metrics.log(
                         "api_call",
                         json!({
-                            "provider": self.provider_registry.active_name(),
-                            "model": self.provider_registry.active_model(),
+                            "provider": &requested_provider,
+                            "model": model_override
+                                .clone()
+                                .unwrap_or_else(|| self.provider_registry.model_for(&requested_provider)),
                             "duration_ms": api_start.elapsed().as_millis(),
                             "tokens_estimated": tokens_estimated,
                             "success": false,
@@ -352,11 +359,16 @@ impl Agent {
             };
             spinner.stop();
 
+            // active_provider was just set to the provider that answered
+            // (it may differ from the requested one after a fallback).
+            let used_provider = active_provider.clone().unwrap_or(requested_provider);
             self.metrics.log(
                 "api_call",
                 json!({
-                    "provider": self.provider_registry.active_name(),
-                    "model": self.provider_registry.active_model(),
+                    "provider": &used_provider,
+                    "model": model_override
+                        .clone()
+                        .unwrap_or_else(|| self.provider_registry.model_for(&used_provider)),
                     "duration_ms": api_start.elapsed().as_millis(),
                     "tokens_estimated": tokens_estimated,
                     "success": true,

@@ -178,6 +178,9 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
     if rounds.is_some() && !is_debate {
         bail!("rounds: is only valid with debate mode");
     }
+    if tools.is_some() && !is_multi {
+        bail!("tools: is only valid with consensus or debate mode");
+    }
     if model.is_some() && is_multi {
         bail!("model: is only valid in single-provider mode");
     }
@@ -390,7 +393,7 @@ mod tests {
     fn tools_allowlist_double_comma_filters_empty() {
         // Double comma should not produce an empty-string entry — it's silently
         // collapsed, giving the same result as a single comma.
-        let got = parsed("#!tools:read,,bash#! hello");
+        let got = parsed("#!consensus anthropic openai tools:read,,bash#! hello");
         assert_eq!(
             got.tools,
             ToolMode::AllowList(vec!["read".to_string(), "bash".to_string()])
@@ -401,6 +404,14 @@ mod tests {
     fn tools_allowlist_only_commas_errors() {
         // A value of only commas produces no valid names after filtering.
         let got = parse_prompt("#!tools:,#! hello");
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn tools_on_single_provider_fails() {
+        // Only consensus/debate orchestration consumes tools: — reject it
+        // elsewhere instead of silently ignoring it.
+        let got = parse_prompt("#!anthropic tools:none#! hello");
         assert!(got.is_err());
     }
 
