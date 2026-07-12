@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 
@@ -13,17 +11,6 @@ use crate::{
 
 pub struct App {
     config: Config,
-}
-
-/// Shared flag to signal the agent loop to stop.
-static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-pub fn is_stop_requested() -> bool {
-    STOP_REQUESTED.load(Ordering::Relaxed)
-}
-
-pub fn clear_stop_requested() {
-    STOP_REQUESTED.store(false, Ordering::Relaxed);
 }
 
 /// Built-in interactive commands, entered with a leading `/`.
@@ -159,10 +146,9 @@ impl App {
                     let compact_provider_override =
                         provider_override(&directives).map(String::from);
 
-                    // Clear any previous stop flag and arm the Ctrl+C handler.
-                    clear_stop_requested();
-
                     // Use select to race the agent run against Ctrl+C.
+                    // Ctrl+C drops the run future mid-flight.
+                    let mut interrupted = false;
                     tokio::select! {
                         result = run_directives(&mut agent, directives) => {
                             if let Err(e) = result {
@@ -170,15 +156,26 @@ impl App {
                             }
                         }
                         _ = tokio::signal::ctrl_c() => {
-                            STOP_REQUESTED.store(true, Ordering::Relaxed);
+                            interrupted = true;
                             println!("\x1b[33m  ⏹ stopped\x1b[0m");
                         }
                     }
 
-                    // Auto-compact if context is near limit.
-                    agent
+                    // A dropped run may have recorded tool calls whose results
+                    // never arrived; close them out or providers will reject
+                    // every later request in this session.
+                    if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
+                        eprintln!("\x1b[31m  ✗ session repair failed: {e:#}\x1b[0m");
+                    }
+
+                    // Auto-compact if context is near limit. Failure is not
+                    // fatal to the REPL — report it and keep going.
+                    if let Err(e) = agent
                         .auto_compact_if_needed(compact_provider_override.as_deref())
-                        .await?;
+                        .await
+                    {
+                        eprintln!("\x1b[31m  ✗ auto-compaction failed: {e:#}\x1b[0m");
+                    }
 
                     println!();
                 }

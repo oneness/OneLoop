@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -113,8 +115,20 @@ fn write_auth_file(auth: &AuthFile) -> Result<PathBuf> {
         .with_context(|| format!("failed to create auth directory: {}", dir.display()))?;
 
     let json = serde_json::to_string_pretty(auth).context("failed to serialize auth file")?;
-    fs::write(&path, json)
+
+    // API keys are secrets: create owner-only, and tighten permissions on
+    // files written by older versions that used the default umask.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("failed to open auth file: {}", path.display()))?;
+    file.write_all(json.as_bytes())
         .with_context(|| format!("failed to write auth file: {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set auth file permissions: {}", path.display()))?;
     Ok(path)
 }
 

@@ -219,24 +219,25 @@ impl ProviderRegistry {
             bail!("aborted — no provider selected");
         }
 
-        let idx: usize = trimmed.parse().unwrap_or(usize::MAX);
-        match alternatives.get(idx - 1) {
-            Some(&name) => {
-                let fallback = self.resolve(Some(name))?;
-                eprintln!(
-                    "\x1b[32m  → switching to {} ({})\x1b[0m",
-                    fallback.name(),
-                    fallback.model()
-                );
-                if let Some(start) = start_spinner {
-                    start();
-                }
-                let response = fallback.complete(request.clone()).await?;
-                Ok((fallback.name().to_string(), response))
-            }
-            None => {
-                bail!("invalid selection: {trimmed}");
-            }
+        let selected = trimmed
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|index| alternatives.get(index));
+        let Some(&name) = selected else {
+            bail!("invalid selection: {trimmed}");
+        };
+
+        let fallback = self.resolve(Some(name))?;
+        eprintln!(
+            "\x1b[32m  → switching to {} ({})\x1b[0m",
+            fallback.name(),
+            fallback.model()
+        );
+        if let Some(start) = start_spinner {
+            start();
         }
+        let response = fallback.complete(request.clone()).await?;
+        Ok((fallback.name().to_string(), response))
     }
 }

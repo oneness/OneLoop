@@ -115,6 +115,36 @@ impl Session {
         })
     }
 
+    /// Append error results for tool calls that never received one — e.g. a
+    /// run cancelled between recording the calls and their results. Providers
+    /// reject conversations containing dangling tool calls, so an unrepaired
+    /// session would break every later request. Returns how many were closed.
+    pub fn repair_dangling_tool_calls(&mut self) -> Result<usize> {
+        let mut pending: Vec<(String, String)> = Vec::new();
+        for message in &self.messages {
+            match message {
+                Message::ToolCall(tool_call) => {
+                    pending.push((tool_call.id.clone(), tool_call.name.clone()));
+                }
+                Message::ToolResult(tool_result) => {
+                    pending.retain(|(id, _)| id != &tool_result.tool_call_id);
+                }
+                _ => {}
+            }
+        }
+
+        let count = pending.len();
+        for (id, name) in pending {
+            self.push_tool_result(
+                id,
+                name,
+                "[interrupted — the run was cancelled before this tool finished]".to_string(),
+                true,
+            )?;
+        }
+        Ok(count)
+    }
+
     fn append(&mut self, message: Message) -> Result<()> {
         append_message(&self.path, &message)?;
         self.messages.push(message);
@@ -214,5 +244,66 @@ fn find_latest_session(sessions_dir: &Path, date: &str) -> PathBuf {
     match max_suffix {
         Some(n) => sessions_dir.join(format!("{date}-{n:03}.jsonl")),
         None => base_path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temp_session(name: &str) -> Session {
+        let path = std::env::temp_dir().join(format!(
+            "oneloop-session-test-{}-{name}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        Session {
+            messages: Vec::new(),
+            path,
+        }
+    }
+
+    #[test]
+    fn repair_closes_tool_calls_without_results() {
+        let mut session = temp_session("dangling");
+        session
+            .push_tool_call("call-1".into(), "bash".into(), json!({"command": "ls"}))
+            .unwrap();
+        session
+            .push_tool_call("call-2".into(), "read".into(), json!({"path": "x"}))
+            .unwrap();
+        session
+            .push_tool_result("call-1".into(), "bash".into(), "ok".into(), false)
+            .unwrap();
+
+        let repaired = session.repair_dangling_tool_calls().unwrap();
+
+        assert_eq!(repaired, 1);
+        match session.messages().last().unwrap() {
+            Message::ToolResult(result) => {
+                assert_eq!(result.tool_call_id, "call-2");
+                assert!(result.is_error);
+            }
+            other => panic!("expected a tool result, got {other:?}"),
+        }
+        let _ = fs::remove_file(session.path());
+    }
+
+    #[test]
+    fn repair_leaves_complete_sessions_untouched() {
+        let mut session = temp_session("complete");
+        session
+            .push_tool_call("call-1".into(), "bash".into(), json!({"command": "ls"}))
+            .unwrap();
+        session
+            .push_tool_result("call-1".into(), "bash".into(), "ok".into(), false)
+            .unwrap();
+
+        let repaired = session.repair_dangling_tool_calls().unwrap();
+
+        assert_eq!(repaired, 0);
+        assert_eq!(session.messages().len(), 2);
+        let _ = fs::remove_file(session.path());
     }
 }

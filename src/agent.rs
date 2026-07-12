@@ -65,7 +65,15 @@ impl Agent {
         provider_registry: ProviderRegistry,
         tool_registry: ToolRegistry,
     ) -> Result<Self> {
-        let session = session::Session::open_or_create(&config.cwd)?;
+        let mut session = session::Session::open_or_create(&config.cwd)?;
+        // A previous process may have been killed mid-run, leaving tool
+        // calls without results that providers would reject.
+        let repaired = session.repair_dangling_tool_calls()?;
+        if repaired > 0 {
+            println!(
+                "\x1b[90m  → closed {repaired} interrupted tool call(s) from a previous run\x1b[0m"
+            );
+        }
         let metrics = metrics::Metrics::from_session_path(session.path())?;
         Ok(Self {
             config,
@@ -74,6 +82,16 @@ impl Agent {
             session,
             metrics,
         })
+    }
+
+    /// Close out tool calls whose results were lost when a run was
+    /// cancelled, so the next request isn't rejected by the provider.
+    pub fn repair_dangling_tool_calls(&mut self) -> Result<()> {
+        let repaired = self.session.repair_dangling_tool_calls()?;
+        if repaired > 0 {
+            println!("\x1b[90m  → closed {repaired} interrupted tool call(s)\x1b[0m");
+        }
+        Ok(())
     }
 
     /// Clear the session — rotates to a new empty session file.
@@ -285,11 +303,6 @@ impl Agent {
         let mut active_provider = provider_override.map(String::from);
 
         for _iteration in 1..=max_iterations {
-            if crate::app::is_stop_requested() {
-                println!("\x1b[33m  ⏹ stopped\x1b[0m");
-                return Ok(());
-            }
-
             let spinner = SpinnerGuard::new("thinking...");
             let tokens_estimated = compaction::estimate_tokens(
                 self.session.messages(),

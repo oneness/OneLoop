@@ -63,7 +63,10 @@ impl Tool for BashTool {
             .current_dir(&ctx.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // When the timeout drops the output() future, kill the child
+            // instead of leaving it running detached.
+            .kill_on_drop(true);
 
         let output = timeout(Duration::from_secs(timeout_secs), command.output())
             .await
