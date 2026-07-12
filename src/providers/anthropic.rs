@@ -254,3 +254,93 @@ fn push_anthropic_block(
         content: vec![block],
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::messages::{AssistantMessage, ToolResultMessage, UserMessage};
+    use serde_json::json;
+
+    fn user(text: &str) -> Message {
+        Message::User(UserMessage {
+            content: text.into(),
+        })
+    }
+
+    fn assistant(text: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            content: text.into(),
+        })
+    }
+
+    fn tool_call(id: &str) -> Message {
+        Message::ToolCall(ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+        })
+    }
+
+    fn tool_result(id: &str) -> Message {
+        Message::ToolResult(ToolResultMessage {
+            tool_call_id: id.into(),
+            tool_name: "bash".into(),
+            content: "ok".into(),
+            is_error: false,
+        })
+    }
+
+    fn roles(messages: &[AnthropicMessage]) -> Vec<&str> {
+        messages.iter().map(|m| m.role.as_str()).collect()
+    }
+
+    #[test]
+    fn consecutive_same_role_messages_merge_into_one_frame() {
+        let result = to_anthropic_messages(vec![user("a"), user("b")]);
+        assert_eq!(roles(&result), vec!["user"]);
+        assert_eq!(result[0].content.len(), 2);
+    }
+
+    #[test]
+    fn empty_assistant_text_is_skipped() {
+        // The API rejects empty text blocks.
+        let result = to_anthropic_messages(vec![user("a"), assistant("  ")]);
+        assert_eq!(roles(&result), vec!["user"]);
+    }
+
+    #[test]
+    fn tool_call_and_result_produce_alternating_roles() {
+        let result = to_anthropic_messages(vec![user("q"), tool_call("t1"), tool_result("t1")]);
+        assert_eq!(roles(&result), vec!["user", "assistant", "user"]);
+        assert!(matches!(
+            result[1].content[0],
+            AnthropicInputBlock::ToolUse { .. }
+        ));
+        assert!(matches!(
+            result[2].content[0],
+            AnthropicInputBlock::ToolResult { .. }
+        ));
+    }
+
+    #[test]
+    fn orphan_tool_result_is_dropped() {
+        // A result whose call was never recorded (truncated or repaired
+        // session) must not reach the API — it would be rejected.
+        let result = to_anthropic_messages(vec![user("q"), tool_result("missing")]);
+        assert_eq!(roles(&result), vec!["user"]);
+    }
+
+    #[test]
+    fn assistant_text_and_tool_call_share_one_frame() {
+        let result = to_anthropic_messages(vec![assistant("thinking"), tool_call("t1")]);
+        assert_eq!(roles(&result), vec!["assistant"]);
+        assert_eq!(result[0].content.len(), 2);
+    }
+
+    #[test]
+    fn system_messages_are_omitted() {
+        // The system prompt travels in the request's `system` field instead.
+        let result = to_anthropic_messages(vec![Message::System("sys".into()), user("a")]);
+        assert_eq!(roles(&result), vec!["user"]);
+    }
+}

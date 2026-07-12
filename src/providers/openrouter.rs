@@ -281,3 +281,80 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::messages::{AssistantMessage, ToolResultMessage, UserMessage};
+    use serde_json::json;
+
+    fn user(text: &str) -> Message {
+        Message::User(UserMessage {
+            content: text.into(),
+        })
+    }
+
+    fn assistant(text: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            content: text.into(),
+        })
+    }
+
+    fn tool_call(id: &str) -> Message {
+        Message::ToolCall(ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+        })
+    }
+
+    fn tool_result(id: &str) -> Message {
+        Message::ToolResult(ToolResultMessage {
+            tool_call_id: id.into(),
+            tool_name: "bash".into(),
+            content: "ok".into(),
+            is_error: false,
+        })
+    }
+
+    #[test]
+    fn tool_call_merges_into_preceding_assistant_message() {
+        // Chat Completions APIs reject two consecutive assistant messages:
+        // text and tool_calls must share one frame.
+        let result = to_chat_messages(vec![assistant("thinking"), tool_call("t1")]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "assistant");
+        assert_eq!(result[0].content.as_deref(), Some("thinking"));
+        assert_eq!(result[0].tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parallel_tool_calls_share_one_assistant_frame() {
+        let result = to_chat_messages(vec![assistant("x"), tool_call("t1"), tool_call("t2")]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tool_calls.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tool_call_without_assistant_text_gets_its_own_frame() {
+        let result = to_chat_messages(vec![user("q"), tool_call("t1")]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].role, "assistant");
+        assert!(result[1].content.is_none());
+    }
+
+    #[test]
+    fn tool_result_becomes_tool_role_with_call_id() {
+        let result = to_chat_messages(vec![tool_result("t1")]);
+        assert_eq!(result[0].role, "tool");
+        assert_eq!(result[0].tool_call_id.as_deref(), Some("t1"));
+        assert_eq!(result[0].content.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn tool_call_arguments_are_serialized_as_a_json_string() {
+        let result = to_chat_messages(vec![tool_call("t1")]);
+        let calls = result[0].tool_calls.as_ref().unwrap();
+        assert!(matches!(&calls[0].function.arguments, Value::String(s) if s.contains("ls")));
+    }
+}
