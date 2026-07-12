@@ -26,13 +26,16 @@ pub fn clear_stop_requested() {
     STOP_REQUESTED.store(false, Ordering::Relaxed);
 }
 
-/// Parse interactive commands. Returns Some(command) or None if it's not a command.
-fn parse_command(input: &str) -> Option<&str> {
-    let trimmed = input.trim();
-    if trimmed == "/clear" {
-        return Some("clear");
+/// Built-in interactive commands, entered with a leading `/`.
+enum ReplCommand {
+    Clear,
+}
+
+fn parse_command(input: &str) -> Option<ReplCommand> {
+    match input.trim() {
+        "/clear" => Some(ReplCommand::Clear),
+        _ => None,
     }
-    None
 }
 
 fn print_directive_summary(directives: &PromptDirectives) {
@@ -130,7 +133,7 @@ impl App {
                             }
 
                             // Check for built-in commands.
-                            if let Some("clear") = parse_command(&line) {
+                            if let Some(ReplCommand::Clear) = parse_command(&line) {
                                 agent.clear_session()?;
                                 println!();
                                 continue;

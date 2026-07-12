@@ -8,7 +8,7 @@ use super::{
     AnthropicProvider, OpenAIProvider, OpenRouterProvider, Provider, ProviderRequest,
     ProviderResponse,
 };
-use crate::auth;
+use crate::auth::{self, AuthProvider};
 
 pub struct ProviderRegistry {
     providers: Vec<Box<dyn Provider>>,
@@ -18,6 +18,7 @@ pub struct ProviderRegistry {
 impl ProviderRegistry {
     pub fn new() -> Result<Self> {
         let preferred = env::var("ONELOOP_PROVIDER").ok();
+        let auth = auth::load();
 
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
 
@@ -25,17 +26,17 @@ impl ProviderRegistry {
         let mut openai_index: Option<usize> = None;
         let mut openrouter_index: Option<usize> = None;
 
-        if let Some(key) = auth::resolve_anthropic_api_key() {
+        if let Some(key) = auth.api_key(AuthProvider::Anthropic) {
             anthropic_index = Some(providers.len());
             providers.push(Box::new(AnthropicProvider::new(key)?));
         }
 
-        if let Some(key) = auth::resolve_openai_api_key() {
+        if let Some(key) = auth.api_key(AuthProvider::OpenAi) {
             openai_index = Some(providers.len());
             providers.push(Box::new(OpenAIProvider::new(key)?));
         }
 
-        if let Some(key) = auth::resolve_openrouter_api_key() {
+        if let Some(key) = auth.api_key(AuthProvider::OpenRouter) {
             openrouter_index = Some(providers.len());
             providers.push(Box::new(OpenRouterProvider::new(key)?));
         }

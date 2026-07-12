@@ -125,9 +125,10 @@ impl Provider for OpenAIProvider {
         for message in request.messages {
             match message {
                 Message::System(text) => {
-                    // System messages go into top-level `instructions` for the
-                    // first one; subsequent system messages are pushed as
-                    // regular message items with role "developer".
+                    // The session's system prompt travels in the top-level
+                    // `instructions` field (set below from the request); any
+                    // system messages in the history are sent as
+                    // "developer"-role message items.
                     input.push(serde_json::json!({
                         "type": "message",
                         "role": "developer",

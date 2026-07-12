@@ -11,7 +11,7 @@ use tokio::{
 
 use crate::{
     agent::AgentContext,
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail, truncation_notice},
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail},
 };
 
 use super::{Tool, ToolResult};
@@ -100,18 +100,8 @@ impl Tool for BashTool {
             }
         }
 
-        let truncated = truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES);
-        let notice = truncated.truncated.then(|| truncation_notice(&truncated));
-        let mut final_content = truncated.content;
-        if let Some(notice) = notice {
-            if !final_content.ends_with('\n') && !final_content.is_empty() {
-                final_content.push('\n');
-            }
-            final_content.push_str(&notice);
-        }
-
         Ok(ToolResult {
-            content: final_content,
+            content: truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
             is_error: !success,
         })
     }

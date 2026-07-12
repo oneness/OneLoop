@@ -1,22 +1,23 @@
 pub const DEFAULT_MAX_BYTES: usize = 128 * 1024;
 pub const DEFAULT_MAX_LINES: usize = 1000;
 
-#[derive(Debug, Clone)]
-pub struct TruncationResult {
-    pub content: String,
-    pub truncated: bool,
-    pub original_bytes: usize,
-    pub original_lines: usize,
-    pub shown_bytes: usize,
-    pub shown_lines: usize,
+/// Truncate keeping the first lines, appending a notice when content was dropped.
+pub fn truncate_head(input: &str, max_bytes: usize, max_lines: usize) -> String {
+    with_notice(truncate(input, max_bytes, max_lines, Keep::Head))
 }
 
-pub fn truncate_head(input: &str, max_bytes: usize, max_lines: usize) -> TruncationResult {
-    truncate(input, max_bytes, max_lines, Keep::Head)
+/// Truncate keeping the last lines, appending a notice when content was dropped.
+pub fn truncate_tail(input: &str, max_bytes: usize, max_lines: usize) -> String {
+    with_notice(truncate(input, max_bytes, max_lines, Keep::Tail))
 }
 
-pub fn truncate_tail(input: &str, max_bytes: usize, max_lines: usize) -> TruncationResult {
-    truncate(input, max_bytes, max_lines, Keep::Tail)
+struct TruncationResult {
+    content: String,
+    truncated: bool,
+    original_bytes: usize,
+    original_lines: usize,
+    shown_bytes: usize,
+    shown_lines: usize,
 }
 
 enum Keep {
@@ -72,9 +73,18 @@ fn joined_len(lines: &[&str]) -> usize {
     }
 }
 
-pub fn truncation_notice(result: &TruncationResult) -> String {
-    format!(
+fn with_notice(result: TruncationResult) -> String {
+    if !result.truncated {
+        return result.content;
+    }
+
+    let mut content = result.content;
+    if !content.ends_with('\n') && !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(&format!(
         "[output truncated: showing {} of {} lines, {} of {} bytes]",
         result.shown_lines, result.original_lines, result.shown_bytes, result.original_bytes
-    )
+    ));
+    content
 }

@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -56,7 +54,7 @@ struct SearxResult {
     engines: Vec<String>,
 }
 
-static WEB_SEARCH_USER_AGENT: LazyLock<String> = LazyLock::new(|| "oneloop/0.1".to_string());
+const WEB_SEARCH_USER_AGENT: &str = "oneloop/0.1";
 
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -96,7 +94,7 @@ impl Tool for WebSearchTool {
             .client
             .get(url)
             .query(&[("q", input.query.as_str()), ("format", "json")])
-            .header("User-Agent", WEB_SEARCH_USER_AGENT.as_str())
+            .header("User-Agent", WEB_SEARCH_USER_AGENT)
             .send()
             .await
             .with_context(|| format!("web search request failed for: {}", input.query))?;
@@ -142,23 +140,8 @@ impl Tool for WebSearchTool {
             output.push('\n');
         }
 
-        let truncated = truncate_tail(&output, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES);
-        let mut final_content = truncated.content;
-        if truncated.truncated {
-            if !final_content.ends_with('\n') && !final_content.is_empty() {
-                final_content.push('\n');
-            }
-            final_content.push_str(&format!(
-                "[output truncated: showing {} of {} lines, {} of {} bytes]",
-                truncated.shown_lines,
-                truncated.original_lines,
-                truncated.shown_bytes,
-                truncated.original_bytes
-            ));
-        }
-
         Ok(ToolResult {
-            content: final_content,
+            content: truncate_tail(&output, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
             is_error: false,
         })
     }

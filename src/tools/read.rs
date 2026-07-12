@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::{
     agent::AgentContext,
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head, truncation_notice},
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head},
 };
 
 use super::{Tool, ToolResult};
@@ -67,18 +67,8 @@ impl Tool for ReadTool {
             .await
             .with_context(|| format!("failed to read file: {}", path.display()))?;
 
-        let truncated = truncate_head(&content, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES);
-        let notice = truncated.truncated.then(|| truncation_notice(&truncated));
-        let mut final_content = truncated.content;
-        if let Some(notice) = notice {
-            if !final_content.ends_with('\n') && !final_content.is_empty() {
-                final_content.push('\n');
-            }
-            final_content.push_str(&notice);
-        }
-
         Ok(ToolResult {
-            content: final_content,
+            content: truncate_head(&content, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
             is_error: false,
         })
     }

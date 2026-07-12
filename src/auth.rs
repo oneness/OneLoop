@@ -3,11 +3,63 @@ use std::{env, fs, path::PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthProvider {
+    Anthropic,
+    OpenAi,
+    OpenRouter,
+}
+
+impl AuthProvider {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "anthropic" => Some(Self::Anthropic),
+            "openai" => Some(Self::OpenAi),
+            "openrouter" => Some(Self::OpenRouter),
+            _ => None,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
+            Self::OpenRouter => "OpenRouter",
+        }
+    }
+
+    pub fn env_var(self) -> &'static str {
+        match self {
+            Self::Anthropic => "ANTHROPIC_API_KEY",
+            Self::OpenAi => "OPENAI_API_KEY",
+            Self::OpenRouter => "OPENROUTER_API_KEY",
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuthFile {
     pub anthropic: Option<ApiKeyEntry>,
     pub openai: Option<ApiKeyEntry>,
     pub openrouter: Option<ApiKeyEntry>,
+}
+
+impl AuthFile {
+    fn entry(&self, provider: AuthProvider) -> Option<&ApiKeyEntry> {
+        match provider {
+            AuthProvider::Anthropic => self.anthropic.as_ref(),
+            AuthProvider::OpenAi => self.openai.as_ref(),
+            AuthProvider::OpenRouter => self.openrouter.as_ref(),
+        }
+    }
+
+    fn entry_mut(&mut self, provider: AuthProvider) -> &mut Option<ApiKeyEntry> {
+        match provider {
+            AuthProvider::Anthropic => &mut self.anthropic,
+            AuthProvider::OpenAi => &mut self.openai,
+            AuthProvider::OpenRouter => &mut self.openrouter,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,55 +68,38 @@ pub struct ApiKeyEntry {
     pub key: String,
 }
 
-pub fn resolve_anthropic_api_key() -> Option<String> {
-    load_auth_file()
-        .ok()
-        .and_then(|auth| auth.anthropic.map(|entry| entry.key))
-        .or_else(|| env::var("ANTHROPIC_API_KEY").ok())
+/// Credentials loaded once from `~/.oneloop/auth.json`.
+/// A missing or unreadable file behaves as empty, falling back to env vars.
+pub struct Auth {
+    file: AuthFile,
 }
 
-pub fn resolve_openrouter_api_key() -> Option<String> {
-    load_auth_file()
-        .ok()
-        .and_then(|auth| auth.openrouter.map(|entry| entry.key))
-        .or_else(|| env::var("OPENROUTER_API_KEY").ok())
+pub fn load() -> Auth {
+    Auth {
+        file: load_auth_file().unwrap_or_default(),
+    }
 }
 
-pub fn resolve_openai_api_key() -> Option<String> {
-    load_auth_file()
-        .ok()
-        .and_then(|auth| auth.openai.map(|entry| entry.key))
-        .or_else(|| env::var("OPENAI_API_KEY").ok())
+impl Auth {
+    /// API key for a provider: stored credentials first, then the env var.
+    pub fn api_key(&self, provider: AuthProvider) -> Option<String> {
+        self.file
+            .entry(provider)
+            .map(|entry| entry.key.clone())
+            .or_else(|| env::var(provider.env_var()).ok())
+    }
 }
 
-pub fn store_anthropic_api_key(key: String) -> Result<PathBuf> {
+pub fn store_api_key(provider: AuthProvider, key: String) -> Result<PathBuf> {
     let mut auth = load_auth_file().unwrap_or_default();
-    auth.anthropic = Some(ApiKeyEntry {
+    *auth.entry_mut(provider) = Some(ApiKeyEntry {
         r#type: "api_key".to_string(),
         key,
     });
     write_auth_file(&auth)
 }
 
-pub fn store_openrouter_api_key(key: String) -> Result<PathBuf> {
-    let mut auth = load_auth_file().unwrap_or_default();
-    auth.openrouter = Some(ApiKeyEntry {
-        r#type: "api_key".to_string(),
-        key,
-    });
-    write_auth_file(&auth)
-}
-
-pub fn store_openai_api_key(key: String) -> Result<PathBuf> {
-    let mut auth = load_auth_file().unwrap_or_default();
-    auth.openai = Some(ApiKeyEntry {
-        r#type: "api_key".to_string(),
-        key,
-    });
-    write_auth_file(&auth)
-}
-
-pub fn auth_file_path() -> Result<PathBuf> {
+fn auth_file_path() -> Result<PathBuf> {
     let home = env::var("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".oneloop").join("auth.json"))
 }

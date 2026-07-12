@@ -31,44 +31,23 @@ pub struct AgentContext {
     pub cwd: PathBuf,
 }
 
+/// The most salient argument of a tool call for display — the command, path,
+/// or query. `Some("?")` when the tool is known but the argument is missing;
+/// `None` when the tool itself is unknown.
+fn key_argument<'a>(name: &str, arguments: &'a serde_json::Value) -> Option<&'a str> {
+    let field = match name {
+        "bash" => "command",
+        "read" | "write" | "edit" => "path",
+        "web_search" => "query",
+        _ => return None,
+    };
+    Some(arguments.get(field).and_then(|v| v.as_str()).unwrap_or("?"))
+}
+
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
-    match name {
-        "bash" => {
-            let cmd = arguments
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("bash: {cmd}")
-        }
-        "read" => {
-            let path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("read: {path}")
-        }
-        "write" => {
-            let path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("write: {path}")
-        }
-        "edit" => {
-            let path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("edit: {path}")
-        }
-        "web_search" => {
-            let query = arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("web_search: {query}")
-        }
-        _ => name.to_string(),
+    match key_argument(name, arguments) {
+        Some(argument) => format!("{name}: {argument}"),
+        None => name.to_string(),
     }
 }
 

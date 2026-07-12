@@ -51,10 +51,6 @@ fn extract_error_message(raw: &str) -> String {
                 return msg.to_string();
             }
         }
-        // Fallback: first string value we find
-        if let Some(msg) = val.pointer("/error/message").and_then(|m| m.as_str()) {
-            return msg.to_string();
-        }
     }
     // Last resort: truncate raw text
     let limit = 200;

@@ -128,23 +128,9 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
 
 /// Extract just the useful part of tool arguments for a summary.
 fn summarize_tool_arguments(name: &str, arguments: &serde_json::Value) -> String {
-    match name {
-        "bash" => arguments
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-            .to_string(),
-        "read" | "write" | "edit" => arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-            .to_string(),
-        "web_search" => arguments
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-            .to_string(),
-        _ => arguments.to_string(),
+    match super::key_argument(name, arguments) {
+        Some(argument) => argument.to_string(),
+        None => arguments.to_string(),
     }
 }
 

@@ -66,43 +66,27 @@ async fn main() -> Result<()> {
 }
 
 fn login(provider: &str) -> Result<()> {
-    match provider {
-        "anthropic" => {
-            println!("Anthropic login for OneLoop");
-            println!();
-            println!("Note: OneLoop uses Anthropic API-key authentication.");
-            println!("It does not implement claude.ai subscription login.");
-            println!();
-            let key = rpassword::prompt_password("Enter ANTHROPIC_API_KEY: ")?;
-            if key.trim().is_empty() {
-                bail!("empty API key")
-            }
-            let path = auth::store_anthropic_api_key(key)?;
-            println!("Stored Anthropic credentials at {}", path.display());
-            Ok(())
-        }
-        "openrouter" => {
-            println!("OpenRouter login for OneLoop");
-            println!();
-            let key = rpassword::prompt_password("Enter OPENROUTER_API_KEY: ")?;
-            if key.trim().is_empty() {
-                bail!("empty API key")
-            }
-            let path = auth::store_openrouter_api_key(key)?;
-            println!("Stored OpenRouter credentials at {}", path.display());
-            Ok(())
-        }
-        "openai" => {
-            println!("OpenAI login for OneLoop");
-            println!();
-            let key = rpassword::prompt_password("Enter OPENAI_API_KEY: ")?;
-            if key.trim().is_empty() {
-                bail!("empty API key")
-            }
-            let path = auth::store_openai_api_key(key)?;
-            println!("Stored OpenAI credentials at {}", path.display());
-            Ok(())
-        }
-        other => bail!("unsupported provider login: {other}"),
+    let Some(provider) = auth::AuthProvider::from_name(provider) else {
+        bail!("unsupported provider login: {provider}");
+    };
+
+    println!("{} login for OneLoop", provider.display_name());
+    println!();
+    if provider == auth::AuthProvider::Anthropic {
+        println!("Note: OneLoop uses Anthropic API-key authentication.");
+        println!("It does not implement claude.ai subscription login.");
+        println!();
     }
+
+    let key = rpassword::prompt_password(format!("Enter {}: ", provider.env_var()))?;
+    if key.trim().is_empty() {
+        bail!("empty API key")
+    }
+    let path = auth::store_api_key(provider, key)?;
+    println!(
+        "Stored {} credentials at {}",
+        provider.display_name(),
+        path.display()
+    );
+    Ok(())
 }
