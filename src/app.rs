@@ -107,91 +107,94 @@ impl App {
 
         match prompt {
             Some(prompt) => run_directed_prompt(&mut agent, &prompt).await,
-            None => {
-                println!("OneLoop");
-                println!("{}", agent.summary());
-                println!();
-                println!(
-                    "interactive mode — type your message, /clear to reset context, Ctrl+C to stop"
-                );
-                println!();
+            None => run_interactive(&mut agent).await,
+        }
+    }
+}
 
-                // A raw-mode line editor instead of stdin's canonical mode,
-                // which silently drops input past the tty's 4096-byte line
-                // buffer and locks up the prompt on long pastes.
-                let mut editor = rustyline::DefaultEditor::new()?;
+/// The interactive REPL: read a line, run it, repeat until Ctrl+D.
+async fn run_interactive(agent: &mut Agent) -> Result<()> {
+    println!("OneLoop");
+    println!("{}", agent.summary());
+    println!();
+    println!("interactive mode — type your message, /clear to reset context, Ctrl+C to stop");
+    println!();
 
-                loop {
-                    let line = match editor.readline("> ") {
-                        Ok(input) => input.trim().to_string(),
-                        // Ctrl+C at the prompt discards the current line.
-                        Err(ReadlineError::Interrupted) => continue,
-                        // Ctrl+D exits.
-                        Err(ReadlineError::Eof) => break,
-                        Err(e) => return Err(e.into()),
-                    };
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let _ = editor.add_history_entry(&line);
+    // A raw-mode line editor instead of stdin's canonical mode, which
+    // silently drops input past the tty's 4096-byte line buffer and locks
+    // up the prompt on long pastes.
+    let mut editor = rustyline::DefaultEditor::new()?;
 
-                    // Check for built-in commands.
-                    if let Some(ReplCommand::Clear) = parse_command(&line) {
-                        agent.clear_session()?;
-                        println!();
-                        continue;
-                    }
+    loop {
+        let line = match editor.readline("> ") {
+            Ok(input) => input.trim().to_string(),
+            // Ctrl+C at the prompt discards the current line.
+            Err(ReadlineError::Interrupted) => continue,
+            // Ctrl+D exits.
+            Err(ReadlineError::Eof) => break,
+            Err(e) => return Err(e.into()),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        let _ = editor.add_history_entry(&line);
 
-                    let directives = match parse_prompt(&line) {
-                        Ok(directives) => directives,
-                        Err(e) => {
-                            eprintln!("{RED}  ✗ {e:#}{RESET}");
-                            println!(
-                                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file{RESET}"
-                            );
-                            println!();
-                            continue;
-                        }
-                    };
-                    let compact_provider_override =
-                        provider_override(&directives).map(String::from);
+        // Check for built-in commands.
+        if let Some(ReplCommand::Clear) = parse_command(&line) {
+            agent.clear_session()?;
+            println!();
+            continue;
+        }
 
-                    // Use select to race the agent run against Ctrl+C.
-                    // Ctrl+C drops the run future mid-flight.
-                    let mut interrupted = false;
-                    tokio::select! {
-                        result = run_directives(&mut agent, directives) => {
-                            if let Err(e) = result {
-                                eprintln!("{RED}  ✗ {e:#}{RESET}");
-                            }
-                        }
-                        _ = tokio::signal::ctrl_c() => {
-                            interrupted = true;
-                            println!("{YELLOW}  ⏹ stopped{RESET}");
-                        }
-                    }
+        run_interactive_turn(agent, &line).await;
+        println!();
+    }
 
-                    // A dropped run may have recorded tool calls whose results
-                    // never arrived; close them out or providers will reject
-                    // every later request in this session.
-                    if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
-                        eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
-                    }
+    Ok(())
+}
 
-                    // Auto-compact if context is near limit. Failure is not
-                    // fatal to the REPL — report it and keep going.
-                    if let Err(e) = agent
-                        .auto_compact_if_needed(compact_provider_override.as_deref())
-                        .await
-                    {
-                        eprintln!("{RED}  ✗ auto-compaction failed: {e:#}{RESET}");
-                    }
+/// One REPL turn: parse directives, run them racing Ctrl+C, then tidy up.
+/// Errors are reported, never propagated — a failed turn must not end the REPL.
+async fn run_interactive_turn(agent: &mut Agent, line: &str) {
+    let directives = match parse_prompt(line) {
+        Ok(directives) => directives,
+        Err(e) => {
+            eprintln!("{RED}  ✗ {e:#}{RESET}");
+            println!(
+                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file{RESET}"
+            );
+            return;
+        }
+    };
+    let compact_provider_override = provider_override(&directives).map(String::from);
 
-                    println!();
-                }
-
-                Ok(())
+    // Use select to race the agent run against Ctrl+C.
+    // Ctrl+C drops the run future mid-flight.
+    let mut interrupted = false;
+    tokio::select! {
+        result = run_directives(agent, directives) => {
+            if let Err(e) = result {
+                eprintln!("{RED}  ✗ {e:#}{RESET}");
             }
         }
+        _ = tokio::signal::ctrl_c() => {
+            interrupted = true;
+            println!("{YELLOW}  ⏹ stopped{RESET}");
+        }
+    }
+
+    // A dropped run may have recorded tool calls whose results never
+    // arrived; close them out or providers will reject every later
+    // request in this session.
+    if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
+        eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
+    }
+
+    // Auto-compact if context is near limit.
+    if let Err(e) = agent
+        .auto_compact_if_needed(compact_provider_override.as_deref())
+        .await
+    {
+        eprintln!("{RED}  ✗ auto-compaction failed: {e:#}{RESET}");
     }
 }
