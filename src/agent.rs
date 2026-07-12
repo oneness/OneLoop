@@ -13,7 +13,6 @@ use std::time::Instant;
 use anyhow::Result;
 use futures::future::join_all;
 use serde_json::json;
-use std::env;
 use std::sync::Arc;
 
 use crate::{
@@ -298,10 +297,10 @@ impl Agent {
     ) -> Result<()> {
         self.session.push_user(prompt)?;
 
-        let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(50);
+        let max_iterations: usize = crate::config::env_or(
+            "ONELOOP_MAX_ITERATIONS",
+            crate::config::DEFAULT_MAX_ITERATIONS,
+        );
 
         let mut active_provider = provider_override.map(String::from);
 

@@ -124,10 +124,7 @@ impl ProviderRegistry {
         stop_spinner: Option<Box<dyn FnOnce() + Send>>,
         start_spinner: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<(String, ProviderResponse)> {
-        let max_retries: usize = env::var("ONELOOP_MAX_RETRIES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3);
+        let max_retries: usize = crate::config::env_or("ONELOOP_MAX_RETRIES", 3);
 
         let provider = self.resolve(provider_name)?;
         let provider_label = provider.name();

@@ -52,6 +52,18 @@ fn tool_preamble(tool_names: &[&str]) -> String {
     )
 }
 
+/// Cap on agent-loop iterations per prompt (shared by the main loop and
+/// orchestration evidence loops).
+pub const DEFAULT_MAX_ITERATIONS: usize = 50;
+
+/// Read an env var, falling back to `default` when unset or unparsable.
+pub fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 pub fn memory_path(cwd: &Path) -> PathBuf {
     cwd.join(".oneloop").join("memory.md")
 }

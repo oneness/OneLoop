@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -57,15 +56,13 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
 
 /// Check whether the session has exceeded the compaction threshold.
 pub fn should_compact(messages: &[Message], system_prompt_chars: usize) -> bool {
-    let threshold: u8 = env::var("ONELOOP_COMPACTION_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_COMPACTION_THRESHOLD);
+    let threshold: u8 =
+        crate::config::env_or("ONELOOP_COMPACTION_THRESHOLD", DEFAULT_COMPACTION_THRESHOLD);
 
-    let context_window: usize = env::var("ONELOOP_CONTEXT_WINDOW_TOKENS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS);
+    let context_window: usize = crate::config::env_or(
+        "ONELOOP_CONTEXT_WINDOW_TOKENS",
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+    );
 
     let limit_tokens = (context_window as u64 * threshold as u64 / 100) as usize;
     let used_tokens = estimate_tokens(messages, system_prompt_chars);
@@ -204,10 +201,10 @@ pub fn append_and_trim_memory(cwd: &Path, new_facts: &str) -> Result<()> {
 /// `RECENT_USER_MESSAGES_MAX_TOKENS` tokens. Returns them in chronological
 /// order. Skips any messages that look like previous compaction summaries.
 pub fn collect_recent_user_messages(messages: &[Message]) -> Vec<String> {
-    let max_tokens: usize = env::var("ONELOOP_COMPACT_USER_MSG_TOKENS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(RECENT_USER_MESSAGES_MAX_TOKENS);
+    let max_tokens: usize = crate::config::env_or(
+        "ONELOOP_COMPACT_USER_MSG_TOKENS",
+        RECENT_USER_MESSAGES_MAX_TOKENS,
+    );
 
     let mut selected: Vec<String> = Vec::new();
     let mut remaining = max_tokens;

@@ -4,7 +4,6 @@
 //! main agent via `request_evidence`. The main agent executes, caches, and
 //! shares results.
 
-use std::env;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -262,10 +261,10 @@ async fn collect_provider_responses(
         .await;
     }
 
-    let max_iterations: usize = env::var("ONELOOP_MAX_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50);
+    let max_iterations: usize = crate::config::env_or(
+        "ONELOOP_MAX_ITERATIONS",
+        crate::config::DEFAULT_MAX_ITERATIONS,
+    );
 
     let allowed = crate::agent::evidence::allowed_tools(tools);
     let cache = crate::agent::evidence::shared_cache();
