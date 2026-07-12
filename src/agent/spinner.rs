@@ -4,6 +4,7 @@
 //! so the `start_callback` can replace it with a fresh handle.
 
 use std::io::IsTerminal;
+use crate::output::{CLEAR_LINE, DIM, RESET};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -29,7 +30,7 @@ impl SpinnerGuard {
         let mut i = 0;
         loop {
             let frame = SPINNER_FRAMES[i % SPINNER_FRAMES.len()];
-            eprint!("\x1b[2K\r\x1b[90m  {frame} {label}\x1b[0m\r");
+            eprint!("{CLEAR_LINE}\r{DIM}  {frame} {label}{RESET}\r");
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             i += 1;
         }
@@ -40,7 +41,7 @@ impl SpinnerGuard {
             if let Ok(abort) = abort.lock() {
                 abort.abort();
             }
-            eprint!("\x1b[2K\r");
+            eprint!("{CLEAR_LINE}\r");
         }
     }
 
@@ -56,7 +57,7 @@ impl SpinnerGuard {
             if let Ok(abort) = abort.lock() {
                 abort.abort();
             }
-            eprint!("\x1b[2K\r");
+            eprint!("{CLEAR_LINE}\r");
         })
     }
 

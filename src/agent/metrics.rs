@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde_json::Value;
+use crate::output::{DIM, RESET};
 
 /// Append-only metrics log, one JSON line per event.
 /// File lives at `.oneloop/metrics/<session-filename>.jsonl`,
@@ -42,7 +43,7 @@ impl Metrics {
     /// Append a metrics event. Errors are printed to stderr, never propagated.
     pub fn log(&self, event: &str, data: Value) {
         if let Err(e) = self.try_log(event, data) {
-            eprintln!("\x1b[90m  [metrics] {e:#}\x1b[0m");
+            eprintln!("{DIM}  [metrics] {e:#}{RESET}");
         }
     }
 

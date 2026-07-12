@@ -16,6 +16,7 @@ use crate::agent::{AgentContext, messages};
 use crate::directives::ToolMode;
 use crate::providers::{ProviderRegistry, ProviderRequest};
 use crate::tools::{ToolRegistry, ToolResult};
+use crate::output::{DIM, RESET};
 
 /// Shared context for orchestration operations — avoids passing the same
 /// handful of parameters through every function signature.
@@ -347,11 +348,11 @@ async fn collect_provider_responses(
                         .await;
 
                         if result.is_error {
-                            eprintln!("\x1b[90m    {provider_label} ✗ {label}{cache_tag}\x1b[0m");
+                            eprintln!("{DIM}    {provider_label} ✗ {label}{cache_tag}{RESET}");
                         } else {
                             let lines = result.content.lines().count();
                             let bytes = result.content.len();
-                            eprintln!("\x1b[90m    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}\x1b[0m");
+                            eprintln!("{DIM}    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}{RESET}");
                         }
 
                         tool_results.push(result);

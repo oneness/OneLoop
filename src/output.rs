@@ -1,6 +1,19 @@
 pub const DEFAULT_MAX_BYTES: usize = 128 * 1024;
 pub const DEFAULT_MAX_LINES: usize = 1000;
 
+// ── Terminal styling ──────────────────────────────────────────────────
+// The single home for ANSI escapes: a color-scheme change, a --no-color
+// flag, or NO_COLOR support only ever touches this block.
+
+pub const RESET: &str = "\x1b[0m";
+pub const BOLD: &str = "\x1b[1m";
+pub const RED: &str = "\x1b[31m";
+pub const GREEN: &str = "\x1b[32m";
+pub const YELLOW: &str = "\x1b[33m";
+pub const DIM: &str = "\x1b[90m";
+/// Erase the current line (spinner redraws over it).
+pub const CLEAR_LINE: &str = "\x1b[2K";
+
 /// Truncate keeping the first lines, appending a notice when content was dropped.
 pub fn truncate_head(input: &str, max_bytes: usize, max_lines: usize) -> String {
     with_notice(truncate(input, max_bytes, max_lines, Keep::Head))

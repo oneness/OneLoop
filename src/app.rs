@@ -8,6 +8,7 @@ use crate::{
     providers::ProviderRegistry,
     tools::ToolRegistry,
 };
+use crate::output::{DIM, RED, RESET, YELLOW};
 
 pub struct App {
     config: Config,
@@ -30,14 +31,14 @@ fn print_directive_summary(directives: &PromptDirectives) {
         RunMode::Single {
             provider: Some(provider),
         } => {
-            eprintln!("\x1b[90m  → provider: {provider}\x1b[0m");
+            eprintln!("{DIM}  → provider: {provider}{RESET}");
         }
         RunMode::Single { provider: None } => {}
         RunMode::Consensus { providers } => {
-            eprintln!("\x1b[90m  → consensus: {}\x1b[0m", providers.join(", "));
+            eprintln!("{DIM}  → consensus: {}{RESET}", providers.join(", "));
         }
         RunMode::Debate { providers } => {
-            eprintln!("\x1b[90m  → debate: {}\x1b[0m", providers.join(", "));
+            eprintln!("{DIM}  → debate: {}{RESET}", providers.join(", "));
         }
     }
 }
@@ -144,9 +145,9 @@ impl App {
                     let directives = match parse_prompt(&line) {
                         Ok(directives) => directives,
                         Err(e) => {
-                            eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                            eprintln!("{RED}  ✗ {e:#}{RESET}");
                             println!(
-                                "\x1b[90m  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file\x1b[0m"
+                                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file{RESET}"
                             );
                             println!();
                             continue;
@@ -161,12 +162,12 @@ impl App {
                     tokio::select! {
                         result = run_directives(&mut agent, directives) => {
                             if let Err(e) = result {
-                                eprintln!("\x1b[31m  ✗ {e:#}\x1b[0m");
+                                eprintln!("{RED}  ✗ {e:#}{RESET}");
                             }
                         }
                         _ = tokio::signal::ctrl_c() => {
                             interrupted = true;
-                            println!("\x1b[33m  ⏹ stopped\x1b[0m");
+                            println!("{YELLOW}  ⏹ stopped{RESET}");
                         }
                     }
 
@@ -174,7 +175,7 @@ impl App {
                     // never arrived; close them out or providers will reject
                     // every later request in this session.
                     if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
-                        eprintln!("\x1b[31m  ✗ session repair failed: {e:#}\x1b[0m");
+                        eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
                     }
 
                     // Auto-compact if context is near limit. Failure is not
@@ -183,7 +184,7 @@ impl App {
                         .auto_compact_if_needed(compact_provider_override.as_deref())
                         .await
                     {
-                        eprintln!("\x1b[31m  ✗ auto-compaction failed: {e:#}\x1b[0m");
+                        eprintln!("{RED}  ✗ auto-compaction failed: {e:#}{RESET}");
                     }
 
                     println!();

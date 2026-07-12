@@ -22,6 +22,7 @@ use crate::{
     providers::{ProviderRegistry, ProviderRequest},
     tools::{ToolRegistry, ToolResult},
 };
+use crate::output::{DIM, GREEN, RED, RESET, YELLOW};
 
 use spinner::SpinnerGuard;
 
@@ -71,7 +72,7 @@ impl Agent {
         let repaired = session.repair_dangling_tool_calls()?;
         if repaired > 0 {
             println!(
-                "\x1b[90m  → closed {repaired} interrupted tool call(s) from a previous run\x1b[0m"
+                "{DIM}  → closed {repaired} interrupted tool call(s) from a previous run{RESET}"
             );
         }
         let metrics = metrics::Metrics::from_session_path(session.path())?;
@@ -89,7 +90,7 @@ impl Agent {
     pub fn repair_dangling_tool_calls(&mut self) -> Result<()> {
         let repaired = self.session.repair_dangling_tool_calls()?;
         if repaired > 0 {
-            println!("\x1b[90m  → closed {repaired} interrupted tool call(s)\x1b[0m");
+            println!("{DIM}  → closed {repaired} interrupted tool call(s){RESET}");
         }
         Ok(())
     }
@@ -99,7 +100,7 @@ impl Agent {
         self.session = self.session.rotate()?;
         self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
         println!(
-            "\x1b[90m  → cleared context, new session: {}\x1b[0m",
+            "{DIM}  → cleared context, new session: {}{RESET}",
             self.session.path().display()
         );
         Ok(())
@@ -118,7 +119,7 @@ impl Agent {
             return Ok(());
         }
 
-        println!("\x1b[33m  ⚠ context near limit — auto-compacting...\x1b[0m");
+        println!("{YELLOW}  ⚠ context near limit — auto-compacting...{RESET}");
 
         let tokens_before =
             compaction::estimate_tokens(self.session.messages(), system_prompt_chars);
@@ -154,7 +155,7 @@ impl Agent {
             Ok((_used_provider, response)) => response,
             Err(e) => {
                 spinner.stop();
-                eprintln!("\x1b[31m  ✗ compaction failed: {e:#}\x1b[0m");
+                eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
                 return Ok(());
             }
         };
@@ -197,12 +198,12 @@ impl Agent {
                             crate::config::prompt_sources(&self.config.cwd);
                     }
                     Err(e) => {
-                        eprintln!("\x1b[33m  ⚠ memory update failed: {e:#}\x1b[0m");
+                        eprintln!("{YELLOW}  ⚠ memory update failed: {e:#}{RESET}");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("\x1b[33m  ⚠ memory extraction failed: {e:#}\x1b[0m");
+                eprintln!("{YELLOW}  ⚠ memory extraction failed: {e:#}{RESET}");
             }
         }
 
@@ -243,12 +244,12 @@ impl Agent {
         );
 
         println!(
-            "\x1b[32m  ✓ compacted — new session: {} ({} recent messages preserved)\x1b[0m",
+            "{GREEN}  ✓ compacted — new session: {} ({} recent messages preserved){RESET}",
             self.session.path().display(),
             recent_user_messages.len()
         );
         println!(
-            "\x1b[90m  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.\x1b[0m"
+            "{DIM}  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.{RESET}"
         );
 
         Ok(())
@@ -355,7 +356,7 @@ impl Agent {
                             "success": false,
                         }),
                     );
-                    println!("\x1b[31m  ✗ provider error: {e:#}\x1b[0m");
+                    println!("{RED}  ✗ provider error: {e:#}{RESET}");
                     break;
                 }
             };
@@ -456,12 +457,12 @@ impl Agent {
                 )?;
 
                 if result.is_error {
-                    println!("\x1b[31m  ✗ {tool_label}\x1b[0m");
+                    println!("{RED}  ✗ {tool_label}{RESET}");
                     println!("{}", result.content);
                 } else {
                     let lines = result.content.lines().count();
                     let bytes = result.content.len();
-                    println!("\x1b[90m  ✓ {tool_label} ({lines} lines, {bytes} bytes)\x1b[0m");
+                    println!("{DIM}  ✓ {tool_label} ({lines} lines, {bytes} bytes){RESET}");
                 }
             }
         }

@@ -9,6 +9,7 @@ use super::{
     ProviderResponse,
 };
 use crate::auth::{self, AuthProvider};
+use crate::output::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
 
 pub struct ProviderRegistry {
     providers: Vec<Box<dyn Provider>>,
@@ -143,10 +144,10 @@ impl ProviderRegistry {
                     if attempt < max_retries {
                         let backoff = Duration::from_millis(500 * attempt as u64);
                         eprintln!(
-                            "\x1b[33m  ⚠ [{provider_label}] attempt {attempt}/{max_retries} failed: {err_msg}\x1b[0m"
+                            "{YELLOW}  ⚠ [{provider_label}] attempt {attempt}/{max_retries} failed: {err_msg}{RESET}"
                         );
                         eprintln!(
-                            "\x1b[90m  ⏳ retrying in {}ms...\x1b[0m",
+                            "{DIM}  ⏳ retrying in {}ms...{RESET}",
                             backoff.as_millis()
                         );
                         tokio::time::sleep(backoff).await;
@@ -158,7 +159,7 @@ impl ProviderRegistry {
         // --- Phase 2: all retries exhausted, offer fallback ---
         let err_msg = last_error.as_deref().unwrap_or("unknown error");
         eprintln!(
-            "\x1b[31m  ✗ [{provider_label}] all {max_retries} attempts failed: {err_msg}\x1b[0m"
+            "{RED}  ✗ [{provider_label}] all {max_retries} attempts failed: {err_msg}{RESET}"
         );
 
         let alternatives: Vec<&'static str> = self
@@ -186,9 +187,9 @@ impl ProviderRegistry {
         }
 
         // Show the user a numbered list.
-        println!("\x1b[1m  ── Provider Unavailable ──\x1b[0m");
+        println!("{BOLD}  ── Provider Unavailable ──{RESET}");
         println!(
-            "\x1b[90m  {provider_label} is not responding. Pick an alternative (Enter to abort):\x1b[0m"
+            "{DIM}  {provider_label} is not responding. Pick an alternative (Enter to abort):{RESET}"
         );
         for (i, name) in alternatives.iter().enumerate() {
             let model = self
@@ -197,10 +198,10 @@ impl ProviderRegistry {
                 .find(|p| p.name() == *name)
                 .map(|p| p.model())
                 .unwrap_or_else(|| "?".to_string());
-            println!("\x1b[1m  {}. {} \x1b[90m({})\x1b[0m", i + 1, name, model);
+            println!("{BOLD}  {}. {} {DIM}({}){RESET}", i + 1, name, model);
         }
         print!(
-            "\x1b[1m  → select [1-{}] or Enter to abort: \x1b[0m",
+            "{BOLD}  → select [1-{}] or Enter to abort: {RESET}",
             alternatives.len()
         );
         io::stdout().flush()?;
@@ -243,7 +244,7 @@ impl ProviderRegistry {
 
         let fallback = self.resolve(Some(name))?;
         eprintln!(
-            "\x1b[32m  → switching to {} ({})\x1b[0m",
+            "{GREEN}  → switching to {} ({}){RESET}",
             fallback.name(),
             fallback.model()
         );
