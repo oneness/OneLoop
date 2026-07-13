@@ -326,6 +326,15 @@ impl Agent {
         Ok(())
     }
 
+    /// One-line provider identification, e.g. `openrouter (deepseek/deepseek-v4-flash)`.
+    pub fn provider_line(&self) -> String {
+        format!(
+            "{} ({})",
+            self.provider_registry.active_name(),
+            self.provider_registry.active_model()
+        )
+    }
+
     pub fn summary(&self) -> String {
         let message_count = self.session.messages().len();
         let provider = self.provider_registry.active_name();

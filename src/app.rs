@@ -106,7 +106,12 @@ impl App {
         let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
 
         match prompt {
-            Some(prompt) => run_directed_prompt(&mut agent, &prompt).await,
+            Some(prompt) => {
+                // Interactive mode prints a full banner; one-shot runs must
+                // also never be silent about which model they are spending on.
+                eprintln!("{DIM}  → {}{RESET}", agent.provider_line());
+                run_directed_prompt(&mut agent, &prompt).await
+            }
             None => run_interactive(&mut agent).await,
         }
     }
