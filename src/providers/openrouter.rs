@@ -26,7 +26,7 @@ impl OpenRouterProvider {
             .context("failed to build OpenRouter HTTP client")?;
 
         // Keep this default aligned with the `ol` wrapper: a wrapper-less
-        // invocation must not silently fall back to a pricier model.
+        // invocation must not silently fall back to a different model.
         let model = std::env::var("ONELOOP_OPENROUTER_MODEL")
             .unwrap_or_else(|_| "deepseek/deepseek-v4-flash".to_string());
         let base_url = std::env::var("ONELOOP_OPENROUTER_BASE_URL")

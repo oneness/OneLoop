@@ -29,7 +29,7 @@ impl AnthropicProvider {
 
         // Keep this default aligned with the `ol` wrapper.
         let model = std::env::var("ONELOOP_ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-opus-4-7".to_string());
+            .unwrap_or_else(|_| "claude-opus-4-8".to_string());
 
         Ok(Self {
             client,

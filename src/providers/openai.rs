@@ -26,7 +26,9 @@ impl OpenAIProvider {
             .build()
             .context("failed to build OpenAI HTTP client")?;
 
-        let model = std::env::var("ONELOOP_OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
+        // Keep this default aligned with the `ol` wrapper.
+        let model =
+            std::env::var("ONELOOP_OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_string());
         let base_url = std::env::var("ONELOOP_OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let reasoning_effort = std::env::var("ONELOOP_OPENAI_REASONING_EFFORT")
