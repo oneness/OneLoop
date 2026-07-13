@@ -85,15 +85,20 @@ Sessions are linear append-only JSONL files stored at:
 Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
 
+On open (and after a Ctrl+C-cancelled run), any tool call left without a matching
+result is closed out with a synthetic error result — providers reject conversations
+containing dangling tool calls, so an unrepaired session would break every later request.
+
 ## Auth
 
-Credentials are resolved from `~/.oneloop/auth.json` first, then environment variables.
-Currently supported environment variables:
+Credentials are resolved from environment variables first, then `~/.oneloop/auth.json` —
+an explicitly set env var always wins (blank values are ignored). Supported variables:
 
 - `OPENROUTER_API_KEY`
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
+`auth.json` is written with owner-only (0600) permissions.
 Anthropic API-key auth is supported, but not `claude.ai` subscription login.
 
 ## Source layout
@@ -101,19 +106,19 @@ Anthropic API-key auth is supported, but not `claude.ai` subscription login.
 ```
 src/
   main.rs           CLI entry point, login command
-  agent.rs          Agent struct, run_once_with, auto_compact_if_needed
+  agent.rs          Agent struct, run_once_with, execute_tool_calls, session repair
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
-    orchestration.rs Consensus, debate, multi-provider evidence loops
+    orchestration.rs Consensus, debate, per-provider evidence loops
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
-    session.rs      Session persistence, rotation, file discovery
-    compaction.rs   Token estimation, tool output stripping, compaction, memory extraction
-    evidence.rs     Evidence cache, safety checks, tool execution
+    session.rs      Session persistence, rotation, dangling-tool-call repair
+    compaction.rs   Auto-compaction, token estimation, memory extraction
+    evidence.rs     Evidence cache, shell-command guardrail, tool execution
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
-  app.rs            Interactive REPL, command routing, Ctrl+C handling
-  auth.rs           API key storage in ~/.oneloop/auth.json
-  config.rs         System prompt assembly from AGENTS.md + .oneloop/memory.md
-  output.rs         Output truncation utilities
+  app.rs            Interactive REPL (rustyline), command routing, Ctrl+C handling
+  auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
+  config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
+  output.rs         Output truncation utilities, ANSI style constants
   providers.rs      Provider trait, ProviderRequest/Response types
   providers/
     anthropic.rs    Anthropic Claude provider

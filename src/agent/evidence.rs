@@ -45,7 +45,6 @@ impl EvidenceCache {
         format!("{tool}:{}", serde_json::Value::Object(sorted))
     }
 
-    #[cfg(test)]
     pub fn get(&self, tool: &str, args: &Value) -> Option<&CachedEvidence> {
         self.entries.get(&Self::key(tool, args))
     }
@@ -157,11 +156,7 @@ pub async fn execute(
                 is_error: true,
             };
         };
-        if cache_guard.has(evidence_tool, args)
-            && let Some(cached) = cache_guard
-                .entries
-                .get(&EvidenceCache::key(evidence_tool, args))
-        {
+        if let Some(cached) = cache_guard.get(evidence_tool, args) {
             return ToolResult {
                 content: format!("{}\n(cached)", cached.content),
                 is_error: cached.is_error,

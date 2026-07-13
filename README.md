@@ -50,7 +50,7 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 
 Stores API keys in `~/.oneloop/auth.json`.
 
-`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `web_search`.
+`./ol` is a thin wrapper that runs OneLoop via `nix develop` and pins the per-provider models. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, `web_search`, or `skill` (when skill files exist under `.oneloop/skills/`).
 
 ## Directives
 
@@ -88,7 +88,16 @@ Override with environment variables:
 - `ONELOOP_ANTHROPIC_MAX_TOKENS` — Anthropic output-token cap per response (default: `16000`)
 - `ONELOOP_OPENAI_MODEL` — OpenAI model override
 - `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override
-- `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models
+- `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort (default: `medium`; `none` omits the parameter for models that reject it)
+
+Tuning (all optional):
+
+- `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
+- `ONELOOP_MAX_RETRIES` — provider retry attempts before offering a fallback (default: `3`)
+- `ONELOOP_COMPACTION_THRESHOLD` — % of context window that triggers auto-compaction (default: `85`)
+- `ONELOOP_CONTEXT_WINDOW_TOKENS` — assumed context window size (default: `128000`)
+- `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
+- `ONELOOP_SEARX_URL` — SearXNG endpoint for `web_search` (default: `http://localhost:8080`)
 
 Credentials are resolved from environment variables first (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), then from `~/.oneloop/auth.json` — an explicitly set env var always wins.
 

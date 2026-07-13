@@ -31,9 +31,12 @@ impl OpenAIProvider {
             std::env::var("ONELOOP_OPENAI_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_string());
         let base_url = std::env::var("ONELOOP_OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let reasoning_effort = std::env::var("ONELOOP_OPENAI_REASONING_EFFORT")
-            .ok()
-            .or_else(|| Some("medium".to_string()));
+        // "none" omits the reasoning parameter entirely — some models reject it.
+        let reasoning_effort = match std::env::var("ONELOOP_OPENAI_REASONING_EFFORT") {
+            Ok(effort) if effort == "none" => None,
+            Ok(effort) => Some(effort),
+            Err(_) => Some("medium".to_string()),
+        };
 
         Ok(Self {
             client,
