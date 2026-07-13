@@ -14,6 +14,7 @@ pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
     model: String,
+    max_tokens: u32,
 }
 
 impl AnthropicProvider {
@@ -31,10 +32,15 @@ impl AnthropicProvider {
         let model = std::env::var("ONELOOP_ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-opus-4-8".to_string());
 
+        // Output-token ceiling per response. 16k is Anthropic's guidance for
+        // non-streaming clients: room for real work, under HTTP timeouts.
+        let max_tokens = crate::config::env_or("ONELOOP_ANTHROPIC_MAX_TOKENS", 16_000);
+
         Ok(Self {
             client,
             api_key,
             model,
+            max_tokens,
         })
     }
 }
@@ -121,7 +127,7 @@ impl Provider for AnthropicProvider {
             .to_string();
         let body = AnthropicRequest {
             model,
-            max_tokens: 4096,
+            max_tokens: self.max_tokens,
             system: request.system_prompt,
             messages: to_anthropic_messages(request.messages),
             tools: request

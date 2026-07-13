@@ -85,6 +85,7 @@ Override with environment variables:
 - `ONELOOP_OPENROUTER_MODEL` — OpenRouter model (default: `deepseek/deepseek-v4-flash`)
 - `ONELOOP_OPENROUTER_BASE_URL` — OpenRouter base URL override
 - `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override
+- `ONELOOP_ANTHROPIC_MAX_TOKENS` — Anthropic output-token cap per response (default: `16000`)
 - `ONELOOP_OPENAI_MODEL` — OpenAI model override
 - `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override
 - `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models
