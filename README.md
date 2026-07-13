@@ -89,7 +89,7 @@ Override with environment variables:
 - `ONELOOP_OPENAI_BASE_URL` — OpenAI base URL override
 - `ONELOOP_OPENAI_REASONING_EFFORT` — reasoning effort for o-series models
 
-Credentials are resolved from `~/.oneloop/auth.json` first, then from environment variables (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+Credentials are resolved from environment variables first (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), then from `~/.oneloop/auth.json` — an explicitly set env var always wins.
 
 ## Development
 

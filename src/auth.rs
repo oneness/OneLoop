@@ -71,7 +71,7 @@ pub struct ApiKeyEntry {
 }
 
 /// Credentials loaded once from `~/.oneloop/auth.json`.
-/// A missing or unreadable file behaves as empty, falling back to env vars.
+/// A missing or unreadable file behaves as empty.
 pub struct Auth {
     file: AuthFile,
 }
@@ -83,12 +83,14 @@ pub fn load() -> Auth {
 }
 
 impl Auth {
-    /// API key for a provider: stored credentials first, then the env var.
+    /// API key for a provider. The environment variable wins over stored
+    /// credentials — an explicitly set env var is the caller saying "use
+    /// this", per the usual CLI convention. Empty env values are ignored.
     pub fn api_key(&self, provider: AuthProvider) -> Option<String> {
-        self.file
-            .entry(provider)
-            .map(|entry| entry.key.clone())
-            .or_else(|| env::var(provider.env_var()).ok())
+        env::var(provider.env_var())
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+            .or_else(|| self.file.entry(provider).map(|entry| entry.key.clone()))
     }
 }
 
@@ -143,4 +145,43 @@ fn load_auth_file() -> Result<AuthFile> {
     let auth = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse auth file: {}", path.display()))?;
     Ok(auth)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_var_beats_stored_key_and_blank_env_is_ignored() {
+        let auth = Auth {
+            file: AuthFile {
+                openrouter: Some(ApiKeyEntry {
+                    r#type: "api_key".to_string(),
+                    key: "stored".to_string(),
+                }),
+                ..Default::default()
+            },
+        };
+
+        // SAFETY: no other test reads or writes this variable concurrently.
+        unsafe { env::set_var("OPENROUTER_API_KEY", "from-env") };
+        assert_eq!(
+            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            Some("from-env")
+        );
+
+        // SAFETY: as above.
+        unsafe { env::set_var("OPENROUTER_API_KEY", "  ") };
+        assert_eq!(
+            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            Some("stored")
+        );
+
+        // SAFETY: as above.
+        unsafe { env::remove_var("OPENROUTER_API_KEY") };
+        assert_eq!(
+            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            Some("stored")
+        );
+    }
 }
