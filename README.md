@@ -82,7 +82,7 @@ Default order:
 Override with environment variables:
 
 - `ONELOOP_PROVIDER=openrouter|openai|anthropic` — force a specific provider
-- `ONELOOP_OPENROUTER_MODEL` — OpenRouter model (default: `anthropic/claude-sonnet-4-5`)
+- `ONELOOP_OPENROUTER_MODEL` — OpenRouter model (default: `deepseek/deepseek-v4-flash`)
 - `ONELOOP_OPENROUTER_BASE_URL` — OpenRouter base URL override
 - `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override
 - `ONELOOP_OPENAI_MODEL` — OpenAI model override

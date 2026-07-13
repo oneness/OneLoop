@@ -27,8 +27,9 @@ impl AnthropicProvider {
             .build()
             .context("failed to build Anthropic HTTP client")?;
 
+        // Keep this default aligned with the `ol` wrapper.
         let model = std::env::var("ONELOOP_ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+            .unwrap_or_else(|_| "claude-opus-4-7".to_string());
 
         Ok(Self {
             client,
