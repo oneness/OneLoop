@@ -119,6 +119,7 @@ src/
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
   output.rs         Output truncation utilities, ANSI style constants
+  sanitize.rs       Lossy content sanitization (HTML stripping); opt-in per tool, never applied generically
   providers.rs      Provider trait, ProviderRequest/Response types
   providers/
     anthropic.rs    Anthropic Claude provider
