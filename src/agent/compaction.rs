@@ -65,97 +65,11 @@ pub async fn auto_compact_if_needed(
     let tokens_before = estimate_tokens(agent.session.messages(), system_prompt_chars);
     let compact_start = Instant::now();
 
-    let spinner = SpinnerGuard::new("compacting...");
-
-    let mut compact_messages = strip_tool_outputs(agent.session.messages());
-    compact_messages.push(Message::User(UserMessage {
-        content: compaction_user_message(),
-    }));
-
-    let request = ProviderRequest {
-        system_prompt: agent.config.system_prompt.clone(),
-        messages: compact_messages,
-        tools: Vec::new(),
-        model_override: None,
+    let Some(summary) = generate_summary(agent, provider_override).await else {
+        return Ok(()); // failure already reported; keep the session running
     };
-
-    let response = match agent
-        .provider_registry
-        .complete_with_retry(
-            provider_override,
-            request,
-            Some(spinner.stop_callback()),
-            Some(spinner.start_callback("compacting...")),
-        )
-        .await
-    {
-        Ok((_used_provider, response)) => response,
-        Err(e) => {
-            spinner.stop();
-            eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
-            return Ok(());
-        }
-    };
-    spinner.stop();
-
-    let summary = response.content;
-
-    // Memory extraction: send the compaction summary (not the full context)
-    // to a second, cheap call that distils durable facts into memory.md.
-    // Always uses the default provider (None) — memory is infrastructure,
-    // not user-directed, so the provider_override from the prompt must not
-    // carry over (it may name a provider that is rate-limited or unconfigured).
-    let memory_request = ProviderRequest {
-        system_prompt: None,
-        messages: vec![Message::User(UserMessage {
-            content: memory_extraction_message(&summary),
-        })],
-        tools: Vec::new(),
-        model_override: None,
-    };
-    // complete_once: single attempt, no retries, no interactive stdin prompt.
-    // Memory extraction is a background step — it must never block the loop.
-    match agent
-        .provider_registry
-        .complete_once(agent.provider_registry.active_name(), memory_request)
-        .await
-    {
-        Ok(memory_response) => {
-            match append_and_trim_memory(&agent.config.cwd, &memory_response.content) {
-                Ok(()) => {
-                    // Reload system prompt so new memory is visible for the
-                    // remainder of this session, not just the next startup.
-                    agent.config.system_prompt = crate::config::build_system_prompt(
-                        &agent.config.cwd,
-                        &agent.tool_registry.names(),
-                    );
-                    agent.config.prompt_sources = crate::config::prompt_sources(&agent.config.cwd);
-                }
-                Err(e) => {
-                    eprintln!("{YELLOW}  ⚠ memory update failed: {e:#}{RESET}");
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("{YELLOW}  ⚠ memory extraction failed: {e:#}{RESET}");
-        }
-    }
-
-    let recent_user_messages = collect_recent_user_messages(agent.session.messages());
-
-    agent.session = agent.session.rotate()?;
-    agent.metrics = metrics::Metrics::from_session_path(agent.session.path())?;
-
-    for user_msg in &recent_user_messages {
-        agent.session.push_user(user_msg.clone())?;
-    }
-
-    agent
-        .session
-        .push_user(format!("{SUMMARY_PREFIX}{summary}"))?;
-    agent.session.push_assistant(
-        "Understood. I have the context from the previous session. Ready to continue.".to_string(),
-    )?;
+    extract_memory(agent, &summary).await;
+    let preserved = reseed_session(agent, &summary)?;
 
     let system_prompt_chars_after = agent
         .config
@@ -175,15 +89,116 @@ pub async fn auto_compact_if_needed(
     );
 
     println!(
-        "{GREEN}  ✓ compacted — new session: {} ({} recent messages preserved){RESET}",
+        "{GREEN}  ✓ compacted — new session: {} ({preserved} recent messages preserved){RESET}",
         agent.session.path().display(),
-        recent_user_messages.len()
     );
     println!(
         "{DIM}  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.{RESET}"
     );
 
     Ok(())
+}
+
+/// Ask the provider for a handoff summary of the session. Returns None
+/// (after reporting) on failure — compaction is best-effort.
+async fn generate_summary(agent: &mut Agent, provider_override: Option<&str>) -> Option<String> {
+    let spinner = SpinnerGuard::new("compacting...");
+
+    let mut compact_messages = strip_tool_outputs(agent.session.messages());
+    compact_messages.push(Message::User(UserMessage {
+        content: COMPACTION_PROMPT.to_string(),
+    }));
+
+    let request = ProviderRequest {
+        system_prompt: agent.config.system_prompt.clone(),
+        messages: compact_messages,
+        tools: Vec::new(),
+        model_override: None,
+    };
+
+    let result = agent
+        .provider_registry
+        .complete_with_retry(
+            provider_override,
+            request,
+            Some(spinner.stop_callback()),
+            Some(spinner.start_callback("compacting...")),
+        )
+        .await;
+    spinner.stop();
+
+    match result {
+        Ok((_used_provider, response)) => Some(response.content),
+        Err(e) => {
+            eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
+            None
+        }
+    }
+}
+
+/// Distil durable facts from the summary into memory.md and reload the
+/// system prompt so new memory is visible for the remainder of this session.
+/// Failures warn and are otherwise ignored — memory is a background step
+/// that must never block the loop.
+async fn extract_memory(agent: &mut Agent, summary: &str) {
+    // The summary (not the full context) goes to a second, cheap call.
+    // Always uses the default provider — memory is infrastructure, not
+    // user-directed, so the provider_override from the prompt must not
+    // carry over (it may name a provider that is rate-limited or
+    // unconfigured). complete_once: single attempt, no retries, no
+    // interactive stdin prompt.
+    let memory_request = ProviderRequest {
+        system_prompt: None,
+        messages: vec![Message::User(UserMessage {
+            content: memory_extraction_message(summary),
+        })],
+        tools: Vec::new(),
+        model_override: None,
+    };
+    match agent
+        .provider_registry
+        .complete_once(agent.provider_registry.active_name(), memory_request)
+        .await
+    {
+        Ok(memory_response) => {
+            match append_and_trim_memory(&agent.config.cwd, &memory_response.content) {
+                Ok(()) => {
+                    agent.config.system_prompt = crate::config::build_system_prompt(
+                        &agent.config.cwd,
+                        &agent.tool_registry.names(),
+                    );
+                    agent.config.prompt_sources = crate::config::prompt_sources(&agent.config.cwd);
+                }
+                Err(e) => {
+                    eprintln!("{YELLOW}  ⚠ memory update failed: {e:#}{RESET}");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{YELLOW}  ⚠ memory extraction failed: {e:#}{RESET}");
+        }
+    }
+}
+
+/// Rotate to a fresh session seeded with recent user messages and the
+/// summary. Returns how many recent messages were preserved.
+fn reseed_session(agent: &mut Agent, summary: &str) -> Result<usize> {
+    let recent_user_messages = collect_recent_user_messages(agent.session.messages());
+
+    agent.session = agent.session.rotate()?;
+    agent.metrics = metrics::Metrics::from_session_path(agent.session.path())?;
+
+    for user_msg in &recent_user_messages {
+        agent.session.push_user(user_msg.clone())?;
+    }
+    agent
+        .session
+        .push_user(format!("{SUMMARY_PREFIX}{summary}"))?;
+    agent.session.push_assistant(
+        "Understood. I have the context from the previous session. Ready to continue.".to_string(),
+    )?;
+
+    Ok(recent_user_messages.len())
 }
 
 /// Estimate the total token count for a slice of messages.
@@ -218,11 +233,6 @@ pub fn should_compact(messages: &[Message], system_prompt_chars: usize) -> bool 
     let used_tokens = estimate_tokens(messages, system_prompt_chars);
 
     used_tokens >= limit_tokens
-}
-
-/// Build the compaction prompt to send to the model.
-pub fn compaction_user_message() -> String {
-    COMPACTION_PROMPT.to_string()
 }
 
 /// Strip large tool outputs from messages, keeping user/assistant messages intact.
