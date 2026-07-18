@@ -380,13 +380,8 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
 
             let label =
                 crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
-            let cached = cache
-                .lock()
-                .map(|cache| cache.has(evidence_tool, &evidence_args))
-                .unwrap_or(false);
-            let cache_tag = if cached { " (cached)" } else { "" };
 
-            let result = crate::agent::evidence::execute(
+            let (result, cached) = crate::agent::evidence::execute(
                 evidence_tool,
                 &evidence_args,
                 &allowed,
@@ -395,6 +390,7 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
                 &ctx,
             )
             .await;
+            let cache_tag = if cached { " (cached)" } else { "" };
 
             if result.is_error {
                 eprintln!("{DIM}    {provider_label} ✗ {label}{cache_tag}{RESET}");

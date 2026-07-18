@@ -49,10 +49,6 @@ impl EvidenceCache {
         self.entries.get(&Self::key(tool, args))
     }
 
-    pub fn has(&self, tool: &str, args: &Value) -> bool {
-        self.entries.contains_key(&Self::key(tool, args))
-    }
-
     pub fn insert(&mut self, tool: &str, args: &Value, content: String, is_error: bool) {
         self.entries
             .insert(Self::key(tool, args), CachedEvidence { content, is_error });
@@ -181,6 +177,7 @@ pub fn tool_definition() -> ToolDefinition {
 // ── Evidence execution ────────────────────────────────────────────────
 
 /// Execute an evidence request: check cache, validate, execute, cache result.
+/// The bool is true when the result was served from the cache.
 pub async fn execute(
     evidence_tool: &str,
     args: &Value,
@@ -188,34 +185,34 @@ pub async fn execute(
     cache: &SharedCache,
     tool_registry: &ToolRegistry,
     ctx: &AgentContext,
-) -> ToolResult {
+) -> (ToolResult, bool) {
     // Check if this tool is allowed.
     if !allowed.contains(evidence_tool) {
-        return ToolResult {
-            content: format!(
-                "blocked: '{}' is not available in this orchestration. \
-                 Allowed tools: {}. Adjust your request.",
-                evidence_tool,
-                allowed.iter().copied().collect::<Vec<_>>().join(", ")
-            ),
-            is_error: true,
-        };
+        return (
+            ToolResult {
+                content: format!(
+                    "blocked: '{}' is not available in this orchestration. \
+                     Allowed tools: {}. Adjust your request.",
+                    evidence_tool,
+                    allowed.iter().copied().collect::<Vec<_>>().join(", ")
+                ),
+                is_error: true,
+            },
+            false,
+        );
     }
 
     // Check cache.
+    if let Ok(cache_guard) = cache.lock()
+        && let Some(cached) = cache_guard.get(evidence_tool, args)
     {
-        let Ok(cache_guard) = cache.lock() else {
-            return ToolResult {
-                content: "evidence cache unavailable: lock poisoned".to_string(),
-                is_error: true,
-            };
-        };
-        if let Some(cached) = cache_guard.get(evidence_tool, args) {
-            return ToolResult {
+        return (
+            ToolResult {
                 content: format!("{}\n(cached)", cached.content),
                 is_error: cached.is_error,
-            };
-        }
+            },
+            true,
+        );
     }
 
     // Execute.
@@ -227,7 +224,7 @@ pub async fn execute(
         cache.insert(evidence_tool, args, result.content.clone(), result.is_error);
     }
 
-    result
+    (result, false)
 }
 
 async fn execute_inner(
