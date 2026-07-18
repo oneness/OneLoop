@@ -5,7 +5,6 @@ mod config;
 mod directives;
 mod output;
 mod providers;
-mod sanitize;
 mod tools;
 
 use std::io::{self, IsTerminal, Read};

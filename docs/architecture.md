@@ -31,9 +31,16 @@ That keeps the core honest without forcing a full plugin runtime too early.
 - write
 - edit
 - bash
-- fetch_page (fetch a URL, strip HTML to readable text — no dedicated web search tool; searching is done by fetching a search engine's results page)
+- skill (registered only when skill files exist)
 
-All five core built-in tools are now implemented.
+Web search and page fetching are deliberately not built-in tools. On
+OpenRouter, requests that carry tools also enable the server-side
+`openrouter:web_search` and `openrouter:web_fetch` tools: the model decides
+when to use them, OpenRouter executes them, and the results arrive inside the
+assistant message — no client-side handling, no HTML sanitization to
+maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. Plain
+completion calls (synthesis, compaction, memory extraction) never include
+them, so background work cannot trigger paid searches.
 
 ## Providers
 
@@ -60,12 +67,14 @@ judge synthesize the answers. Orchestrated providers never get direct tool
 access — they see a single `request_evidence` tool and ask the main agent,
 which executes, caches, and shares results across all providers in the run.
 
-The evidence tools (`read`, `fetch_page`, `shell`) are defined in one table
+The evidence tools (`read`, `shell`) are defined in one table
 (`EVIDENCE_TOOLS` in `evidence.rs`): the allowlist, the `request_evidence`
 schema, execution dispatch, display formatting, and directive validation are
 all derived from it. Adding or renaming an evidence tool is one entry there.
 `shell` is backed by the `bash` tool behind a read-only command guardrail —
 a seatbelt against state-changing commands, not a security boundary.
+Orchestrated providers reached via OpenRouter also get the server-side web
+tools, since their requests carry the `request_evidence` tool.
 
 ## Skills
 
@@ -133,12 +142,11 @@ src/
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
   output.rs         Output truncation utilities, ANSI style constants
-  sanitize.rs       Lossy content sanitization (HTML stripping); opt-in per tool, never applied generically
   providers.rs      Provider trait, request/response types, shared HTTP send/read
   providers/
     anthropic.rs    Anthropic Claude provider
     openai.rs       OpenAI GPT provider (Responses API)
-    openrouter.rs   OpenRouter provider (Chat Completions API)
+    openrouter.rs   OpenRouter provider (Chat Completions API, server-side web tools)
     registry.rs     Provider discovery, selection, retry with interactive fallback
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
@@ -146,7 +154,6 @@ src/
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
-    fetch_page.rs   Web page fetching (HTML stripped to clean text)
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
 docs/
   architecture.md   This file

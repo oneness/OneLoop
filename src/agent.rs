@@ -31,14 +31,13 @@ pub struct AgentContext {
     pub cwd: PathBuf,
 }
 
-/// The most salient argument of a tool call for display — the command, path,
-/// or query. `Some("?")` when the tool is known but the argument is missing;
+/// The most salient argument of a tool call for display — the command or
+/// path. `Some("?")` when the tool is known but the argument is missing;
 /// `None` when the tool itself is unknown.
 fn key_argument<'a>(name: &str, arguments: &'a serde_json::Value) -> Option<&'a str> {
     let field = match name {
         "bash" => "command",
         "read" | "write" | "edit" => "path",
-        "fetch_page" => "url",
         _ => return None,
     };
     Some(arguments.get(field).and_then(|v| v.as_str()).unwrap_or("?"))

@@ -92,14 +92,6 @@ const EVIDENCE_TOOLS: &[EvidenceTool] = &[
         display: "read",
     },
     EvidenceTool {
-        name: "fetch_page",
-        backing_tool: "fetch_page",
-        arg: "url",
-        summary: "fetch web page",
-        arg_description: "Page URL (for fetch_page)",
-        display: "fetch",
-    },
-    EvidenceTool {
         name: "shell",
         backing_tool: "bash",
         arg: "command",
@@ -497,7 +489,6 @@ mod tests {
     fn default_allowed_tools() {
         let set = allowed_tools(&ToolMode::Default);
         assert!(set.contains("read"));
-        assert!(set.contains("fetch_page"));
         assert!(set.contains("shell"));
         assert!(!set.contains("bash"));
     }
@@ -510,12 +501,8 @@ mod tests {
 
     #[test]
     fn allowlist_tools() {
-        let set = allowed_tools(&ToolMode::AllowList(vec![
-            "read".to_string(),
-            "fetch_page".to_string(),
-        ]));
+        let set = allowed_tools(&ToolMode::AllowList(vec!["read".to_string()]));
         assert!(set.contains("read"));
-        assert!(set.contains("fetch_page"));
         assert!(!set.contains("shell"));
     }
 
@@ -524,10 +511,6 @@ mod tests {
         assert_eq!(
             format_request("", "read", &json!({"path": "src/main.rs"})),
             "read: src/main.rs"
-        );
-        assert_eq!(
-            format_request("", "fetch_page", &json!({"url": "https://example.com"})),
-            "fetch: https://example.com"
         );
         assert_eq!(
             format_request("", "shell", &json!({"command": "find . -name '*.rs'"})),

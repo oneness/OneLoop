@@ -1,6 +1,6 @@
 # OneLoop
 
-A tiny coding agent. One loop, multiple models, six tools, zero config.
+A tiny coding agent. One loop, multiple models, five tools, zero config.
 
 ## Quick links
 
@@ -50,7 +50,7 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 
 Stores API keys in `~/.oneloop/auth.json`.
 
-`./ol` is a thin wrapper that runs OneLoop via `nix develop` and pins the per-provider models. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, `fetch_page`, or `skill` (when skill files exist under `.oneloop/skills/`). There is no dedicated web search tool: `fetch_page` fetches any URL and returns its readable text, which covers web search (fetch a search engine's results page) and more.
+`./ol` is a thin wrapper that runs OneLoop via `nix develop` and pins the per-provider models. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `skill` (when skill files exist under `.oneloop/skills/`). Web search and page fetching are not OneLoop tools: on OpenRouter, the agent enables the server-side `openrouter:web_search` and `openrouter:web_fetch` tools, which the model invokes when it needs the web and OpenRouter executes itself (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 
 ## Directives
 
@@ -84,6 +84,7 @@ Override with environment variables:
 - `ONELOOP_PROVIDER=openrouter|openai|anthropic` — force a specific provider
 - `ONELOOP_OPENROUTER_MODEL` — OpenRouter model (default: `deepseek/deepseek-v4-flash`)
 - `ONELOOP_OPENROUTER_BASE_URL` — OpenRouter base URL override
+- `ONELOOP_WEB_TOOLS` — OpenRouter server-side web search/fetch tools (default: `true`)
 - `ONELOOP_ANTHROPIC_MODEL` — Anthropic model override
 - `ONELOOP_ANTHROPIC_MAX_TOKENS` — Anthropic output-token cap per response (default: `16000`)
 - `ONELOOP_OPENAI_MODEL` — OpenAI model override

@@ -300,10 +300,10 @@ mod tests {
 
     #[test]
     fn tools_allow_list() {
-        let got = parsed("#!consensus anthropic openai tools:read,fetch_page#! hello");
+        let got = parsed("#!consensus anthropic openai tools:read,shell#! hello");
         assert_eq!(
             got.tools,
-            ToolMode::AllowList(vec!["read".to_string(), "fetch_page".to_string()])
+            ToolMode::AllowList(vec!["read".to_string(), "shell".to_string()])
         );
     }
 

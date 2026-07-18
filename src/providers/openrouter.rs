@@ -13,6 +13,7 @@ pub struct OpenRouterProvider {
     api_key: String,
     model: String,
     base_url: String,
+    web_tools: bool,
 }
 
 impl OpenRouterProvider {
@@ -31,12 +32,16 @@ impl OpenRouterProvider {
             .unwrap_or_else(|_| "deepseek/deepseek-v4-flash".to_string());
         let base_url = std::env::var("ONELOOP_OPENROUTER_BASE_URL")
             .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
+        // OpenRouter's server-side web_search/web_fetch tools. Metered per
+        // use ($0.005/search, $0.001/fetch), so a kill switch is provided.
+        let web_tools = crate::config::env_or("ONELOOP_WEB_TOOLS", true);
 
         Ok(Self {
             client,
             api_key,
             model,
             base_url,
+            web_tools,
         })
     }
 }
@@ -52,11 +57,32 @@ struct ChatRequest {
     tool_choice: Option<String>,
 }
 
+/// Either a function tool (`type: "function"` with a definition) or one of
+/// OpenRouter's server-side tools (`type: "openrouter:web_search"` etc.,
+/// no function body — OpenRouter executes it itself).
 #[derive(Debug, Serialize)]
 struct ChatToolDefinition {
     #[serde(rename = "type")]
     r#type: String,
-    function: ChatFunctionDefinition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<ChatFunctionDefinition>,
+}
+
+/// Append OpenRouter's server-side web tools to agentic requests. The model
+/// decides when to search or fetch; OpenRouter executes server-side and the
+/// results come back inside the assistant message. Plain completion calls
+/// (no tools) never get them, so synthesis, compaction, and memory
+/// extraction can't trigger paid searches.
+fn with_web_tools(mut tools: Vec<ChatToolDefinition>, enabled: bool) -> Vec<ChatToolDefinition> {
+    if enabled && !tools.is_empty() {
+        for name in ["openrouter:web_search", "openrouter:web_fetch"] {
+            tools.push(ChatToolDefinition {
+                r#type: name.to_string(),
+                function: None,
+            });
+        }
+    }
+    tools
 }
 
 #[derive(Debug, Serialize)]
@@ -143,13 +169,14 @@ impl Provider for OpenRouterProvider {
             .into_iter()
             .map(|tool| ChatToolDefinition {
                 r#type: "function".to_string(),
-                function: ChatFunctionDefinition {
+                function: Some(ChatFunctionDefinition {
                     name: tool.name,
                     description: tool.description,
                     parameters: tool.schema,
-                },
+                }),
             })
             .collect();
+        let tools = with_web_tools(tools, self.web_tools);
 
         // Only set tool_choice when tools are actually provided — some models
         // reject tool_choice: "auto" when the tools array is empty.
@@ -344,5 +371,44 @@ mod tests {
         let result = to_chat_messages(vec![tool_call("t1")]);
         let calls = result[0].tool_calls.as_ref().unwrap();
         assert!(matches!(&calls[0].function.arguments, Value::String(s) if s.contains("ls")));
+    }
+
+    fn function_tool() -> ChatToolDefinition {
+        ChatToolDefinition {
+            r#type: "function".to_string(),
+            function: Some(ChatFunctionDefinition {
+                name: "read".to_string(),
+                description: "Read file contents".to_string(),
+                parameters: serde_json::json!({}),
+            }),
+        }
+    }
+
+    #[test]
+    fn web_tools_are_appended_to_agentic_requests() {
+        let tools = with_web_tools(vec![function_tool()], true);
+        let types: Vec<&str> = tools.iter().map(|t| t.r#type.as_str()).collect();
+        assert_eq!(
+            types,
+            vec!["function", "openrouter:web_search", "openrouter:web_fetch"]
+        );
+    }
+
+    #[test]
+    fn plain_completion_requests_get_no_web_tools() {
+        assert!(with_web_tools(Vec::new(), true).is_empty());
+    }
+
+    #[test]
+    fn web_tools_can_be_disabled() {
+        let tools = with_web_tools(vec![function_tool()], false);
+        assert_eq!(tools.len(), 1);
+    }
+
+    #[test]
+    fn server_tools_serialize_as_bare_type() {
+        let tools = with_web_tools(vec![function_tool()], true);
+        let json = serde_json::to_value(&tools[1]).unwrap();
+        assert_eq!(json, serde_json::json!({ "type": "openrouter:web_search" }));
     }
 }
