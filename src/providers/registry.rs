@@ -22,38 +22,32 @@ impl ProviderRegistry {
         let auth = auth::load();
 
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-
-        let mut anthropic_index: Option<usize> = None;
-        let mut openai_index: Option<usize> = None;
-        let mut openrouter_index: Option<usize> = None;
-
         if let Some(key) = auth.api_key(AuthProvider::Anthropic) {
-            anthropic_index = Some(providers.len());
             providers.push(Box::new(AnthropicProvider::new(key)?));
         }
-
         if let Some(key) = auth.api_key(AuthProvider::OpenAi) {
-            openai_index = Some(providers.len());
             providers.push(Box::new(OpenAIProvider::new(key)?));
         }
-
         if let Some(key) = auth.api_key(AuthProvider::OpenRouter) {
-            openrouter_index = Some(providers.len());
             providers.push(Box::new(OpenRouterProvider::new(key)?));
         }
 
+        let position_of = |name: &str| providers.iter().position(|p| p.name() == name);
         let default_index = match preferred.as_deref() {
-            Some("openrouter") => openrouter_index
-                .context("ONELOOP_PROVIDER=openrouter but no OPENROUTER_API_KEY/auth found")?,
-            Some("anthropic") => anthropic_index
-                .context("ONELOOP_PROVIDER=anthropic but no ANTHROPIC_API_KEY/auth found")?,
-            Some("openai") => {
-                openai_index.context("ONELOOP_PROVIDER=openai but no OPENAI_API_KEY/auth found")?
+            Some(name) => {
+                let Some(auth_provider) = AuthProvider::from_name(name) else {
+                    bail!("unknown provider: {name}");
+                };
+                position_of(name).with_context(|| {
+                    format!(
+                        "ONELOOP_PROVIDER={name} but no {}/auth found",
+                        auth_provider.env_var()
+                    )
+                })?
             }
-            Some(other) => bail!("unknown provider: {other}"),
-            None => openrouter_index
-                .or(openai_index)
-                .or(anthropic_index)
+            None => ["openrouter", "openai", "anthropic"]
+                .into_iter()
+                .find_map(position_of)
                 .context("no providers configured — run `oneloop login <provider>` first")?,
         };
 
@@ -183,19 +177,37 @@ impl ProviderRegistry {
             stop();
         }
 
-        // Show the user a numbered list.
-        println!("{BOLD}  ── Provider Unavailable ──{RESET}");
-        println!(
-            "{DIM}  {provider_label} is not responding. Pick an alternative (Enter to abort):{RESET}"
+        let fallback = self
+            .prompt_fallback_choice(provider_label, &alternatives)
+            .await?;
+        eprintln!(
+            "{GREEN}  → switching to {} ({}){RESET}",
+            fallback.name(),
+            fallback.model()
         );
+        if let Some(start) = start_spinner {
+            start();
+        }
+        let response = fallback.complete(request).await?;
+        Ok((fallback.name().to_string(), response))
+    }
+
+    /// Show a numbered menu of alternative providers and read the user's
+    /// pick, racing stdin against Ctrl+C so the prompt can be aborted.
+    async fn prompt_fallback_choice(
+        &self,
+        failed: &str,
+        alternatives: &[&'static str],
+    ) -> Result<&dyn Provider> {
+        println!("{BOLD}  ── Provider Unavailable ──{RESET}");
+        println!("{DIM}  {failed} is not responding. Pick an alternative (Enter to abort):{RESET}");
         for (i, name) in alternatives.iter().enumerate() {
-            let model = self
-                .providers
-                .iter()
-                .find(|p| p.name() == *name)
-                .map(|p| p.model())
-                .unwrap_or_else(|| "?".to_string());
-            println!("{BOLD}  {}. {} {DIM}({}){RESET}", i + 1, name, model);
+            println!(
+                "{BOLD}  {}. {} {DIM}({}){RESET}",
+                i + 1,
+                name,
+                self.model_for(name)
+            );
         }
         print!(
             "{BOLD}  → select [1-{}] or Enter to abort: {RESET}",
@@ -239,16 +251,6 @@ impl ProviderRegistry {
             bail!("invalid selection: {trimmed}");
         };
 
-        let fallback = self.resolve(Some(name))?;
-        eprintln!(
-            "{GREEN}  → switching to {} ({}){RESET}",
-            fallback.name(),
-            fallback.model()
-        );
-        if let Some(start) = start_spinner {
-            start();
-        }
-        let response = fallback.complete(request.clone()).await?;
-        Ok((fallback.name().to_string(), response))
+        self.resolve(Some(name))
     }
 }
