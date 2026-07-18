@@ -199,17 +199,12 @@ impl Agent {
                 }
                 Err(e) => {
                     spinner.stop();
-                    self.metrics.log(
-                        "api_call",
-                        json!({
-                            "provider": &requested_provider,
-                            "model": model_override
-                                .clone()
-                                .unwrap_or_else(|| self.provider_registry.model_for(&requested_provider)),
-                            "duration_ms": api_start.elapsed().as_millis(),
-                            "tokens_estimated": tokens_estimated,
-                            "success": false,
-                        }),
+                    self.log_api_call(
+                        &requested_provider,
+                        model_override.as_deref(),
+                        api_start,
+                        tokens_estimated,
+                        false,
                     );
                     println!("{RED}  ✗ provider error: {e:#}{RESET}");
                     break;
@@ -220,17 +215,12 @@ impl Agent {
             // active_provider was just set to the provider that answered
             // (it may differ from the requested one after a fallback).
             let used_provider = active_provider.clone().unwrap_or(requested_provider);
-            self.metrics.log(
-                "api_call",
-                json!({
-                    "provider": &used_provider,
-                    "model": model_override
-                        .clone()
-                        .unwrap_or_else(|| self.provider_registry.model_for(&used_provider)),
-                    "duration_ms": api_start.elapsed().as_millis(),
-                    "tokens_estimated": tokens_estimated,
-                    "success": true,
-                }),
+            self.log_api_call(
+                &used_provider,
+                model_override.as_deref(),
+                api_start,
+                tokens_estimated,
+                true,
             );
 
             if !response.content.trim().is_empty() {
@@ -250,6 +240,29 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    /// Record one api_call metrics event.
+    fn log_api_call(
+        &self,
+        provider: &str,
+        model_override: Option<&str>,
+        started: Instant,
+        tokens_estimated: usize,
+        success: bool,
+    ) {
+        self.metrics.log(
+            "api_call",
+            json!({
+                "provider": provider,
+                "model": model_override
+                    .map(String::from)
+                    .unwrap_or_else(|| self.provider_registry.model_for(provider)),
+                "duration_ms": started.elapsed().as_millis(),
+                "tokens_estimated": tokens_estimated,
+                "success": success,
+            }),
+        );
     }
 
     /// Record, execute in parallel, and report one batch of tool calls.

@@ -97,7 +97,10 @@ impl Session {
             .parent()
             .context("session file has no parent directory")?;
 
-        // Extract the base date (e.g. "2026-04-20" from "2026-04-20-002.jsonl" or "2026-04-20.jsonl")
+        // Extract the base date (e.g. "2026-04-20" from "2026-04-20-002.jsonl"
+        // or "2026-04-20.jsonl"). Assumes date-shaped filenames: the first
+        // three dash-separated parts are the date, anything after is the
+        // rotation suffix.
         let filename = self
             .path
             .file_stem()
@@ -105,7 +108,7 @@ impl Session {
             .unwrap_or("session");
         let base_name = filename.split('-').take(3).collect::<Vec<_>>().join("-");
 
-        let next = find_next_suffix(sessions_dir, &base_name);
+        let next = max_suffix(sessions_dir, &base_name).map_or(1, |n| n + 1);
         let new_name = format!("{base_name}-{next:03}.jsonl");
         let new_path = sessions_dir.join(new_name);
 
@@ -191,59 +194,27 @@ fn append_message(path: &Path, message: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Find the next available numeric suffix for session file rotation.
-/// E.g., if "2026-04-20-001.jsonl" and "2026-04-20-002.jsonl" exist, returns 3.
-/// Starts at 1 if no suffixed files exist.
-fn find_next_suffix(sessions_dir: &Path, base_name: &str) -> u32 {
-    let max = find_max_suffix(sessions_dir, base_name);
-    max + 1
-}
-
-/// Find the highest numeric suffix among existing session files for the given base name.
-/// Returns 0 if no suffixed files exist.
-fn find_max_suffix(sessions_dir: &Path, base_name: &str) -> u32 {
-    let Ok(entries) = fs::read_dir(sessions_dir) else {
-        return 0;
-    };
-
+/// Highest numeric suffix among `<prefix>-NNN.jsonl` files in the directory,
+/// if any exist.
+fn max_suffix(sessions_dir: &Path, prefix: &str) -> Option<u32> {
+    let entries = fs::read_dir(sessions_dir).ok()?;
     entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // Match pattern: <base_name>-NNN.jsonl
-            let rest = name_str.strip_prefix(&format!("{base_name}-"))?;
-            let stripped = rest.strip_suffix(".jsonl")?;
-            stripped.parse::<u32>().ok()
+            let rest = name_str.strip_prefix(&format!("{prefix}-"))?;
+            rest.strip_suffix(".jsonl")?.parse::<u32>().ok()
         })
         .max()
-        .unwrap_or(0)
 }
 
-/// Find the latest session file for a given date.
-/// Checks for suffixed files (e.g. "2026-04-20-002.jsonl") and returns the
-/// one with the highest suffix. Falls back to the base file ("2026-04-20.jsonl").
+/// Find the latest session file for a given date: the highest-suffixed file
+/// (e.g. "2026-04-20-002.jsonl") or the base file ("2026-04-20.jsonl").
 fn find_latest_session(sessions_dir: &Path, date: &str) -> PathBuf {
-    let base_path = sessions_dir.join(format!("{date}.jsonl"));
-
-    let max_suffix = if let Ok(entries) = fs::read_dir(sessions_dir) {
-        entries
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                let rest = name_str.strip_prefix(&format!("{date}-"))?;
-                let stripped = rest.strip_suffix(".jsonl")?;
-                stripped.parse::<u32>().ok()
-            })
-            .max()
-    } else {
-        None
-    };
-
-    match max_suffix {
+    match max_suffix(sessions_dir, date) {
         Some(n) => sessions_dir.join(format!("{date}-{n:03}.jsonl")),
-        None => base_path,
+        None => sessions_dir.join(format!("{date}.jsonl")),
     }
 }
 

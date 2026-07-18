@@ -4,7 +4,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::messages::ToolCall;
+use crate::agent::messages::{Message, ToolCall};
 
 use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
 
@@ -106,8 +106,6 @@ struct ResponsesContentPart {
     part_type: String,
     text: Option<String>,
 }
-
-use crate::agent::messages::Message;
 
 #[async_trait]
 impl Provider for OpenAIProvider {
