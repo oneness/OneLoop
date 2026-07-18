@@ -53,6 +53,20 @@ Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` d
 Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
 Use `model:` in a single-provider directive to override the model for that prompt.
 
+## Multi-model orchestration
+
+`#!consensus` and `#!debate` ask several providers the same question and have a
+judge synthesize the answers. Orchestrated providers never get direct tool
+access — they see a single `request_evidence` tool and ask the main agent,
+which executes, caches, and shares results across all providers in the run.
+
+The evidence tools (`read`, `fetch_page`, `shell`) are defined in one table
+(`EVIDENCE_TOOLS` in `evidence.rs`): the allowlist, the `request_evidence`
+schema, execution dispatch, display formatting, and directive validation are
+all derived from it. Adding or renaming an evidence tool is one entry there.
+`shell` is backed by the `bash` tool behind a read-only command guardrail —
+a seatbelt against state-changing commands, not a security boundary.
+
 ## Skills
 
 Skill files are markdown files that contain task-specific instructions the agent loads on demand. They are not in the system prompt at startup — instead, the `skill` tool lists them by name and description so the model can pull one in when relevant.
@@ -113,19 +127,19 @@ src/
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
     compaction.rs   Auto-compaction, token estimation, memory extraction
-    evidence.rs     Evidence cache, shell-command guardrail, tool execution
+    evidence.rs     Evidence-tool table (single source of truth), cache, shell guardrail
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
-  app.rs            Interactive REPL (rustyline), command routing, Ctrl+C handling
+  app.rs            Interactive REPL (rustyline), directive dispatch, Ctrl+C handling
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
   output.rs         Output truncation utilities, ANSI style constants
   sanitize.rs       Lossy content sanitization (HTML stripping); opt-in per tool, never applied generically
-  providers.rs      Provider trait, ProviderRequest/Response types
+  providers.rs      Provider trait, request/response types, shared HTTP send/read
   providers/
     anthropic.rs    Anthropic Claude provider
     openai.rs       OpenAI GPT provider (Responses API)
     openrouter.rs   OpenRouter provider (Chat Completions API)
-    registry.rs     Provider discovery, selection, retry with fallback
+    registry.rs     Provider discovery, selection, retry with interactive fallback
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution

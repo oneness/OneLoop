@@ -97,12 +97,12 @@ When to use `for` loops instead:
 - Module file structure:
   ```
   src/
+    providers.rs      ← trait, shared types/helpers, pub use re-exports
     providers/
-      mod.rs          ← pub use re-exports
-      anthropic.rs    ← one provider
+      anthropic.rs    ← one provider per file
       openai.rs
-      zai.rs
-      registry.rs     ← orchestration
+      openrouter.rs
+      registry.rs     ← discovery, selection, retry
   ```
 
 ## Environment Variables
