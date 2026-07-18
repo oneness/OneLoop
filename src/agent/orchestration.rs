@@ -29,6 +29,18 @@ pub struct OrchestrationCtx<'a> {
     pub session: &'a mut crate::agent::session::Session,
 }
 
+impl<'a> OrchestrationCtx<'a> {
+    /// The immutable subset used for provider response collection.
+    fn provider_ctx(&self) -> ProviderCtx<'a> {
+        ProviderCtx {
+            provider_registry: self.provider_registry,
+            tool_registry: self.tool_registry,
+            system_prompt: self.system_prompt,
+            cwd: self.cwd,
+        }
+    }
+}
+
 // ── Formatting helpers ────────────────────────────────────────────────
 
 fn format_labeled_responses(responses: &[(String, String)]) -> String {
@@ -88,7 +100,9 @@ pub fn validate_orchestration_tools(tools: &ToolMode) -> Result<()> {
 
 // ── Orchestration ─────────────────────────────────────────────────────
 
-pub async fn run_consensus(
+/// Shared opening for consensus and debate: validate providers, judge, and
+/// tools, then record the user prompt in the session.
+fn begin_orchestration(
     ctx: &mut OrchestrationCtx<'_>,
     prompt: &str,
     providers: &[String],
@@ -102,42 +116,51 @@ pub async fn run_consensus(
         ctx.provider_registry.validate_provider(judge)?;
     }
     validate_orchestration_tools(tools)?;
-    ctx.session.push_user(prompt.to_string())?;
+    ctx.session.push_user(prompt.to_string())
+}
 
-    let responses = collect_provider_responses(
-        &ProviderCtx {
-            provider_registry: ctx.provider_registry,
-            tool_registry: ctx.tool_registry,
-            system_prompt: ctx.system_prompt,
-            cwd: ctx.cwd,
-        },
-        providers,
+/// Shared closing for consensus and debate: pick the judge (explicit, or the
+/// first provider), synthesize the transcript, print and record the result.
+async fn synthesize_and_record(
+    ctx: &mut OrchestrationCtx<'_>,
+    judge: &Option<String>,
+    providers: &[String],
+    prompt: &str,
+    transcript: &[(String, String)],
+    label: &str,
+) -> Result<()> {
+    let judge_name = judge.as_deref().unwrap_or_else(|| providers[0].as_str());
+    let synthesis = synthesize_consensus(
+        ctx.provider_registry,
+        ctx.system_prompt,
+        judge_name,
         prompt,
-        "consensus",
-        tools,
+        transcript,
+        label,
     )
     .await?;
+    let output = format!("── {label} ({judge_name}) ──\n{synthesis}");
+    println!("\n{output}");
+    ctx.session.push_assistant(output)
+}
+
+pub async fn run_consensus(
+    ctx: &mut OrchestrationCtx<'_>,
+    prompt: &str,
+    providers: &[String],
+    judge: &Option<String>,
+    tools: &ToolMode,
+) -> Result<()> {
+    begin_orchestration(ctx, prompt, providers, judge, tools)?;
+
+    let responses =
+        collect_provider_responses(&ctx.provider_ctx(), providers, prompt, "consensus", tools)
+            .await?;
     let initial_output = format_labeled_responses(&responses);
     println!("{initial_output}");
     ctx.session.push_assistant(initial_output)?;
 
-    let judge_name = judge
-        .as_deref()
-        .unwrap_or_else(|| providers[0].as_str())
-        .to_string();
-    let synthesis = synthesize_consensus(
-        ctx.provider_registry,
-        ctx.system_prompt,
-        &judge_name,
-        prompt,
-        &responses,
-        "Consensus",
-    )
-    .await?;
-    let output = format!("── Consensus ({judge_name}) ──\n{synthesis}");
-    println!("\n{output}");
-    ctx.session.push_assistant(output)?;
-    Ok(())
+    synthesize_and_record(ctx, judge, providers, prompt, &responses, "Consensus").await
 }
 
 pub async fn run_debate(
@@ -148,22 +171,9 @@ pub async fn run_debate(
     rounds: usize,
     tools: &ToolMode,
 ) -> Result<()> {
-    providers
-        .iter()
-        .try_for_each(|p| ctx.provider_registry.validate_provider(p))?;
-    if let Some(judge) = judge {
-        ctx.provider_registry.validate_provider(judge)?;
-    }
-    validate_orchestration_tools(tools)?;
-    ctx.session.push_user(prompt.to_string())?;
+    begin_orchestration(ctx, prompt, providers, judge, tools)?;
 
-    let pctx = ProviderCtx {
-        provider_registry: ctx.provider_registry,
-        tool_registry: ctx.tool_registry,
-        system_prompt: ctx.system_prompt,
-        cwd: ctx.cwd,
-    };
-
+    let pctx = ctx.provider_ctx();
     let mut transcript =
         collect_provider_responses(&pctx, providers, prompt, "initial answer", tools).await?;
     let mut output = format!(
@@ -195,23 +205,7 @@ pub async fn run_debate(
 
     ctx.session.push_assistant(output)?;
 
-    let judge_name = judge
-        .as_deref()
-        .unwrap_or_else(|| providers[0].as_str())
-        .to_string();
-    let synthesis = synthesize_consensus(
-        ctx.provider_registry,
-        ctx.system_prompt,
-        &judge_name,
-        prompt,
-        &transcript,
-        "Final Consensus",
-    )
-    .await?;
-    let output = format!("── Final Consensus ({judge_name}) ──\n{synthesis}");
-    println!("\n{output}");
-    ctx.session.push_assistant(output)?;
-    Ok(())
+    synthesize_and_record(ctx, judge, providers, prompt, &transcript, "Final Consensus").await
 }
 
 async fn synthesize_consensus(
@@ -347,7 +341,10 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
     let provider_label = provider_name.clone();
     let ctx = AgentContext { cwd };
 
-    for iteration in 0..max_iterations {
+    // If iterations run out while the provider is still requesting evidence,
+    // its last text (possibly empty) is the best answer available.
+    let mut last_content = String::new();
+    for _ in 0..max_iterations {
         let response = provider_registry
             .complete_once(&provider_name, req.clone())
             .await?;
@@ -439,12 +436,10 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
             }));
         }
 
-        if iteration == max_iterations - 1 {
-            return Ok((provider_label, response.content));
-        }
+        last_content = response.content;
     }
 
-    Ok((provider_label, String::new()))
+    Ok((provider_label, last_content))
 }
 
 /// Simple single-call per provider, no tools.
