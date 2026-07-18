@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 
 use crate::agent::messages::ToolCall;
@@ -37,6 +37,28 @@ pub use anthropic::AnthropicProvider;
 pub use openai::OpenAIProvider;
 pub use openrouter::OpenRouterProvider;
 pub use registry::ProviderRegistry;
+
+/// Send a prepared provider request, check the status, and return the raw
+/// body text. Non-2xx responses become errors carrying the provider's own
+/// error message.
+async fn send_and_read(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed to send request to {provider}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .with_context(|| format!("failed to read {provider} response body"))?;
+    if !status.is_success() {
+        bail!(
+            "{provider} request failed ({status}): {}",
+            extract_error_message(&text)
+        );
+    }
+    Ok(text)
+}
 
 /// Extract a concise error message from a provider JSON error response.
 /// Falls back to truncating the raw text at 200 characters.

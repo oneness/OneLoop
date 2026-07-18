@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
+use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -141,25 +141,14 @@ impl Provider for AnthropicProvider {
                 .collect(),
         };
 
-        let response = self
-            .client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send request to Anthropic")?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read Anthropic response body")?;
-
-        if !status.is_success() {
-            let message = extract_error_message(&text);
-            bail!("Anthropic request failed ({status}): {message}");
-        }
+        let text = send_and_read(
+            self.client
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", &self.api_key)
+                .json(&body),
+            "Anthropic",
+        )
+        .await?;
 
         let parsed: AnthropicResponse =
             serde_json::from_str(&text).context("failed to parse Anthropic response JSON")?;

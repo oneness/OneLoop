@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
+use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
 
 pub struct OpenRouterProvider {
     client: reqwest::Client,
@@ -167,28 +167,14 @@ impl Provider for OpenRouterProvider {
         };
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let response = self
-            .client
-            .post(url)
-            .header(
-                "Authorization",
-                format!("Bearer {api_key}", api_key = self.api_key),
-            )
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send request to OpenRouter")?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read OpenRouter response body")?;
-
-        if !status.is_success() {
-            let message = extract_error_message(&text);
-            bail!("OpenRouter request failed ({status}): {message}");
-        }
+        let text = send_and_read(
+            self.client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&body),
+            "OpenRouter",
+        )
+        .await?;
 
         let parsed: ChatResponse =
             serde_json::from_str(&text).context("failed to parse OpenRouter response JSON")?;

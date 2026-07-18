@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 
-use super::{Provider, ProviderRequest, ProviderResponse, extract_error_message};
+use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
 
 pub struct OpenAIProvider {
     client: reqwest::Client,
@@ -194,28 +194,14 @@ impl Provider for OpenAIProvider {
         };
 
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
-        let response = self
-            .client
-            .post(url)
-            .header(
-                "Authorization",
-                format!("Bearer {api_key}", api_key = self.api_key),
-            )
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send request to OpenAI")?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .context("failed to read OpenAI response body")?;
-
-        if !status.is_success() {
-            let message = extract_error_message(&text);
-            bail!("OpenAI request failed ({status}): {message}");
-        }
+        let text = send_and_read(
+            self.client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&body),
+            "OpenAI",
+        )
+        .await?;
 
         let parsed: ResponsesApiResponse =
             serde_json::from_str(&text).context("failed to parse OpenAI response JSON")?;
