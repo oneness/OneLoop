@@ -49,20 +49,13 @@ pub async fn auto_compact_if_needed(
     agent: &mut Agent,
     provider_override: Option<&str>,
 ) -> Result<()> {
-    let system_prompt_chars = agent
-        .config
-        .system_prompt
-        .as_ref()
-        .map(String::len)
-        .unwrap_or(0);
-
-    if !should_compact(agent.session.messages(), system_prompt_chars) {
+    if !should_compact(agent.session.messages(), agent.system_prompt_chars()) {
         return Ok(());
     }
 
     println!("{YELLOW}  ⚠ context near limit — auto-compacting...{RESET}");
 
-    let tokens_before = estimate_tokens(agent.session.messages(), system_prompt_chars);
+    let tokens_before = estimate_tokens(agent.session.messages(), agent.system_prompt_chars());
     let compact_start = Instant::now();
 
     let Some(summary) = generate_summary(agent, provider_override).await else {
@@ -71,13 +64,8 @@ pub async fn auto_compact_if_needed(
     extract_memory(agent, &summary).await;
     let preserved = reseed_session(agent, &summary)?;
 
-    let system_prompt_chars_after = agent
-        .config
-        .system_prompt
-        .as_ref()
-        .map(String::len)
-        .unwrap_or(0);
-    let tokens_after = estimate_tokens(agent.session.messages(), system_prompt_chars_after);
+    // Recompute the prompt length — extract_memory may have reloaded it.
+    let tokens_after = estimate_tokens(agent.session.messages(), agent.system_prompt_chars());
 
     agent.metrics.log(
         "compaction",

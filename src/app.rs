@@ -14,18 +14,6 @@ pub struct App {
     config: Config,
 }
 
-/// Built-in interactive commands, entered with a leading `/`.
-enum ReplCommand {
-    Clear,
-}
-
-fn parse_command(input: &str) -> Option<ReplCommand> {
-    match input.trim() {
-        "/clear" => Some(ReplCommand::Clear),
-        _ => None,
-    }
-}
-
 fn print_directive_summary(directives: &PromptDirectives) {
     match &directives.mode {
         RunMode::Single {
@@ -144,8 +132,8 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         }
         let _ = editor.add_history_entry(&line);
 
-        // Check for built-in commands.
-        if let Some(ReplCommand::Clear) = parse_command(&line) {
+        // Built-in command: /clear resets the session.
+        if line == "/clear" {
             agent.clear_session()?;
             println!();
             continue;

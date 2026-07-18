@@ -110,6 +110,16 @@ impl Agent {
         compaction::auto_compact_if_needed(self, provider_override).await
     }
 
+    fn orchestration_ctx(&mut self) -> orchestration::OrchestrationCtx<'_> {
+        orchestration::OrchestrationCtx {
+            provider_registry: &self.provider_registry,
+            tool_registry: &self.tool_registry,
+            system_prompt: &self.config.system_prompt,
+            cwd: &self.config.cwd,
+            session: &mut self.session,
+        }
+    }
+
     pub async fn run_consensus(
         &mut self,
         prompt: String,
@@ -117,14 +127,8 @@ impl Agent {
         judge: Option<String>,
         tools: ToolMode,
     ) -> Result<()> {
-        let mut ctx = orchestration::OrchestrationCtx {
-            provider_registry: &self.provider_registry,
-            tool_registry: &self.tool_registry,
-            system_prompt: &self.config.system_prompt,
-            cwd: &self.config.cwd,
-            session: &mut self.session,
-        };
-        orchestration::run_consensus(&mut ctx, &prompt, &providers, &judge, &tools).await
+        orchestration::run_consensus(&mut self.orchestration_ctx(), &prompt, &providers, &judge, &tools)
+            .await
     }
 
     pub async fn run_debate(
@@ -135,14 +139,15 @@ impl Agent {
         rounds: usize,
         tools: ToolMode,
     ) -> Result<()> {
-        let mut ctx = orchestration::OrchestrationCtx {
-            provider_registry: &self.provider_registry,
-            tool_registry: &self.tool_registry,
-            system_prompt: &self.config.system_prompt,
-            cwd: &self.config.cwd,
-            session: &mut self.session,
-        };
-        orchestration::run_debate(&mut ctx, &prompt, &providers, &judge, rounds, &tools).await
+        orchestration::run_debate(
+            &mut self.orchestration_ctx(),
+            &prompt,
+            &providers,
+            &judge,
+            rounds,
+            &tools,
+        )
+        .await
     }
 
     pub async fn run_once_with(
@@ -162,14 +167,8 @@ impl Agent {
 
         for _iteration in 1..=max_iterations {
             let spinner = SpinnerGuard::new("thinking...");
-            let tokens_estimated = compaction::estimate_tokens(
-                self.session.messages(),
-                self.config
-                    .system_prompt
-                    .as_ref()
-                    .map(String::len)
-                    .unwrap_or(0),
-            );
+            let tokens_estimated =
+                compaction::estimate_tokens(self.session.messages(), self.system_prompt_chars());
             let api_start = Instant::now();
             // For metrics: the provider this request is aimed at, which the
             // registry default only approximates when an override is active.
@@ -240,6 +239,15 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    /// Length of the system prompt in characters, for token estimation.
+    fn system_prompt_chars(&self) -> usize {
+        self.config
+            .system_prompt
+            .as_ref()
+            .map(String::len)
+            .unwrap_or(0)
     }
 
     /// Record one api_call metrics event.
