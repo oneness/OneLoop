@@ -38,7 +38,7 @@ fn key_argument<'a>(name: &str, arguments: &'a serde_json::Value) -> Option<&'a 
     let field = match name {
         "bash" => "command",
         "read" | "write" | "edit" => "path",
-        "web_search" => "query",
+        "fetch_page" => "url",
         _ => return None,
     };
     Some(arguments.get(field).and_then(|v| v.as_str()).unwrap_or("?"))
@@ -314,8 +314,7 @@ impl Agent {
             )?;
 
             if result.is_error {
-                println!("{RED}  ✗ {tool_label}{RESET}");
-                println!("{}", result.content);
+                println!("{RED}  ✗ {tool_label} (failed){RESET}");
             } else {
                 let lines = result.content.lines().count();
                 let bytes = result.content.len();

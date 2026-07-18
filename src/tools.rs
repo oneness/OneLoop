@@ -1,8 +1,8 @@
 pub mod bash;
 pub mod edit;
+pub mod fetch_page;
 pub mod read;
 pub mod skill;
-pub mod web_search;
 pub mod write;
 
 use std::path::Path;
@@ -47,7 +47,7 @@ impl ToolRegistry {
             Arc::new(write::WriteTool),
             Arc::new(edit::EditTool),
             Arc::new(bash::BashTool),
-            Arc::new(web_search::WebSearchTool::new()?),
+            Arc::new(fetch_page::FetchPageTool::new()?),
         ];
         if let Some(skill_tool) = skill::SkillTool::new(cwd) {
             tools.push(Arc::new(skill_tool));

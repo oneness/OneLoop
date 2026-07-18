@@ -69,7 +69,7 @@ pub fn validate_orchestration_tools(tools: &ToolMode) -> Result<()> {
     match tools {
         ToolMode::Default | ToolMode::None => Ok(()),
         ToolMode::AllowList(names) => {
-            let allowed = ["read", "web_search", "shell"];
+            let allowed = ["read", "fetch_page", "shell"];
             let unsupported: Vec<&str> = names
                 .iter()
                 .map(String::as_str)

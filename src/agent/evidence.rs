@@ -70,13 +70,13 @@ pub fn shared_cache() -> SharedCache {
 /// Resolve which evidence tools are permitted based on the directive's ToolMode.
 pub fn allowed_tools(mode: &ToolMode) -> HashSet<&'static str> {
     match mode {
-        ToolMode::Default => HashSet::from(["read", "web_search", "shell"]),
+        ToolMode::Default => HashSet::from(["read", "fetch_page", "shell"]),
         ToolMode::None => HashSet::new(),
         ToolMode::AllowList(names) => names
             .iter()
             .filter_map(|n| match n.as_str() {
                 "read" => Some("read"),
-                "web_search" => Some("web_search"),
+                "fetch_page" => Some("fetch_page"),
                 "shell" => Some("shell"),
                 _ => None,
             })
@@ -94,7 +94,7 @@ pub fn tool_definition() -> ToolDefinition {
                       Describe what you need and specify the tool and arguments. \
                       The agent will execute the request and return results. \
                       Available tools: 'read' (file contents, args: {path}), \
-                      'web_search' (web search, args: {query}), \
+                      'fetch_page' (fetch web page, args: {url}), \
                       'shell' (read-only shell command like find/grep/git log, args: {command})."
             .to_string(),
         schema: json!({
@@ -106,7 +106,7 @@ pub fn tool_definition() -> ToolDefinition {
                 },
                 "tool": {
                     "type": "string",
-                    "enum": ["read", "web_search", "shell"],
+                    "enum": ["read", "fetch_page", "shell"],
                     "description": "Which tool to use"
                 },
                 "args": {
@@ -114,7 +114,7 @@ pub fn tool_definition() -> ToolDefinition {
                     "description": "Tool arguments",
                     "properties": {
                         "path": { "type": "string", "description": "File path (for read)" },
-                        "query": { "type": "string", "description": "Search query (for web_search)" },
+                        "url": { "type": "string", "description": "Page URL (for fetch_page)" },
                         "command": { "type": "string", "description": "Shell command (for shell)" }
                     }
                 }
@@ -206,20 +206,20 @@ async fn execute_inner(
                 },
             }
         }
-        "web_search" => {
-            let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
+        "fetch_page" => {
+            let Some(url) = args.get("url").and_then(|v| v.as_str()) else {
                 return ToolResult {
-                    content: "web_search requires a 'query' argument".to_string(),
+                    content: "fetch_page requires a 'url' argument".to_string(),
                     is_error: true,
                 };
             };
             match tool_registry
-                .execute("web_search", json!({"query": query}), ctx)
+                .execute("fetch_page", json!({"url": url}), ctx)
                 .await
             {
                 Ok(r) => r,
                 Err(e) => ToolResult {
-                    content: format!("web_search failed: {e:#}"),
+                    content: format!("fetch_page failed: {e:#}"),
                     is_error: true,
                 },
             }
@@ -397,9 +397,9 @@ pub fn format_request(description: &str, tool: &str, args: &Value) -> String {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
             format!("read: {path}")
         }
-        "web_search" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("search: {query}")
+        "fetch_page" => {
+            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("fetch: {url}")
         }
         "shell" => {
             let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
@@ -496,7 +496,7 @@ mod tests {
     fn default_allowed_tools() {
         let set = allowed_tools(&ToolMode::Default);
         assert!(set.contains("read"));
-        assert!(set.contains("web_search"));
+        assert!(set.contains("fetch_page"));
         assert!(set.contains("shell"));
         assert!(!set.contains("bash"));
     }
@@ -511,10 +511,10 @@ mod tests {
     fn allowlist_tools() {
         let set = allowed_tools(&ToolMode::AllowList(vec![
             "read".to_string(),
-            "web_search".to_string(),
+            "fetch_page".to_string(),
         ]));
         assert!(set.contains("read"));
-        assert!(set.contains("web_search"));
+        assert!(set.contains("fetch_page"));
         assert!(!set.contains("shell"));
     }
 
@@ -525,8 +525,8 @@ mod tests {
             "read: src/main.rs"
         );
         assert_eq!(
-            format_request("", "web_search", &json!({"query": "rust async"})),
-            "search: rust async"
+            format_request("", "fetch_page", &json!({"url": "https://example.com"})),
+            "fetch: https://example.com"
         );
         assert_eq!(
             format_request("", "shell", &json!({"command": "find . -name '*.rs'"})),

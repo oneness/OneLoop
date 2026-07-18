@@ -31,7 +31,7 @@ That keeps the core honest without forcing a full plugin runtime too early.
 - write
 - edit
 - bash
-- web_search (SearXNG-backed)
+- fetch_page (fetch a URL, strip HTML to readable text — no dedicated web search tool; searching is done by fetching a search engine's results page)
 
 All five core built-in tools are now implemented.
 
@@ -131,7 +131,7 @@ src/
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
-    web_search.rs   SearXNG web search
+    fetch_page.rs   Web page fetching (HTML stripped to clean text)
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
 docs/
   architecture.md   This file

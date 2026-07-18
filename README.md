@@ -50,7 +50,7 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 
 Stores API keys in `~/.oneloop/auth.json`.
 
-`./ol` is a thin wrapper that runs OneLoop via `nix develop` and pins the per-provider models. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, `web_search`, or `skill` (when skill files exist under `.oneloop/skills/`).
+`./ol` is a thin wrapper that runs OneLoop via `nix develop` and pins the per-provider models. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, `fetch_page`, or `skill` (when skill files exist under `.oneloop/skills/`). There is no dedicated web search tool: `fetch_page` fetches any URL and returns its readable text, which covers web search (fetch a search engine's results page) and more.
 
 ## Directives
 
@@ -97,7 +97,6 @@ Tuning (all optional):
 - `ONELOOP_COMPACTION_THRESHOLD` — % of context window that triggers auto-compaction (default: `85`)
 - `ONELOOP_CONTEXT_WINDOW_TOKENS` — assumed context window size (default: `128000`)
 - `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
-- `ONELOOP_SEARX_URL` — SearXNG endpoint for `web_search` (default: `http://localhost:8080`)
 
 Credentials are resolved from environment variables first (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), then from `~/.oneloop/auth.json` — an explicitly set env var always wins.
 

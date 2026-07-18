@@ -115,7 +115,6 @@ ONELOOP_MAX_ITERATIONS     agent loop cap (default: 50)
 ONELOOP_MAX_RETRIES        retry cap (default: 3)
 ONELOOP_CONTEXT_WINDOW_TOKENS  token budget (default: 128000)
 ONELOOP_COMPACTION_THRESHOLD  auto-compact trigger % (default: 85)
-ONELOOP_SEARX_URL          SearXNG instance URL for web_search
 ```
 
 ## Clippy
