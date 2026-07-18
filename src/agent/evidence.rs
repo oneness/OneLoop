@@ -65,38 +65,96 @@ pub fn shared_cache() -> SharedCache {
     Arc::new(Mutex::new(EvidenceCache::new()))
 }
 
-// ── Allowed tools from ToolMode ───────────────────────────────────────
+// ── Evidence tool table ───────────────────────────────────────────────
+
+/// One evidence tool as offered to providers: the name they see, the registry
+/// tool that serves it, and the single string argument it takes.
+///
+/// This table is the single source of truth — the allowlist, the
+/// request_evidence definition, execution dispatch, and display formatting
+/// are all derived from it. Adding or renaming an evidence tool is one entry
+/// here (plus a guardrail in `execute_inner` if it needs one).
+struct EvidenceTool {
+    name: &'static str,
+    backing_tool: &'static str,
+    arg: &'static str,
+    /// Short capability summary for the request_evidence description.
+    summary: &'static str,
+    /// Description of the argument in the schema.
+    arg_description: &'static str,
+    /// Verb shown when displaying a request to the user.
+    display: &'static str,
+}
+
+const EVIDENCE_TOOLS: &[EvidenceTool] = &[
+    EvidenceTool {
+        name: "read",
+        backing_tool: "read",
+        arg: "path",
+        summary: "file contents",
+        arg_description: "File path (for read)",
+        display: "read",
+    },
+    EvidenceTool {
+        name: "fetch_page",
+        backing_tool: "fetch_page",
+        arg: "url",
+        summary: "fetch web page",
+        arg_description: "Page URL (for fetch_page)",
+        display: "fetch",
+    },
+    EvidenceTool {
+        name: "shell",
+        backing_tool: "bash",
+        arg: "command",
+        summary: "read-only shell command like find/grep/git log",
+        arg_description: "Shell command (for shell)",
+        display: "shell",
+    },
+];
+
+fn evidence_tool(name: &str) -> Option<&'static EvidenceTool> {
+    EVIDENCE_TOOLS.iter().find(|tool| tool.name == name)
+}
 
 /// Resolve which evidence tools are permitted based on the directive's ToolMode.
 pub fn allowed_tools(mode: &ToolMode) -> HashSet<&'static str> {
+    let all = EVIDENCE_TOOLS.iter().map(|tool| tool.name);
     match mode {
-        ToolMode::Default => HashSet::from(["read", "fetch_page", "shell"]),
+        ToolMode::Default => all.collect(),
         ToolMode::None => HashSet::new(),
-        ToolMode::AllowList(names) => names
-            .iter()
-            .filter_map(|n| match n.as_str() {
-                "read" => Some("read"),
-                "fetch_page" => Some("fetch_page"),
-                "shell" => Some("shell"),
-                _ => None,
-            })
+        ToolMode::AllowList(names) => all
+            .filter(|name| names.iter().any(|allowed| allowed == name))
             .collect(),
     }
 }
 
-// ── Tool definition ───────────────────────────────────────────────────
-
 /// The single tool definition presented to providers during orchestration.
 pub fn tool_definition() -> ToolDefinition {
+    let tool_list = EVIDENCE_TOOLS
+        .iter()
+        .map(|tool| format!("'{}' ({}, args: {{{}}})", tool.name, tool.summary, tool.arg))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let names: Vec<&str> = EVIDENCE_TOOLS.iter().map(|tool| tool.name).collect();
+    let arg_properties: serde_json::Map<String, Value> = EVIDENCE_TOOLS
+        .iter()
+        .map(|tool| {
+            (
+                tool.arg.to_string(),
+                json!({ "type": "string", "description": tool.arg_description }),
+            )
+        })
+        .collect();
+
     ToolDefinition {
         name: "request_evidence".to_string(),
-        description: "Request information from the agent to gather evidence for your answer. \
-                      Describe what you need and specify the tool and arguments. \
-                      The agent will execute the request and return results. \
-                      Available tools: 'read' (file contents, args: {path}), \
-                      'fetch_page' (fetch web page, args: {url}), \
-                      'shell' (read-only shell command like find/grep/git log, args: {command})."
-            .to_string(),
+        description: format!(
+            "Request information from the agent to gather evidence for your answer. \
+             Describe what you need and specify the tool and arguments. \
+             The agent will execute the request and return results. \
+             Available tools: {tool_list}."
+        ),
         schema: json!({
             "type": "object",
             "properties": {
@@ -106,17 +164,13 @@ pub fn tool_definition() -> ToolDefinition {
                 },
                 "tool": {
                     "type": "string",
-                    "enum": ["read", "fetch_page", "shell"],
+                    "enum": names,
                     "description": "Which tool to use"
                 },
                 "args": {
                     "type": "object",
                     "description": "Tool arguments",
-                    "properties": {
-                        "path": { "type": "string", "description": "File path (for read)" },
-                        "url": { "type": "string", "description": "Page URL (for fetch_page)" },
-                        "command": { "type": "string", "description": "Shell command (for shell)" }
-                    }
+                    "properties": arg_properties
                 }
             },
             "required": ["description", "tool", "args"]
@@ -167,14 +221,9 @@ pub async fn execute(
     // Execute.
     let result = execute_inner(evidence_tool, args, tool_registry, ctx).await;
 
-    // Cache result.
-    {
-        let Ok(mut cache) = cache.lock() else {
-            return ToolResult {
-                content: format!("{}\n(cache unavailable: lock poisoned)", result.content),
-                is_error: true,
-            };
-        };
+    // Cache the result. A poisoned lock only loses caching — the evidence
+    // itself is still good, so return it unchanged.
+    if let Ok(mut cache) = cache.lock() {
         cache.insert(evidence_tool, args, result.content.clone(), result.is_error);
     }
 
@@ -187,74 +236,37 @@ async fn execute_inner(
     tool_registry: &ToolRegistry,
     ctx: &AgentContext,
 ) -> ToolResult {
-    match tool {
-        "read" => {
-            let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
-                return ToolResult {
-                    content: "read requires a 'path' argument".to_string(),
-                    is_error: true,
-                };
-            };
-            match tool_registry
-                .execute("read", json!({"path": path}), ctx)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => ToolResult {
-                    content: format!("read failed: {e:#}"),
-                    is_error: true,
-                },
-            }
-        }
-        "fetch_page" => {
-            let Some(url) = args.get("url").and_then(|v| v.as_str()) else {
-                return ToolResult {
-                    content: "fetch_page requires a 'url' argument".to_string(),
-                    is_error: true,
-                };
-            };
-            match tool_registry
-                .execute("fetch_page", json!({"url": url}), ctx)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => ToolResult {
-                    content: format!("fetch_page failed: {e:#}"),
-                    is_error: true,
-                },
-            }
-        }
-        "shell" => {
-            let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
-                return ToolResult {
-                    content: "shell requires a 'command' argument".to_string(),
-                    is_error: true,
-                };
-            };
-            if !is_safe_shell_command(command) {
-                return ToolResult {
-                    content: format!(
-                        "blocked: command '{command}' is not allowed. \
-                         Only read-only inspection commands are permitted \
-                         (find, grep, rg, git log, ls, cat, wc, etc.). \
-                         Rephrase your request or ask for specific information."
-                    ),
-                    is_error: true,
-                };
-            }
-            match tool_registry
-                .execute("bash", json!({"command": command}), ctx)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => ToolResult {
-                    content: format!("shell failed: {e:#}"),
-                    is_error: true,
-                },
-            }
-        }
-        other => ToolResult {
-            content: format!("unknown evidence tool: {other}"),
+    let Some(spec) = evidence_tool(tool) else {
+        return ToolResult {
+            content: format!("unknown evidence tool: {tool}"),
+            is_error: true,
+        };
+    };
+    let Some(value) = args.get(spec.arg).and_then(|v| v.as_str()) else {
+        return ToolResult {
+            content: format!("{} requires a '{}' argument", spec.name, spec.arg),
+            is_error: true,
+        };
+    };
+    if spec.name == "shell" && !is_safe_shell_command(value) {
+        return ToolResult {
+            content: format!(
+                "blocked: command '{value}' is not allowed. \
+                 Only read-only inspection commands are permitted \
+                 (find, grep, rg, git log, ls, cat, wc, etc.). \
+                 Rephrase your request or ask for specific information."
+            ),
+            is_error: true,
+        };
+    }
+
+    let backing_args = Value::Object(
+        std::iter::once((spec.arg.to_string(), Value::String(value.to_string()))).collect(),
+    );
+    match tool_registry.execute(spec.backing_tool, backing_args, ctx).await {
+        Ok(result) => result,
+        Err(e) => ToolResult {
+            content: format!("{} failed: {e:#}", spec.name),
             is_error: true,
         },
     }
@@ -392,20 +404,12 @@ fn is_safe_pipeline_stage(stage: &str) -> bool {
 
 /// Format an evidence request for display to the user.
 pub fn format_request(description: &str, tool: &str, args: &Value) -> String {
-    match tool {
-        "read" => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("read: {path}")
+    match evidence_tool(tool) {
+        Some(spec) => {
+            let value = args.get(spec.arg).and_then(|v| v.as_str()).unwrap_or("?");
+            format!("{}: {value}", spec.display)
         }
-        "fetch_page" => {
-            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("fetch: {url}")
-        }
-        "shell" => {
-            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("shell: {cmd}")
-        }
-        _ => description.to_string(),
+        None => description.to_string(),
     }
 }
 
