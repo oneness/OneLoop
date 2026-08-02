@@ -164,6 +164,7 @@ impl Provider for AnthropicProvider {
                         id,
                         name,
                         arguments: input,
+                        parse_error: None,
                     });
                 }
                 AnthropicContentBlock::ToolResult | AnthropicContentBlock::Other => {}
@@ -274,6 +275,7 @@ mod tests {
             id: id.into(),
             name: "bash".into(),
             arguments: json!({"command": "ls"}),
+            parse_error: None,
         })
     }
 

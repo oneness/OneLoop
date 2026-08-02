@@ -10,7 +10,7 @@ mod spinner;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
@@ -288,11 +288,23 @@ impl Agent {
             .map(|tc| {
                 let name = tc.name.clone();
                 let arguments = tc.arguments.clone();
+                // A call whose arguments never decoded cannot be run, but it
+                // can be answered. Reported as a tool failure it reaches the
+                // model as a result it can act on, instead of ending the run.
+                let parse_error = tc.parse_error.clone();
                 let ctx = AgentContext {
                     cwd: self.config.cwd.clone(),
                 };
                 let registry = self.tool_registry.clone();
-                tokio::spawn(async move { registry.execute(&name, arguments, &ctx).await })
+                tokio::spawn(async move {
+                    match parse_error {
+                        Some(err) => bail!(
+                            "arguments were not valid JSON ({err}). Send the call \
+                             again with complete, valid JSON arguments."
+                        ),
+                        None => registry.execute(&name, arguments, &ctx).await,
+                    }
+                })
             })
             .collect();
 

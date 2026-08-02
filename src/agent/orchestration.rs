@@ -421,6 +421,7 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
+                parse_error: None,
             }));
         }
         for (tc, result) in response.tool_calls.iter().zip(tool_results) {

@@ -59,6 +59,7 @@ impl Session {
             id,
             name,
             arguments,
+            parse_error: None,
         });
         self.append(message)
     }

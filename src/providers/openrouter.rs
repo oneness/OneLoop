@@ -14,6 +14,7 @@ pub struct OpenRouterProvider {
     model: String,
     base_url: String,
     web_tools: bool,
+    max_tokens: Option<u32>,
 }
 
 impl OpenRouterProvider {
@@ -35,6 +36,14 @@ impl OpenRouterProvider {
         // OpenRouter's server-side web_search/web_fetch tools. Metered per
         // use ($0.005/search, $0.001/fetch), so a kill switch is provided.
         let web_tools = crate::config::env_or("ONELOOP_WEB_TOOLS", true);
+        // No default: OpenRouter's own per-model ceiling is the right one, and
+        // guessing here would cap long answers that work today. Self-hosted
+        // servers are the case that needs it — their ceiling is whatever the
+        // operator passed to the server, and a reasoning model that spends it
+        // all thinking returns a turn with no content at all.
+        let max_tokens = std::env::var("ONELOOP_OPENROUTER_MAX_TOKENS")
+            .ok()
+            .and_then(|value| value.parse().ok());
 
         Ok(Self {
             client,
@@ -42,6 +51,7 @@ impl OpenRouterProvider {
             model,
             base_url,
             web_tools,
+            max_tokens,
         })
     }
 }
@@ -55,6 +65,9 @@ struct ChatRequest {
     tools: Vec<ChatToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    /// Omitted unless configured, so the hosted default still applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 /// Either a function tool (`type: "function"` with a definition) or one of
@@ -114,7 +127,27 @@ struct ChatToolCall {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ChatToolFunction {
     name: String,
+    /// Chat Completions types this as a JSON-*encoded string*, not an object.
+    /// Responses are lenient about which one arrives, so this stays a `Value`
+    /// on the way in — but echoing an object back into the conversation is
+    /// malformed, and a server that renders history through a chat template
+    /// turns that into a prompt the model answers with nothing at all.
+    #[serde(serialize_with = "serialize_tool_arguments")]
     arguments: Value,
+}
+
+/// Always send `arguments` as a string, whichever shape it arrived in.
+fn serialize_tool_arguments<S>(arguments: &Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match arguments {
+        Value::String(text) => serializer.serialize_str(text),
+        other => {
+            let encoded = serde_json::to_string(other).map_err(serde::ser::Error::custom)?;
+            serializer.serialize_str(&encoded)
+        }
+    }
 }
 
 // ── Response types (Chat Completions) ─────────────────────────────────
@@ -132,7 +165,52 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatChoiceMessage {
     content: Option<String>,
+    /// Reasoning models served locally put their thinking here and leave
+    /// `content` null. Not part of the OpenAI schema; absent from the hosted
+    /// providers, hence the default.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<ChatToolCall>>,
+}
+
+/// Text to show for an assistant turn.
+///
+/// A turn that carries tool calls is expected to have empty content — the
+/// call is the message, and the model's thinking is not something to store
+/// as if it had been said. Only a turn with neither content nor tool calls
+/// is a dead end, and there the reasoning is better than nothing: it is the
+/// difference between the model's answer and "I wasn't able to generate a
+/// response".
+fn assistant_content(
+    content: Option<String>,
+    reasoning_content: Option<String>,
+    has_tool_calls: bool,
+) -> String {
+    let content = content.filter(|text| !text.trim().is_empty());
+    if has_tool_calls {
+        return content.unwrap_or_default();
+    }
+    content
+        .or(reasoning_content.filter(|text| !text.trim().is_empty()))
+        .unwrap_or_default()
+}
+
+/// Decode a tool call's `arguments`, keeping the raw text when it will not parse.
+///
+/// A truncated call is not a transport failure, so failing the whole response
+/// is the wrong shape: the retry spends another minute of local inference and
+/// arrives at the same place, and the turn dies with the work half-applied.
+/// The model is the only party that can fix this, and it can only do so if it
+/// is told. Returning the raw text keeps the call intact for the history the
+/// API requires, and the error travels alongside it.
+fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
+    match arguments {
+        Value::String(text) => match serde_json::from_str(&text) {
+            Ok(value) => (value, None),
+            Err(err) => (Value::String(text), Some(err.to_string())),
+        },
+        other => (other, None),
+    }
 }
 
 #[async_trait]
@@ -191,6 +269,7 @@ impl Provider for OpenRouterProvider {
             messages,
             tools,
             tool_choice,
+            max_tokens: self.max_tokens,
         };
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -216,22 +295,22 @@ impl Provider for OpenRouterProvider {
             .unwrap_or_default()
             .into_iter()
             .map(|tool_call| {
-                let arguments = match tool_call.function.arguments {
-                    Value::String(text) => serde_json::from_str(&text).with_context(|| {
-                        format!("failed to parse OpenRouter tool arguments JSON: {text}")
-                    }),
-                    other => Ok(other),
-                }?;
-                Ok(ToolCall {
+                let (arguments, parse_error) = decode_tool_arguments(tool_call.function.arguments);
+                ToolCall {
                     id: tool_call.id,
                     name: tool_call.function.name,
                     arguments,
-                })
+                    parse_error,
+                }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
         Ok(ProviderResponse {
-            content: choice.message.content.unwrap_or_default(),
+            content: assistant_content(
+                choice.message.content,
+                choice.message.reasoning_content,
+                !tool_calls.is_empty(),
+            ),
             tool_calls,
         })
     }
@@ -320,6 +399,7 @@ mod tests {
             id: id.into(),
             name: "bash".into(),
             arguments: json!({"command": "ls"}),
+            parse_error: None,
         })
     }
 
@@ -410,5 +490,150 @@ mod tests {
         let tools = with_web_tools(vec![function_tool()], true);
         let json = serde_json::to_value(&tools[1]).unwrap();
         assert_eq!(json, serde_json::json!({ "type": "openrouter:web_search" }));
+    }
+
+    /// Chat Completions types `arguments` as a JSON-encoded string. Echoing a
+    /// previous call back as an object is accepted by the hosted APIs and
+    /// renders into malformed history on a server that uses a chat template.
+    #[test]
+    fn tool_call_arguments_serialize_as_a_json_string() {
+        let call = ChatToolCall {
+            id: "call_1".to_string(),
+            r#type: "function".to_string(),
+            function: ChatToolFunction {
+                name: "read".to_string(),
+                arguments: serde_json::json!({ "path": "src/main.rs" }),
+            },
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(
+            json["function"]["arguments"],
+            serde_json::json!(r#"{"path":"src/main.rs"}"#)
+        );
+    }
+
+    /// A string that already arrived encoded must not be encoded twice.
+    #[test]
+    fn already_encoded_arguments_are_not_double_encoded() {
+        let call = ChatToolCall {
+            id: "call_1".to_string(),
+            r#type: "function".to_string(),
+            function: ChatToolFunction {
+                name: "read".to_string(),
+                arguments: Value::String(r#"{"path":"a.rs"}"#.to_string()),
+            },
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(
+            json["function"]["arguments"],
+            serde_json::json!(r#"{"path":"a.rs"}"#)
+        );
+    }
+
+    #[test]
+    fn content_is_used_when_present() {
+        let text = assistant_content(Some("answer".into()), Some("thinking".into()), false);
+        assert_eq!(text, "answer");
+    }
+
+    #[test]
+    fn reasoning_content_is_used_when_content_is_null() {
+        let text = assistant_content(None, Some("thinking".into()), false);
+        assert_eq!(text, "thinking");
+    }
+
+    #[test]
+    fn reasoning_content_is_used_when_content_is_blank() {
+        let text = assistant_content(Some("   ".into()), Some("thinking".into()), false);
+        assert_eq!(text, "thinking");
+    }
+
+    /// The call is the message on a tool-calling turn; the thinking behind it
+    /// is not something to record as if the model had said it.
+    #[test]
+    fn reasoning_content_is_not_used_when_the_turn_has_tool_calls() {
+        let text = assistant_content(None, Some("thinking".into()), true);
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn empty_when_neither_is_present() {
+        assert_eq!(assistant_content(None, None, false), "");
+    }
+
+    #[test]
+    fn blank_reasoning_does_not_stand_in_for_an_answer() {
+        assert_eq!(assistant_content(None, Some("  \n ".into()), false), "");
+    }
+
+    /// The field is absent from every hosted provider's responses.
+    #[test]
+    fn missing_reasoning_content_field_deserializes() {
+        let json = serde_json::json!({ "content": "hi" });
+        let message: ChatChoiceMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(message.content.as_deref(), Some("hi"));
+        assert!(message.reasoning_content.is_none());
+    }
+
+    #[test]
+    fn max_tokens_is_omitted_when_unset() {
+        let body = ChatRequest {
+            model: "m".to_string(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            max_tokens: None,
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn max_tokens_is_sent_when_set() {
+        let body = ChatRequest {
+            model: "m".to_string(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            max_tokens: Some(4096),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["max_tokens"], serde_json::json!(4096));
+    }
+
+    #[test]
+    fn decode_tool_arguments_parses_a_json_string() {
+        let (arguments, error) =
+            decode_tool_arguments(Value::String(r#"{"command":"ls"}"#.to_string()));
+        assert_eq!(arguments, json!({"command": "ls"}));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn decode_tool_arguments_passes_through_an_object() {
+        let (arguments, error) = decode_tool_arguments(json!({"command": "ls"}));
+        assert_eq!(arguments, json!({"command": "ls"}));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn decode_tool_arguments_reports_a_truncated_string() {
+        // The shape actually observed: generation stopped mid-arguments, so
+        // the JSON has no closing quote or brace.
+        let truncated = r#"{"command":"cargo test 2>&1"#;
+        let (arguments, error) = decode_tool_arguments(Value::String(truncated.to_string()));
+        assert_eq!(arguments, Value::String(truncated.to_string()));
+        assert!(error.is_some(), "a truncated call must report an error");
+    }
+
+    #[test]
+    fn decode_tool_arguments_keeps_the_raw_text_when_it_will_not_parse() {
+        // The raw text is what the model actually sent, and it is what the
+        // conversation has to carry back — the API owes a tool call for every
+        // result, and inventing arguments here would misreport the turn.
+        let raw = "not json at all";
+        let (arguments, error) = decode_tool_arguments(Value::String(raw.to_string()));
+        assert_eq!(arguments, Value::String(raw.to_string()));
+        assert!(error.is_some());
     }
 }

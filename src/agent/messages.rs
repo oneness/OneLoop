@@ -25,6 +25,12 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    /// Set when the provider received the call but could not decode its
+    /// arguments. The call still has to reach the executor: the API owes a
+    /// result for every call it sent, and the model has to be told what was
+    /// wrong before it can send a better one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parse_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

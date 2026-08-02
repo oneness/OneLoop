@@ -233,6 +233,7 @@ impl Provider for OpenAIProvider {
                         id: call_id,
                         name: fn_name,
                         arguments,
+                        parse_error: None,
                     });
                 }
                 // Skip reasoning items and any other unknown types.
