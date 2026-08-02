@@ -3,6 +3,7 @@ mod app;
 mod auth;
 mod config;
 mod directives;
+mod endpoints;
 mod output;
 mod providers;
 mod tools;
@@ -72,11 +73,6 @@ fn login(provider: &str) -> Result<()> {
 
     println!("{} login for OneLoop", provider.display_name());
     println!();
-    if provider == auth::AuthProvider::Anthropic {
-        println!("Note: OneLoop uses Anthropic API-key authentication.");
-        println!("It does not implement claude.ai subscription login.");
-        println!();
-    }
 
     let key = rpassword::prompt_password(format!("Enter {}: ", provider.env_var()))?;
     if key.trim().is_empty() {

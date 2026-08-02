@@ -5,18 +5,16 @@ use std::{env, fs, path::PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// The one vendor that still needs credentials. Local endpoints need none,
+/// and every hosted model is reached through OpenRouter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthProvider {
-    Anthropic,
-    OpenAi,
     OpenRouter,
 }
 
 impl AuthProvider {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            "anthropic" => Some(Self::Anthropic),
-            "openai" => Some(Self::OpenAi),
             "openrouter" => Some(Self::OpenRouter),
             _ => None,
         }
@@ -24,41 +22,41 @@ impl AuthProvider {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Anthropic => "Anthropic",
-            Self::OpenAi => "OpenAI",
             Self::OpenRouter => "OpenRouter",
         }
     }
 
     pub fn env_var(self) -> &'static str {
         match self {
-            Self::Anthropic => "ANTHROPIC_API_KEY",
-            Self::OpenAi => "OPENAI_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
+        }
+    }
+
+    fn from_env_var(env_var: &str) -> Option<Self> {
+        match env_var {
+            "OPENROUTER_API_KEY" => Some(Self::OpenRouter),
+            _ => None,
         }
     }
 }
 
+/// Older files may still carry `anthropic`/`openai` entries. Serde ignores
+/// unknown fields by default, so those parse and are dropped rather than
+/// failing the load for anyone upgrading.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuthFile {
-    pub anthropic: Option<ApiKeyEntry>,
-    pub openai: Option<ApiKeyEntry>,
     pub openrouter: Option<ApiKeyEntry>,
 }
 
 impl AuthFile {
     fn entry(&self, provider: AuthProvider) -> Option<&ApiKeyEntry> {
         match provider {
-            AuthProvider::Anthropic => self.anthropic.as_ref(),
-            AuthProvider::OpenAi => self.openai.as_ref(),
             AuthProvider::OpenRouter => self.openrouter.as_ref(),
         }
     }
 
     fn entry_mut(&mut self, provider: AuthProvider) -> &mut Option<ApiKeyEntry> {
         match provider {
-            AuthProvider::Anthropic => &mut self.anthropic,
-            AuthProvider::OpenAi => &mut self.openai,
             AuthProvider::OpenRouter => &mut self.openrouter,
         }
     }
@@ -83,14 +81,19 @@ pub fn load() -> Auth {
 }
 
 impl Auth {
-    /// API key for a provider. The environment variable wins over stored
-    /// credentials — an explicitly set env var is the caller saying "use
-    /// this", per the usual CLI convention. Empty env values are ignored.
-    pub fn api_key(&self, provider: AuthProvider) -> Option<String> {
-        env::var(provider.env_var())
+    /// Key for an endpoint, looked up by the environment variable it names.
+    /// An explicitly set env var wins over the stored credential — setting
+    /// one is the caller saying "use this", per the usual CLI convention.
+    /// Empty env values are ignored.
+    pub fn api_key_for(&self, env_var: &str) -> Option<String> {
+        env::var(env_var)
             .ok()
             .filter(|key| !key.trim().is_empty())
-            .or_else(|| self.file.entry(provider).map(|entry| entry.key.clone()))
+            .or_else(|| {
+                AuthProvider::from_env_var(env_var)
+                    .and_then(|provider| self.file.entry(provider))
+                    .map(|entry| entry.key.clone())
+            })
     }
 }
 
@@ -166,21 +169,21 @@ mod tests {
         // SAFETY: no other test reads or writes this variable concurrently.
         unsafe { env::set_var("OPENROUTER_API_KEY", "from-env") };
         assert_eq!(
-            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
             Some("from-env")
         );
 
         // SAFETY: as above.
         unsafe { env::set_var("OPENROUTER_API_KEY", "  ") };
         assert_eq!(
-            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
             Some("stored")
         );
 
         // SAFETY: as above.
         unsafe { env::remove_var("OPENROUTER_API_KEY") };
         assert_eq!(
-            auth.api_key(AuthProvider::OpenRouter).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
             Some("stored")
         );
     }

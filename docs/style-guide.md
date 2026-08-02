@@ -99,10 +99,8 @@ When to use `for` loops instead:
   src/
     providers.rs      ← trait, shared types/helpers, pub use re-exports
     providers/
-      anthropic.rs    ← one provider per file
-      openai.rs
-      openrouter.rs
-      registry.rs     ← discovery, selection, retry
+      chat.rs         ← the Chat Completions provider
+      registry.rs     ← endpoint registration, selection, retry
   ```
 
 ## Environment Variables

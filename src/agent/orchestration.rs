@@ -406,8 +406,9 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
         }
 
         // Append tool call + result messages.
-        // Only include assistant text if non-empty — Anthropic rejects
-        // empty text blocks ("text content blocks must be non-empty").
+        // Only include assistant text if non-empty. Providers have rejected
+        // empty text blocks outright, and a turn that carries only tool
+        // calls is expected to have no text — the call is the message.
         use crate::agent::messages::{
             AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
         };

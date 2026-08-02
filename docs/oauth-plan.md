@@ -1,6 +1,12 @@
 # OAuth / Subscription Login — Implementation Plan
 
-> **Status: draft for review.** Do not implement until this file is approved and committed.
+> **Status: superseded, kept for reference.** This plan targets the direct
+> `anthropic` and `openai` providers, which have since been removed — every
+> endpoint now speaks OpenAI Chat Completions and hosted models are reached
+> through OpenRouter. The OAuth mechanics below (PKCE, the paste-code
+> headless flow, token refresh) still apply if subscription login is ever
+> wanted for an endpoint, but the per-provider sections describe files that
+> no longer exist.
 
 ## Why
 

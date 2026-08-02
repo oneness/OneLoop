@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Best coding model per provider as of 2026-07-12.
-# Keep in sync with the defaults in src/providers/*.rs.
-export ONELOOP_OPENROUTER_MODEL="deepseek/deepseek-v4-flash"
-export ONELOOP_OPENAI_MODEL="gpt-5.6-sol"
-export ONELOOP_ANTHROPIC_MODEL="claude-opus-4-8"
+# Endpoints (which URL, which model) live in ~/.oneloop/endpoints.json, and
+# the default is the local server. Nothing to export here: setting
+# ONELOOP_OPENROUTER_MODEL would override the default endpoint's model and
+# quietly defeat that.
+#
+# To use a hosted model for one run:  ONELOOP_PROVIDER=openrouter ol "..."
 
 export ONELOOP_ORIGINAL_DIR="$(pwd)"
 cd "$(dirname "$(readlink -f "$0")")"

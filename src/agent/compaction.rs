@@ -14,9 +14,6 @@ use crate::providers::ProviderRequest;
 /// Approximate characters per token (conservative for mixed code/prose).
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default context window size in tokens.
-const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 128_000;
-
 /// Default threshold percentage to trigger auto-compaction.
 const DEFAULT_COMPACTION_THRESHOLD: u8 = 85;
 
@@ -49,7 +46,12 @@ pub async fn auto_compact_if_needed(
     agent: &mut Agent,
     provider_override: Option<&str>,
 ) -> Result<()> {
-    if !should_compact(agent.session.messages(), agent.system_prompt_chars()) {
+    let context_window = agent.context_window_for(provider_override);
+    if !should_compact(
+        agent.session.messages(),
+        agent.system_prompt_chars(),
+        context_window,
+    ) {
         return Ok(());
     }
 
@@ -208,14 +210,18 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
 }
 
 /// Check whether the session has exceeded the compaction threshold.
-pub fn should_compact(messages: &[Message], system_prompt_chars: usize) -> bool {
+///
+/// `context_window` is the endpoint's, not a global: a local server rejects
+/// anything over the `-c` it was started with, and borrowing a hosted
+/// model's 128k here means the request is refused outright with nothing to
+/// compact after the fact.
+pub fn should_compact(
+    messages: &[Message],
+    system_prompt_chars: usize,
+    context_window: usize,
+) -> bool {
     let threshold: u8 =
         crate::config::env_or("ONELOOP_COMPACTION_THRESHOLD", DEFAULT_COMPACTION_THRESHOLD);
-
-    let context_window: usize = crate::config::env_or(
-        "ONELOOP_CONTEXT_WINDOW_TOKENS",
-        DEFAULT_CONTEXT_WINDOW_TOKENS,
-    );
 
     let limit_tokens = (context_window as u64 * threshold as u64 / 100) as usize;
     let used_tokens = estimate_tokens(messages, system_prompt_chars);
@@ -387,4 +393,44 @@ pub fn collect_recent_user_messages(messages: &[Message]) -> Vec<String> {
     // Reverse back to chronological order.
     selected.reverse();
     selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_compact;
+    use crate::agent::messages::{Message, UserMessage};
+
+    /// Roughly `tokens` worth of conversation, at CHARS_PER_TOKEN.
+    fn session_of(tokens: usize) -> Vec<Message> {
+        vec![Message::User(UserMessage {
+            content: "x".repeat(tokens * 4),
+        })]
+    }
+
+    #[test]
+    fn compacts_before_a_small_local_window_is_exceeded() {
+        // The bug this replaced: a 34k-token request against a server
+        // started with -c 32768 was let through, because the window was a
+        // global 128k and 34k never reached 85% of it.
+        assert!(
+            should_compact(&session_of(30_000), 0, 32_000),
+            "30k tokens must compact against a 32k window"
+        );
+    }
+
+    #[test]
+    fn leaves_the_same_session_alone_on_a_large_window() {
+        assert!(
+            !should_compact(&session_of(30_000), 0, 128_000),
+            "30k tokens is nowhere near a 128k window"
+        );
+    }
+
+    #[test]
+    fn the_system_prompt_counts_against_the_window() {
+        // Tool definitions and AGENTS.md are sent on every request, so a
+        // session that fits without them can still be refused.
+        assert!(!should_compact(&session_of(20_000), 0, 32_000));
+        assert!(should_compact(&session_of(20_000), 40_000, 32_000));
+    }
 }

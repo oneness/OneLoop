@@ -71,7 +71,8 @@ fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
 }
 
 async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
-    run_directives(agent, parse_prompt(input)?).await
+    let directives = parse_prompt(input, &agent.endpoint_names())?;
+    run_directives(agent, directives).await
 }
 
 fn provider_override(directives: &PromptDirectives) -> Option<&str> {
@@ -149,12 +150,12 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 /// One REPL turn: parse directives, run them racing Ctrl+C, then tidy up.
 /// Errors are reported, never propagated — a failed turn must not end the REPL.
 async fn run_interactive_turn(agent: &mut Agent, line: &str) {
-    let directives = match parse_prompt(line) {
+    let directives = match parse_prompt(line, &agent.endpoint_names()) {
         Ok(directives) => directives,
         Err(e) => {
             eprintln!("{RED}  ✗ {e:#}{RESET}");
             println!(
-                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!anthropic#! explain this file{RESET}"
+                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!local#! explain this file{RESET}"
             );
             return;
         }

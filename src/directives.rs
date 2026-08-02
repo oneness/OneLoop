@@ -1,6 +1,5 @@
 use anyhow::{Result, bail};
 
-const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "openrouter"];
 const MAX_ROUNDS: usize = 3;
 
 // ── Public types ──────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ pub enum OutputFormat {
 ///
 /// - No `#!` at all → default single mode, full input is the body.
 /// - `#!...#!` → directive tokens between the markers, body after closing `#!`.
-pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
+pub fn parse_prompt(input: &str, known_endpoints: &[&str]) -> Result<PromptDirectives> {
     let trimmed = input.trim();
 
     // No directive marker → plain prompt with default single mode.
@@ -157,11 +156,14 @@ pub fn parse_prompt(input: &str) -> Result<PromptDirectives> {
             }
             mode_name = Some(token);
         }
-        // Provider names
-        else if is_known_provider(token) {
+        // Endpoint names
+        else if known_endpoints.contains(token) {
             providers.push(token.to_string());
         } else {
-            bail!("unknown directive token: {token}");
+            bail!(
+                "unknown directive token: {token} (endpoints: {})",
+                known_endpoints.join(", ")
+            );
         }
     }
 
@@ -222,15 +224,15 @@ fn resolve_mode(mode_name: Option<&str>, providers: Vec<String>) -> Result<RunMo
     }
 }
 
-fn is_known_provider(value: &str) -> bool {
-    KNOWN_PROVIDERS.contains(&value)
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::{OutputFormat, PromptDirectives, RunMode, ToolMode, parse_prompt};
+
+    /// Endpoint names for the parser under test. Real names come from
+    /// the registry; these stand in for it.
+    const ENDPOINTS: &[&str] = &["local", "openrouter", "sonnet"];
 
     #[test]
     fn plain_prompt_uses_default_single_mode() {
@@ -241,11 +243,11 @@ mod tests {
 
     #[test]
     fn single_provider_shorthand() {
-        let got = parsed("#!anthropic#! explain this");
+        let got = parsed("#!local#! explain this");
         assert_eq!(
             got.mode,
             RunMode::Single {
-                provider: Some("anthropic".to_string())
+                provider: Some("local".to_string())
             }
         );
         assert_eq!(got.prompt, "explain this");
@@ -253,11 +255,11 @@ mod tests {
 
     #[test]
     fn multi_provider_defaults_to_consensus() {
-        let got = parsed("#!anthropic openai#! should we do this");
+        let got = parsed("#!local openrouter#! should we do this");
         assert_eq!(
             got.mode,
             RunMode::Consensus {
-                providers: vec!["anthropic".to_string(), "openai".to_string()]
+                providers: vec!["local".to_string(), "openrouter".to_string()]
             }
         );
         assert_eq!(got.prompt, "should we do this");
@@ -265,42 +267,42 @@ mod tests {
 
     #[test]
     fn explicit_consensus_with_judge() {
-        let got = parsed("#!consensus anthropic openai judge:openai#! hello");
+        let got = parsed("#!consensus local openrouter judge:openrouter#! hello");
         assert_eq!(
             got.mode,
             RunMode::Consensus {
-                providers: vec!["anthropic".to_string(), "openai".to_string()]
+                providers: vec!["local".to_string(), "openrouter".to_string()]
             }
         );
-        assert_eq!(got.judge, Some("openai".to_string()));
+        assert_eq!(got.judge, Some("openrouter".to_string()));
     }
 
     #[test]
     fn debate_with_rounds_and_judge() {
-        let got = parsed("#!debate anthropic openai openrouter rounds:2 judge:anthropic#! hello");
+        let got = parsed("#!debate local openrouter openrouter rounds:2 judge:local#! hello");
         assert_eq!(
             got.mode,
             RunMode::Debate {
                 providers: vec![
-                    "anthropic".to_string(),
-                    "openai".to_string(),
+                    "local".to_string(),
+                    "openrouter".to_string(),
                     "openrouter".to_string()
                 ]
             }
         );
         assert_eq!(got.rounds, 2);
-        assert_eq!(got.judge, Some("anthropic".to_string()));
+        assert_eq!(got.judge, Some("local".to_string()));
     }
 
     #[test]
     fn tools_none() {
-        let got = parsed("#!consensus anthropic openai tools:none#! hello");
+        let got = parsed("#!consensus local openrouter tools:none#! hello");
         assert_eq!(got.tools, ToolMode::None);
     }
 
     #[test]
     fn tools_allow_list() {
-        let got = parsed("#!consensus anthropic openai tools:read,shell#! hello");
+        let got = parsed("#!consensus local openrouter tools:read,shell#! hello");
         assert_eq!(
             got.tools,
             ToolMode::AllowList(vec!["read".to_string(), "shell".to_string()])
@@ -309,50 +311,50 @@ mod tests {
 
     #[test]
     fn format_md() {
-        let got = parsed("#!anthropic format:md#! summarize this");
+        let got = parsed("#!local format:md#! summarize this");
         assert_eq!(got.format, OutputFormat::Md);
     }
 
     #[test]
     fn format_html() {
-        let got = parsed("#!anthropic format:html#! summarize this");
+        let got = parsed("#!local format:html#! summarize this");
         assert_eq!(got.format, OutputFormat::Html);
     }
 
     #[test]
     fn incompatible_modes_fail() {
-        let got = parse_prompt("#!consensus debate anthropic openai#! hello");
+        let got = parse_prompt("#!consensus debate local openrouter#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
     #[test]
     fn judge_on_single_provider_fails() {
-        let got = parse_prompt("#!anthropic judge:openai#! hello");
+        let got = parse_prompt("#!local judge:openrouter#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
     #[test]
     fn rounds_on_consensus_fails() {
-        let got = parse_prompt("#!consensus anthropic openai rounds:2#! hello");
+        let got = parse_prompt("#!consensus local openrouter rounds:2#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
     #[test]
     fn missing_close_marker_fails() {
-        let got = parse_prompt("#!anthropic hello");
+        let got = parse_prompt("#!local hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
     #[test]
     fn empty_directive_fails() {
-        let got = parse_prompt("#!#!#! hello");
+        let got = parse_prompt("#!#!#! hello", ENDPOINTS);
         // "!" between markers is an unknown token
         assert!(got.is_err());
     }
 
     #[test]
     fn empty_body_fails() {
-        let got = parse_prompt("#!anthropic#!");
+        let got = parse_prompt("#!local#!", ENDPOINTS);
         assert!(got.is_err());
     }
 
@@ -385,7 +387,7 @@ mod tests {
 
     #[test]
     fn model_override_in_consensus_fails() {
-        let got = parse_prompt("#!consensus anthropic openai model:gpt-4o#! hello");
+        let got = parse_prompt("#!consensus local openrouter model:gpt-4o#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
@@ -393,7 +395,7 @@ mod tests {
     fn tools_allowlist_double_comma_filters_empty() {
         // Double comma should not produce an empty-string entry — it's silently
         // collapsed, giving the same result as a single comma.
-        let got = parsed("#!consensus anthropic openai tools:read,,bash#! hello");
+        let got = parsed("#!consensus local openrouter tools:read,,bash#! hello");
         assert_eq!(
             got.tools,
             ToolMode::AllowList(vec!["read".to_string(), "bash".to_string()])
@@ -403,7 +405,7 @@ mod tests {
     #[test]
     fn tools_allowlist_only_commas_errors() {
         // A value of only commas produces no valid names after filtering.
-        let got = parse_prompt("#!tools:,#! hello");
+        let got = parse_prompt("#!tools:,#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
@@ -411,12 +413,12 @@ mod tests {
     fn tools_on_single_provider_fails() {
         // Only consensus/debate orchestration consumes tools: — reject it
         // elsewhere instead of silently ignoring it.
-        let got = parse_prompt("#!anthropic tools:none#! hello");
+        let got = parse_prompt("#!local tools:none#! hello", ENDPOINTS);
         assert!(got.is_err());
     }
 
     fn parsed(input: &str) -> PromptDirectives {
-        match parse_prompt(input) {
+        match parse_prompt(input, ENDPOINTS) {
             Ok(value) => value,
             Err(e) => panic!("failed to parse prompt: {e:#}"),
         }

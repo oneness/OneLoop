@@ -42,30 +42,31 @@ maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. Plain
 completion calls (synthesis, compaction, memory extraction) never include
 them, so background work cannot trigger paid searches.
 
-## Providers
+## Endpoints
 
-Currently supported:
+There is one protocol: OpenAI Chat Completions. A local llama-server and a
+hosted model differ only by URL, model name, and whether a key is required,
+so a single `ChatProvider` serves both and "which provider" becomes a naming
+question.
 
-- OpenRouter via API key (default — access to any model on the OpenRouter catalogue)
-- OpenAI via API key
-- Anthropic via API key
+Endpoints are named in `~/.oneloop/endpoints.json`; a missing file yields
+built-in defaults of `local` (default, no key) and `openrouter`. Because the
+default needs no credentials, an unconfigured checkout cannot accidentally
+bill a hosted model.
 
-Default selection order (when `ONELOOP_PROVIDER` is not set):
-
-1. OpenRouter
-2. OpenAI
-3. Anthropic
-
-Override with `ONELOOP_PROVIDER` if needed. Route per-prompt with `#!provider` directives.
-Use `#!consensus` or `#!debate` to ask multiple providers and synthesize a final answer.
-Use `model:` in a single-provider directive to override the model for that prompt.
+Override the active endpoint with `ONELOOP_PROVIDER`. Route per-prompt with
+`#!endpoint` directives. Use `#!consensus` or `#!debate` to ask several
+endpoints the same question and synthesize a final answer. Use `model:` in a
+single-endpoint directive to override the model for that prompt.
 
 ## Multi-model orchestration
 
-`#!consensus` and `#!debate` ask several providers the same question and have a
-judge synthesize the answers. Orchestrated providers never get direct tool
-access — they see a single `request_evidence` tool and ask the main agent,
-which executes, caches, and shares results across all providers in the run.
+`#!consensus` and `#!debate` ask several endpoints the same question and have
+a judge synthesize the answers. Because endpoints name models rather than
+vendors, this compares models — `#!consensus local openrouter#!` puts a local
+model against a hosted one. Orchestrated endpoints never get direct tool
+access: they see a single `request_evidence` tool and ask the main agent,
+which executes, caches, and shares results across all of them in the run.
 
 The evidence tools (`read`, `shell`) are defined in one table
 (`EVIDENCE_TOOLS` in `evidence.rs`): the allowlist, the `request_evidence`
@@ -118,11 +119,10 @@ Credentials are resolved from environment variables first, then `~/.oneloop/auth
 an explicitly set env var always wins (blank values are ignored). Supported variables:
 
 - `OPENROUTER_API_KEY`
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
 
-`auth.json` is written with owner-only (0600) permissions.
-Anthropic API-key auth is supported, but not `claude.ai` subscription login.
+An endpoint names the variable holding its key via `api_key_env`, or omits it
+for a server that needs none. `auth.json` is written with owner-only (0600)
+permissions.
 
 ## Source layout
 
@@ -140,14 +140,13 @@ src/
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL (rustyline), directive dispatch, Ctrl+C handling
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
+  endpoints.rs      Named endpoints from ~/.oneloop/endpoints.json, built-in defaults
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
   output.rs         Output truncation utilities, ANSI style constants
   providers.rs      Provider trait, request/response types, shared HTTP send/read
   providers/
-    anthropic.rs    Anthropic Claude provider
-    openai.rs       OpenAI GPT provider (Responses API)
-    openrouter.rs   OpenRouter provider (Chat Completions API, server-side web tools)
-    registry.rs     Provider discovery, selection, retry with interactive fallback
+    chat.rs         Chat Completions provider (one per endpoint, local or hosted)
+    registry.rs     Endpoint registration, selection, retry with interactive fallback
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution

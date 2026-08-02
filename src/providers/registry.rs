@@ -4,11 +4,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use super::{
-    AnthropicProvider, OpenAIProvider, OpenRouterProvider, Provider, ProviderRequest,
-    ProviderResponse,
-};
-use crate::auth::{self, AuthProvider};
+use super::{ChatProvider, Provider, ProviderRequest, ProviderResponse, is_retryable};
+use crate::auth;
+use crate::endpoints;
 use crate::output::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
 
 pub struct ProviderRegistry {
@@ -18,38 +16,39 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn new() -> Result<Self> {
-        let preferred = env::var("ONELOOP_PROVIDER").ok();
+        let config = endpoints::load()?;
         let auth = auth::load();
 
+        // Every configured endpoint is registered, with or without a key —
+        // a local server needs none, and refusing to register it would put
+        // the default endpoint out of reach.
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-        if let Some(key) = auth.api_key(AuthProvider::Anthropic) {
-            providers.push(Box::new(AnthropicProvider::new(key)?));
+        for (name, endpoint) in &config.endpoints {
+            let api_key = endpoint
+                .api_key_env
+                .as_deref()
+                .and_then(|var| auth.api_key_for(var));
+            providers.push(Box::new(ChatProvider::new(
+                name.clone(),
+                endpoint.clone(),
+                api_key,
+            )?));
         }
-        if let Some(key) = auth.api_key(AuthProvider::OpenAi) {
-            providers.push(Box::new(OpenAIProvider::new(key)?));
-        }
-        if let Some(key) = auth.api_key(AuthProvider::OpenRouter) {
-            providers.push(Box::new(OpenRouterProvider::new(key)?));
+        if providers.is_empty() {
+            bail!("no endpoints configured — see ~/.oneloop/endpoints.json");
         }
 
         let position_of = |name: &str| providers.iter().position(|p| p.name() == name);
-        let default_index = match preferred.as_deref() {
-            Some(name) => {
-                let Some(auth_provider) = AuthProvider::from_name(name) else {
-                    bail!("unknown provider: {name}");
-                };
-                position_of(name).with_context(|| {
-                    format!(
-                        "ONELOOP_PROVIDER={name} but no {}/auth found",
-                        auth_provider.env_var()
-                    )
-                })?
-            }
-            None => ["openrouter", "openai", "anthropic"]
-                .into_iter()
-                .find_map(position_of)
-                .context("no providers configured — run `oneloop login <provider>` first")?,
-        };
+        // ONELOOP_PROVIDER still selects by name; it just names an endpoint.
+        let requested = env::var("ONELOOP_PROVIDER").ok();
+        let wanted = requested.as_deref().unwrap_or(&config.default);
+        let default_index = position_of(wanted).with_context(|| {
+            let available: Vec<&str> = providers.iter().map(|p| p.name()).collect();
+            format!(
+                "no endpoint named {wanted}. configured: {}",
+                available.join(", ")
+            )
+        })?;
 
         Ok(Self {
             providers,
@@ -57,7 +56,7 @@ impl ProviderRegistry {
         })
     }
 
-    pub fn active_name(&self) -> &'static str {
+    pub fn active_name(&self) -> &str {
         self.providers[self.default_index].name()
     }
 
@@ -65,7 +64,16 @@ impl ProviderRegistry {
         self.providers[self.default_index].model()
     }
 
-    pub fn available_providers(&self) -> Vec<&'static str> {
+    /// Context window of the endpoint a request would use. Compaction needs
+    /// this before building the request, so it is resolved by name here
+    /// rather than read from a global.
+    pub fn context_window_for(&self, name: Option<&str>) -> usize {
+        self.resolve(name)
+            .map(Provider::context_window)
+            .unwrap_or_else(|_| self.providers[self.default_index].context_window())
+    }
+
+    pub fn available_providers(&self) -> Vec<&str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
@@ -130,7 +138,16 @@ impl ProviderRegistry {
                 Ok(response) => return Ok((provider_label.to_string(), response)),
                 Err(e) => {
                     let err_msg = format!("{e:#}");
+                    let retryable = is_retryable(&e);
                     last_error = Some(err_msg.clone());
+
+                    // A rejected request is rejected identically next time.
+                    // Retrying spends minutes of local inference to reach the
+                    // same place, and the fallback prompt below would offer a
+                    // paid endpoint as the cure for a local misconfiguration.
+                    if !retryable {
+                        bail!("[{provider_label}] {err_msg}");
+                    }
 
                     if attempt < max_retries {
                         let backoff = Duration::from_millis(500 * attempt as u64);
@@ -153,7 +170,7 @@ impl ProviderRegistry {
             "{RED}  ✗ [{provider_label}] all {max_retries} attempts failed: {err_msg}{RESET}"
         );
 
-        let alternatives: Vec<&'static str> = self
+        let alternatives: Vec<&str> = self
             .providers
             .iter()
             .map(|p| p.name())
@@ -197,7 +214,7 @@ impl ProviderRegistry {
     async fn prompt_fallback_choice(
         &self,
         failed: &str,
-        alternatives: &[&'static str],
+        alternatives: &[&str],
     ) -> Result<&dyn Provider> {
         println!("{BOLD}  ── Provider Unavailable ──{RESET}");
         println!("{DIM}  {failed} is not responding. Pick an alternative (Enter to abort):{RESET}");

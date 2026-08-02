@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 use crate::agent::messages::ToolCall;
@@ -22,20 +22,72 @@ pub struct ProviderResponse {
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn name(&self) -> &'static str;
+    /// Endpoint name. Borrowed rather than `&'static str`: names come from
+    /// `~/.oneloop/endpoints.json` and are only known at runtime.
+    fn name(&self) -> &str;
     fn model(&self) -> String;
+    /// Tokens this endpoint will accept in one request. Compaction aims to
+    /// stay under it, so a wrong value here is not a tuning knob — too high
+    /// and the request is rejected outright with nothing to fall back on.
+    fn context_window(&self) -> usize;
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse>;
 }
 
-pub mod anthropic;
-pub mod openai;
-pub mod openrouter;
+/// A non-2xx response, carrying the status so callers can tell a temporary
+/// failure from a request that will never succeed.
+#[derive(Debug)]
+pub struct ProviderHttpError {
+    pub status: reqwest::StatusCode,
+    pub message: String,
+    pub provider: String,
+}
+
+impl std::fmt::Display for ProviderHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} request failed ({}): {}",
+            self.provider, self.status, self.message
+        )
+    }
+}
+
+impl std::error::Error for ProviderHttpError {}
+
+impl ProviderHttpError {
+    /// Whether sending the identical request again could plausibly work.
+    ///
+    /// Client errors are the request's fault and are deterministic: a body
+    /// over the context limit is over it on every attempt. Retrying burns
+    /// minutes of local inference to arrive at the same place, and offering
+    /// a paid endpoint as the "fallback" turns a local misconfiguration
+    /// into a bill. Rate limiting and timeouts are the exceptions.
+    pub fn is_retryable(&self) -> bool {
+        if self.status.is_client_error() {
+            return matches!(
+                self.status,
+                reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+        true
+    }
+}
+
+/// Whether an error from `complete` is worth another attempt. Anything that
+/// is not a recognised HTTP status is assumed transient — that is the old
+/// behaviour, and a connection reset really can succeed on retry.
+pub fn is_retryable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ProviderHttpError>()
+        .map(ProviderHttpError::is_retryable)
+        .unwrap_or(true)
+}
+
+pub mod chat;
 pub mod registry;
 
 // Re-export key types for convenience.
-pub use anthropic::AnthropicProvider;
-pub use openai::OpenAIProvider;
-pub use openrouter::OpenRouterProvider;
+pub use chat::ChatProvider;
 pub use registry::ProviderRegistry;
 
 /// Send a prepared provider request, check the status, and return the raw
@@ -52,10 +104,12 @@ async fn send_and_read(request: reqwest::RequestBuilder, provider: &str) -> Resu
         .await
         .with_context(|| format!("failed to read {provider} response body"))?;
     if !status.is_success() {
-        bail!(
-            "{provider} request failed ({status}): {}",
-            extract_error_message(&text)
-        );
+        return Err(ProviderHttpError {
+            status,
+            message: extract_error_message(&text),
+            provider: provider.to_string(),
+        }
+        .into());
     }
     Ok(text)
 }
@@ -95,5 +149,49 @@ mod tests {
         let msg = extract_error_message(&raw);
         assert!(msg.ends_with('…'));
         assert!(msg.starts_with("xxx"));
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::{ProviderHttpError, is_retryable};
+    use reqwest::StatusCode;
+
+    fn err(status: StatusCode) -> anyhow::Error {
+        ProviderHttpError {
+            status,
+            message: "boom".to_string(),
+            provider: "local".to_string(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn a_rejected_request_is_not_retried() {
+        // The case that motivated this: a body over the context limit is
+        // over it on every attempt, and the retries cost minutes of local
+        // inference before offering a paid endpoint as the cure.
+        assert!(!is_retryable(&err(StatusCode::BAD_REQUEST)));
+        assert!(!is_retryable(&err(StatusCode::UNAUTHORIZED)));
+        assert!(!is_retryable(&err(StatusCode::NOT_FOUND)));
+    }
+
+    #[test]
+    fn rate_limits_and_timeouts_are_retried() {
+        assert!(is_retryable(&err(StatusCode::TOO_MANY_REQUESTS)));
+        assert!(is_retryable(&err(StatusCode::REQUEST_TIMEOUT)));
+    }
+
+    #[test]
+    fn server_errors_are_retried() {
+        assert!(is_retryable(&err(StatusCode::INTERNAL_SERVER_ERROR)));
+        assert!(is_retryable(&err(StatusCode::SERVICE_UNAVAILABLE)));
+    }
+
+    #[test]
+    fn a_non_http_error_stays_retryable() {
+        // Connection resets really can succeed on a second attempt; only a
+        // recognised status downgrades that assumption.
+        assert!(is_retryable(&anyhow::anyhow!("connection reset")));
     }
 }

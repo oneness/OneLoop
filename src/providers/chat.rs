@@ -5,53 +5,35 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
+use crate::endpoints::Endpoint;
 
 use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
 
-pub struct OpenRouterProvider {
+/// One OpenAI Chat Completions endpoint. A local llama-server and a hosted
+/// provider differ only by URL, model, and whether a key is required, so
+/// one implementation serves both.
+pub struct ChatProvider {
+    name: String,
     client: reqwest::Client,
-    api_key: String,
-    model: String,
-    base_url: String,
-    web_tools: bool,
-    max_tokens: Option<u32>,
+    api_key: Option<String>,
+    endpoint: Endpoint,
 }
 
-impl OpenRouterProvider {
-    pub fn new(api_key: String) -> Result<Self> {
+impl ChatProvider {
+    pub fn new(name: String, endpoint: Endpoint, api_key: Option<String>) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
-            .context("failed to build OpenRouter HTTP client")?;
-
-        // Keep this default aligned with the `ol` wrapper: a wrapper-less
-        // invocation must not silently fall back to a different model.
-        let model = std::env::var("ONELOOP_OPENROUTER_MODEL")
-            .unwrap_or_else(|_| "deepseek/deepseek-v4-flash".to_string());
-        let base_url = std::env::var("ONELOOP_OPENROUTER_BASE_URL")
-            .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
-        // OpenRouter's server-side web_search/web_fetch tools. Metered per
-        // use ($0.005/search, $0.001/fetch), so a kill switch is provided.
-        let web_tools = crate::config::env_or("ONELOOP_WEB_TOOLS", true);
-        // No default: OpenRouter's own per-model ceiling is the right one, and
-        // guessing here would cap long answers that work today. Self-hosted
-        // servers are the case that needs it — their ceiling is whatever the
-        // operator passed to the server, and a reasoning model that spends it
-        // all thinking returns a turn with no content at all.
-        let max_tokens = std::env::var("ONELOOP_OPENROUTER_MAX_TOKENS")
-            .ok()
-            .and_then(|value| value.parse().ok());
+            .with_context(|| format!("failed to build HTTP client for endpoint {name}"))?;
 
         Ok(Self {
+            name,
             client,
             api_key,
-            model,
-            base_url,
-            web_tools,
-            max_tokens,
+            endpoint,
         })
     }
 }
@@ -68,6 +50,8 @@ struct ChatRequest {
     /// Omitted unless configured, so the hosted default still applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
 }
 
 /// Either a function tool (`type: "function"` with a definition) or one of
@@ -214,20 +198,24 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 }
 
 #[async_trait]
-impl Provider for OpenRouterProvider {
-    fn name(&self) -> &'static str {
-        "openrouter"
+impl Provider for ChatProvider {
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn model(&self) -> String {
-        self.model.clone()
+        self.endpoint.model.clone()
+    }
+
+    fn context_window(&self) -> usize {
+        self.endpoint.context_window
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
         let model = request
             .model_override
             .as_deref()
-            .unwrap_or(&self.model)
+            .unwrap_or(&self.endpoint.model)
             .to_string();
 
         // Inject system prompt as the first message if present.
@@ -254,7 +242,7 @@ impl Provider for OpenRouterProvider {
                 }),
             })
             .collect();
-        let tools = with_web_tools(tools, self.web_tools);
+        let tools = with_web_tools(tools, self.endpoint.web_tools);
 
         // Only set tool_choice when tools are actually provided — some models
         // reject tool_choice: "auto" when the tools array is empty.
@@ -269,24 +257,27 @@ impl Provider for OpenRouterProvider {
             messages,
             tools,
             tool_choice,
-            max_tokens: self.max_tokens,
+            max_tokens: self.endpoint.max_tokens,
+            temperature: self.endpoint.temperature,
         };
 
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let text = send_and_read(
-            self.client
-                .post(url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&body),
-            "OpenRouter",
-        )
-        .await?;
+        let url = format!(
+            "{}/chat/completions",
+            self.endpoint.base_url.trim_end_matches('/')
+        );
+        let mut post = self.client.post(url).json(&body);
+        // A local server needs no credentials, and sending an empty bearer
+        // token makes some servers reject the request outright.
+        if let Some(key) = &self.api_key {
+            post = post.header("Authorization", format!("Bearer {key}"));
+        }
+        let text = send_and_read(post, &self.name).await?;
 
-        let parsed: ChatResponse =
-            serde_json::from_str(&text).context("failed to parse OpenRouter response JSON")?;
+        let parsed: ChatResponse = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse {} response JSON", self.name))?;
 
         let Some(choice) = parsed.choices.into_iter().next() else {
-            bail!("OpenRouter response contained no choices");
+            bail!("{} response contained no choices", self.name);
         };
 
         let tool_calls = choice
@@ -583,6 +574,7 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             max_tokens: None,
+            temperature: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("max_tokens").is_none());
@@ -596,6 +588,7 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             max_tokens: Some(4096),
+            temperature: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["max_tokens"], serde_json::json!(4096));
