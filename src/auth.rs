@@ -40,9 +40,9 @@ impl AuthProvider {
     }
 }
 
-/// Older files may still carry `anthropic`/`openai` entries. Serde ignores
-/// unknown fields by default, so those parse and are dropped rather than
-/// failing the load for anyone upgrading.
+/// Serde ignores unknown fields by default, so an older file carrying
+/// entries for providers this no longer has still parses; they are dropped
+/// rather than failing the load for anyone upgrading.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuthFile {
     pub openrouter: Option<ApiKeyEntry>,

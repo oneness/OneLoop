@@ -1,6 +1,8 @@
 # OneLoop
 
-A tiny coding agent. One loop, multiple models, five tools, zero config.
+A local-first coding agent. It runs against a model on your own machine by
+default — no API key, no account, nothing leaving the box — and reaches a
+hosted model only when you ask it to. One loop, five tools, zero config.
 
 ## Quick links
 
@@ -57,7 +59,7 @@ Directives use `#!directive words#!` followed by the user message:
 
 - `#!flash#! explain this file` — route to the `flash` model
 - `#!flash model:deepseek/deepseek-v3-0324#! refactor this` — one-off wire id
-- `#!model:anthropic/claude-opus-4#! hard problem` — one-off id, default model
+- `#!model:deepseek/deepseek-v4-flash-0731#! hard problem` — one-off id, default model
 - `#!local flash#! should we do X?` — consensus (2+ models defaults to consensus)
 - `#!consensus local flash judge:flash#! question` — explicit consensus with judge
 - `#!debate local flash rounds:2 judge:flash#! question` — debate with 2 rounds
@@ -78,7 +80,7 @@ will run. OpenRouter is a single provider serving hundreds of models, so the
 URL and key are stated once and the models listed under them.
 
 Every model has a short **alias**, which is the name used everywhere else:
-`#!consensus flash sonnet#!` rather than the wire ids those resolve to.
+`#!consensus flash pinned#!` rather than the wire ids those resolve to.
 Aliases are unique across all providers, so a directive never has to say
 which provider it meant.
 
@@ -100,7 +102,7 @@ Config is `~/.oneloop/config.json`, written from a template on first run:
       "web_tools": true,
       "models": {
         "flash":  { "id": "~deepseek/deepseek-v4-flash-latest", "context_window": 128000 },
-        "sonnet": { "id": "anthropic/claude-sonnet-5", "context_window": 200000 }
+        "pinned": { "id": "deepseek/deepseek-v4-flash-0731", "context_window": 128000 }
       }
     }
   }
@@ -129,9 +131,7 @@ Override for a single run:
 - `ONELOOP_CONTEXT_WINDOW_TOKENS` — override the active model's window
 - `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the active model
 
-`ONELOOP_PROVIDER` is accepted as the old name for `ONELOOP_MODEL`. Earlier
-versions had direct OpenAI and Anthropic providers; any `openai`/`anthropic`
-entries left in `auth.json` are ignored.
+`ONELOOP_PROVIDER` is accepted as the old name for `ONELOOP_MODEL`.
 
 ### Running the local server
 
@@ -186,7 +186,10 @@ Tuning (all optional):
 - `ONELOOP_CONTEXT_WINDOW_TOKENS` — assumed context window size (default: `128000`)
 - `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
 
-Credentials are resolved from environment variables first (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), then from `~/.oneloop/auth.json` — an explicitly set env var always wins.
+A provider names the environment variable holding its key (`api_key_env`);
+that variable is read first, then `~/.oneloop/auth.json` — an explicitly set
+env var always wins. The default `local` provider names none, so a default
+run needs no credentials anywhere.
 
 ## Development
 

@@ -1,5 +1,9 @@
 # OneLoop architecture
 
+OneLoop is local-first: the default model runs on the same machine, needs no
+credentials, and sends nothing off the box. Hosted models are reachable, but
+only when named.
+
 ## Core
 
 The initial core is intentionally small:

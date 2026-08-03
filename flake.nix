@@ -1,5 +1,5 @@
 {
-  description = "oneloop - a tiny, extensible coding agent";
+  description = "oneloop - a local-first coding agent";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
