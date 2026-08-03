@@ -55,19 +55,36 @@
         #                         model spends the whole turn thinking and
         #                         returns neither content nor a tool call:
         #                         2/5 usable turns without it, 5/5 with.
-        #   -ngl 999              all layers on the GPU: 205 t/s prefill vs
+        #   no -ngl               layer placement is llama.cpp's `--fit` to
+        #                         decide, and pinning it is what breaks:
+        #                         -ngl 999 turns fitting off outright
+        #                         ("n_gpu_layers already set by user to 999,
+        #                         abort") and then overcommits whatever
+        #                         memory the machine actually has. On a
+        #                         24 GiB box — 8 GiB of VRAM carve-out plus
+        #                         an 11.5 GiB GTT cap, ~19.5 GiB reachable,
+        #                         against 19.0 GiB of weights and a 2.8 GiB
+        #                         KV cache — that surfaces as radv "not
+        #                         enough memory for command submission" and
+        #                         a lost device before the first token.
+        #                         Unset, fit puts as much on the GPU as
+        #                         fits: 205 t/s prefill where every layer
+        #                         lands, 166 t/s on the 24 GiB box (12k
+        #                         request) against 109 with --cpu-moe and
         #                         98 on CPU. Decode is a wash — the win is
         #                         prompt-heavy work, which is what an agent
         #                         reading files does.
         #   -t 12                 physical cores; 24 (SMT) measured slower.
-        #   -c 131072             the model allows 262144; the limit here is
-        #                         KV cache against ~31 GiB of GTT, measured
-        #                         at ~21.6 KiB/token: 22.6 GiB total at 128k,
-        #                         25.4 GiB at 256k. 128k leaves ~9 GiB spare
-        #                         and costs nothing in prefill (216 t/s on a
-        #                         30k-token request, same as at 32k). The
-        #                         earlier 32768 was a benchmark artifact and
-        #                         made ordinary sessions fail outright.
+        #   -c 131072             the model allows 262144; the limit is KV
+        #                         cache against GTT, measured at ~21.6
+        #                         KiB/token: 22.6 GiB total at 128k, 25.4
+        #                         GiB at 256k. Setting it holds the context
+        #                         fixed and leaves fit to trade layers for
+        #                         it, which is the right way round — 128k
+        #                         costs nothing in prefill (216 t/s on a
+        #                         30k-token request, same as at 32k), while
+        #                         the earlier 32768 was a benchmark artifact
+        #                         and made ordinary sessions fail outright.
         #
         # No Vulkan environment setup: unlike a hand-built binary, this one
         # finds the GPU on its own — VK_ICD_FILENAMES and LD_LIBRARY_PATH are
@@ -149,7 +166,7 @@
 
             exec llama-server \
               -m "$MODEL" \
-              -ngl 999 -t 12 -c 131072 -n 4096 \
+              -t 12 -c 131072 -n 4096 \
               --jinja --reasoning-preserve --reasoning-budget 600 \
               --host 127.0.0.1 --port "$PORT" --alias local \
               "$@"
