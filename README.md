@@ -2,7 +2,7 @@
 
 A local-first coding agent. It runs against a model on your own machine by
 default — no API key, no account, nothing leaving the box — and reaches a
-hosted model only when you ask it to. One loop, five tools, zero config.
+hosted model only when you ask it to. One loop, four tools, zero config.
 
 ## Quick links
 
@@ -51,7 +51,9 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 Stores the API key in `~/.oneloop/auth.json`. Only needed to reach hosted
 models — the default `local` model uses no credentials.
 
-`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `skill` (when skill files exist under `.oneloop/skills/`). Web search and page fetching are not OneLoop tools: on OpenRouter, the agent enables the server-side `openrouter:web_search` and `openrouter:web_fetch` tools, which the model invokes when it needs the web and OpenRouter executes itself (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
+`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
+
+Two things are reachable but are not tools. `skill` is on-demand prompt engineering — it returns a markdown playbook from `.oneloop/skills/` for the model to follow, and does nothing to the machine; it is registered only when such files exist. Web search and fetching are OpenRouter's, executed server-side and returned inside the assistant message (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 
 ## Directives
 

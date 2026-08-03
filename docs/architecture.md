@@ -35,7 +35,12 @@ That keeps the core honest without forcing a full plugin runtime too early.
 - write
 - edit
 - bash
-- skill (registered only when skill files exist)
+
+`skill` is registered alongside them when `.oneloop/skills/*.md` files
+exist, but is not a tool in the same sense: it touches nothing and returns a
+markdown playbook for the model to follow. It is on-demand prompt
+engineering wearing a tool call, which is the only way to let the model
+decide when it needs one.
 
 Web search and page fetching are deliberately not built-in tools. On
 OpenRouter, requests that carry tools also enable the server-side
