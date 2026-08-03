@@ -74,22 +74,70 @@
         # both unnecessary here.
         serve = pkgs.writeShellApplication {
           name = "oneloop-serve";
-          runtimeInputs = [ llamaServer pkgs.curl ];
+          runtimeInputs = [ llamaServer pkgs.curl pkgs.coreutils ];
           text = ''
-            MODEL="''${ONELOOP_LOCAL_MODEL:-}"
+            # The weights this repo's numbers were measured against. Several
+            # other publishers ship a "Qwen3.6-35B-A3B Q4_K_M" that is a
+            # different file — 21.2, 22.1 and 22.3 GB variants all exist — so
+            # the repo is pinned rather than searched for.
+            MODEL_REPO="ggml-org/Qwen3.6-35B-A3B-GGUF"
+            MODEL_FILE="Qwen3.6-35B-A3B-Q4_K_M.gguf"
+            MODEL_BYTES=20419565568
+            DEFAULT_MODEL="$HOME/models/$MODEL_FILE"
+
+            MODEL="''${ONELOOP_LOCAL_MODEL:-$DEFAULT_MODEL}"
             # An optional leading .gguf path overrides the environment.
             if [ $# -gt 0 ] && [ "''${1##*.}" = "gguf" ]; then
               MODEL="$1"
               shift
             fi
 
-            if [ -z "$MODEL" ]; then
-              echo "no model given." >&2
-              echo "  oneloop-serve /path/to/model.gguf" >&2
-              echo "  ONELOOP_LOCAL_MODEL=/path/to/model.gguf oneloop-serve" >&2
-              exit 1
+            if [ ! -f "$MODEL" ]; then
+              # Only the default is on offer; a path the caller chose is
+              # theirs to provide, and guessing at a download for it would
+              # be presumptuous.
+              if [ "$MODEL" != "$DEFAULT_MODEL" ]; then
+                echo "no model at $MODEL" >&2
+                exit 1
+              fi
+
+              SIZE_GB=$(( MODEL_BYTES / 1000000000 ))
+              # Never start a multi-gigabyte download nobody is watching:
+              # without a terminal there is no one to say no.
+              if [ ! -t 0 ]; then
+                echo "no model at $MODEL" >&2
+                echo "run interactively to be offered the download, or fetch it with:" >&2
+                echo "  curl -fL -C - --create-dirs -o $MODEL \\" >&2
+                echo "    https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE" >&2
+                exit 1
+              fi
+
+              echo "No model at $MODEL"
+              echo "  $MODEL_FILE (~''${SIZE_GB} GB) from huggingface.co/$MODEL_REPO"
+              printf 'Download it now? [y/N] '
+              read -r reply
+              case "$reply" in
+                [yY]*) ;;
+                *) echo "aborted — nothing downloaded." >&2; exit 1 ;;
+              esac
+
+              mkdir -p "$(dirname "$MODEL")"
+              # Download beside the target, not onto it: an interrupted
+              # transfer must never be left looking like a usable model.
+              # `-C -` resumes a partial file, which the CDN supports.
+              curl -fL -C - --create-dirs --progress-bar \
+                -o "$MODEL.part" \
+                "https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE"
+
+              GOT=$(stat -c %s "$MODEL.part")
+              if [ "$GOT" != "$MODEL_BYTES" ]; then
+                echo "download is $GOT bytes, expected $MODEL_BYTES — leaving $MODEL.part in place" >&2
+                echo "re-run to resume it." >&2
+                exit 1
+              fi
+              mv "$MODEL.part" "$MODEL"
+              echo "saved $MODEL"
             fi
-            [ -f "$MODEL" ] || { echo "no model at $MODEL" >&2; exit 1; }
 
             PORT="''${ONELOOP_LOCAL_PORT:-8080}"
             # A bind failure surfaces as an opaque socket error several

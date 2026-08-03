@@ -139,9 +139,22 @@ The `local` provider expects an OpenAI-compatible server on port 8080. This
 flake builds and runs one:
 
 ```bash
-nix run .#serve -- ~/models/Qwen3.6-35B-A3B-Q4_K_M.gguf
-# or: ONELOOP_LOCAL_MODEL=... nix run .#serve
+nix run .#serve
 ```
+
+With no model present it offers to download one (~20 GB, into `~/models/`)
+and starts the server once it lands. The download resumes if interrupted,
+and lands as `.part` until complete — an aborted transfer never looks like a
+usable model. To use different weights:
+
+```bash
+nix run .#serve -- /path/to/other.gguf
+# or: ONELOOP_LOCAL_MODEL=/path/to/other.gguf nix run .#serve
+```
+
+The offer is only made for the default, and only with a terminal attached:
+a script or CI run gets the `curl` command printed instead of a surprise
+20 GB transfer.
 
 It wraps llama.cpp's Vulkan build with flags measured against
 Qwen3.6-35B-A3B — see the comments in `flake.nix` for what each one is worth.
