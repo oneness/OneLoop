@@ -5,35 +5,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
-use crate::endpoints::Endpoint;
+use crate::catalog::Model;
 
 use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
 
-/// One OpenAI Chat Completions endpoint. A local llama-server and a hosted
-/// provider differ only by URL, model, and whether a key is required, so
-/// one implementation serves both.
+/// One model, reachable over OpenAI Chat Completions. A local llama-server
+/// and a hosted provider differ only by URL, model id, and whether a key is
+/// required, so one implementation serves both.
 pub struct ChatProvider {
-    name: String,
     client: reqwest::Client,
     api_key: Option<String>,
-    endpoint: Endpoint,
+    model: Model,
 }
 
 impl ChatProvider {
-    pub fn new(name: String, endpoint: Endpoint, api_key: Option<String>) -> Result<Self> {
+    pub fn new(model: Model, api_key: Option<String>) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
-            .with_context(|| format!("failed to build HTTP client for endpoint {name}"))?;
+            .with_context(|| format!("failed to build HTTP client for {}", model.alias))?;
 
         Ok(Self {
-            name,
             client,
             api_key,
-            endpoint,
+            model,
         })
     }
 }
@@ -200,22 +198,22 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 #[async_trait]
 impl Provider for ChatProvider {
     fn name(&self) -> &str {
-        &self.name
+        &self.model.alias
     }
 
     fn model(&self) -> String {
-        self.endpoint.model.clone()
+        self.model.id.clone()
     }
 
     fn context_window(&self) -> usize {
-        self.endpoint.context_window
+        self.model.context_window
     }
 
     async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
         let model = request
             .model_override
             .as_deref()
-            .unwrap_or(&self.endpoint.model)
+            .unwrap_or(&self.model.id)
             .to_string();
 
         // Inject system prompt as the first message if present.
@@ -242,7 +240,7 @@ impl Provider for ChatProvider {
                 }),
             })
             .collect();
-        let tools = with_web_tools(tools, self.endpoint.web_tools);
+        let tools = with_web_tools(tools, self.model.web_tools);
 
         // Only set tool_choice when tools are actually provided — some models
         // reject tool_choice: "auto" when the tools array is empty.
@@ -257,13 +255,13 @@ impl Provider for ChatProvider {
             messages,
             tools,
             tool_choice,
-            max_tokens: self.endpoint.max_tokens,
-            temperature: self.endpoint.temperature,
+            max_tokens: self.model.max_tokens,
+            temperature: self.model.temperature,
         };
 
         let url = format!(
             "{}/chat/completions",
-            self.endpoint.base_url.trim_end_matches('/')
+            self.model.base_url.trim_end_matches('/')
         );
         let mut post = self.client.post(url).json(&body);
         // A local server needs no credentials, and sending an empty bearer
@@ -271,13 +269,13 @@ impl Provider for ChatProvider {
         if let Some(key) = &self.api_key {
             post = post.header("Authorization", format!("Bearer {key}"));
         }
-        let text = send_and_read(post, &self.name).await?;
+        let text = send_and_read(post, &self.model.alias).await?;
 
         let parsed: ChatResponse = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse {} response JSON", self.name))?;
+            .with_context(|| format!("failed to parse {} response JSON", self.model.alias))?;
 
         let Some(choice) = parsed.choices.into_iter().next() else {
-            bail!("{} response contained no choices", self.name);
+            bail!("{} response contained no choices", self.model.alias);
         };
 
         let tool_calls = choice

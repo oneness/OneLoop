@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{ChatProvider, Provider, ProviderRequest, ProviderResponse, is_retryable};
 use crate::auth;
-use crate::endpoints;
+use crate::catalog;
 use crate::output::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
 
 pub struct ProviderRegistry {
@@ -16,38 +16,31 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn new() -> Result<Self> {
-        let config = endpoints::load()?;
+        let catalog = catalog::load()?;
         let auth = auth::load();
 
-        // Every configured endpoint is registered, with or without a key —
-        // a local server needs none, and refusing to register it would put
-        // the default endpoint out of reach.
+        // Every configured model is registered, with or without a key — a
+        // local server needs none, and refusing to register it would put the
+        // default out of reach.
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-        for (name, endpoint) in &config.endpoints {
-            let api_key = endpoint
+        for model in catalog.models {
+            let api_key = model
                 .api_key_env
                 .as_deref()
                 .and_then(|var| auth.api_key_for(var));
-            providers.push(Box::new(ChatProvider::new(
-                name.clone(),
-                endpoint.clone(),
-                api_key,
-            )?));
-        }
-        if providers.is_empty() {
-            bail!("no endpoints configured — see ~/.oneloop/endpoints.json");
+            providers.push(Box::new(ChatProvider::new(model, api_key)?));
         }
 
         let position_of = |name: &str| providers.iter().position(|p| p.name() == name);
-        // ONELOOP_PROVIDER still selects by name; it just names an endpoint.
-        let requested = env::var("ONELOOP_PROVIDER").ok();
-        let wanted = requested.as_deref().unwrap_or(&config.default);
+        // ONELOOP_MODEL picks a model for this run; ONELOOP_PROVIDER is the
+        // name it had before models and providers were separated.
+        let requested = env::var("ONELOOP_MODEL")
+            .or_else(|_| env::var("ONELOOP_PROVIDER"))
+            .ok();
+        let wanted = requested.as_deref().unwrap_or(&catalog.default);
         let default_index = position_of(wanted).with_context(|| {
             let available: Vec<&str> = providers.iter().map(|p| p.name()).collect();
-            format!(
-                "no endpoint named {wanted}. configured: {}",
-                available.join(", ")
-            )
+            format!("no model named {wanted}. configured: {}", available.join(", "))
         })?;
 
         Ok(Self {
@@ -64,7 +57,7 @@ impl ProviderRegistry {
         self.providers[self.default_index].model()
     }
 
-    /// Context window of the endpoint a request would use. Compaction needs
+    /// Context window of the model a request would use. Compaction needs
     /// this before building the request, so it is resolved by name here
     /// rather than read from a global.
     pub fn context_window_for(&self, name: Option<&str>) -> usize {

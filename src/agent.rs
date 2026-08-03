@@ -83,13 +83,13 @@ impl Agent {
         })
     }
 
-    /// Configured endpoint names, for validating directive tokens before a
+    /// Configured model aliases, for validating directive tokens before a
     /// request is built.
-    pub fn endpoint_names(&self) -> Vec<&str> {
+    pub fn model_names(&self) -> Vec<&str> {
         self.provider_registry.available_providers()
     }
 
-    /// Context window of the endpoint this request will use.
+    /// Context window of the model this request will use.
     pub fn context_window_for(&self, provider: Option<&str>) -> usize {
         self.provider_registry.context_window_for(provider)
     }
@@ -368,7 +368,7 @@ impl Agent {
         Ok(())
     }
 
-    /// One-line provider identification, e.g. `openrouter (deepseek/deepseek-v4-flash)`.
+    /// One-line provider identification, e.g. `openrouter (~deepseek/deepseek-v4-flash-latest)`.
     pub fn provider_line(&self) -> String {
         format!(
             "{} ({})",

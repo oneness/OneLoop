@@ -44,7 +44,7 @@ pub enum OutputFormat {
 ///
 /// - No `#!` at all → default single mode, full input is the body.
 /// - `#!...#!` → directive tokens between the markers, body after closing `#!`.
-pub fn parse_prompt(input: &str, known_endpoints: &[&str]) -> Result<PromptDirectives> {
+pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectives> {
     let trimmed = input.trim();
 
     // No directive marker → plain prompt with default single mode.
@@ -156,13 +156,13 @@ pub fn parse_prompt(input: &str, known_endpoints: &[&str]) -> Result<PromptDirec
             }
             mode_name = Some(token);
         }
-        // Endpoint names
-        else if known_endpoints.contains(token) {
+        // Model aliases
+        else if known_models.contains(token) {
             providers.push(token.to_string());
         } else {
             bail!(
-                "unknown directive token: {token} (endpoints: {})",
-                known_endpoints.join(", ")
+                "unknown directive token: {token} (models: {})",
+                known_models.join(", ")
             );
         }
     }
@@ -230,9 +230,9 @@ fn resolve_mode(mode_name: Option<&str>, providers: Vec<String>) -> Result<RunMo
 mod tests {
     use super::{OutputFormat, PromptDirectives, RunMode, ToolMode, parse_prompt};
 
-    /// Endpoint names for the parser under test. Real names come from
-    /// the registry; these stand in for it.
-    const ENDPOINTS: &[&str] = &["local", "openrouter", "sonnet"];
+    /// Model aliases for the parser under test. Real ones come from the
+    /// catalog; these stand in for it.
+    const MODELS: &[&str] = &["local", "openrouter", "sonnet"];
 
     #[test]
     fn plain_prompt_uses_default_single_mode() {
@@ -323,38 +323,38 @@ mod tests {
 
     #[test]
     fn incompatible_modes_fail() {
-        let got = parse_prompt("#!consensus debate local openrouter#! hello", ENDPOINTS);
+        let got = parse_prompt("#!consensus debate local openrouter#! hello", MODELS);
         assert!(got.is_err());
     }
 
     #[test]
     fn judge_on_single_provider_fails() {
-        let got = parse_prompt("#!local judge:openrouter#! hello", ENDPOINTS);
+        let got = parse_prompt("#!local judge:openrouter#! hello", MODELS);
         assert!(got.is_err());
     }
 
     #[test]
     fn rounds_on_consensus_fails() {
-        let got = parse_prompt("#!consensus local openrouter rounds:2#! hello", ENDPOINTS);
+        let got = parse_prompt("#!consensus local openrouter rounds:2#! hello", MODELS);
         assert!(got.is_err());
     }
 
     #[test]
     fn missing_close_marker_fails() {
-        let got = parse_prompt("#!local hello", ENDPOINTS);
+        let got = parse_prompt("#!local hello", MODELS);
         assert!(got.is_err());
     }
 
     #[test]
     fn empty_directive_fails() {
-        let got = parse_prompt("#!#!#! hello", ENDPOINTS);
+        let got = parse_prompt("#!#!#! hello", MODELS);
         // "!" between markers is an unknown token
         assert!(got.is_err());
     }
 
     #[test]
     fn empty_body_fails() {
-        let got = parse_prompt("#!local#!", ENDPOINTS);
+        let got = parse_prompt("#!local#!", MODELS);
         assert!(got.is_err());
     }
 
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn model_override_in_consensus_fails() {
-        let got = parse_prompt("#!consensus local openrouter model:gpt-4o#! hello", ENDPOINTS);
+        let got = parse_prompt("#!consensus local openrouter model:gpt-4o#! hello", MODELS);
         assert!(got.is_err());
     }
 
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn tools_allowlist_only_commas_errors() {
         // A value of only commas produces no valid names after filtering.
-        let got = parse_prompt("#!tools:,#! hello", ENDPOINTS);
+        let got = parse_prompt("#!tools:,#! hello", MODELS);
         assert!(got.is_err());
     }
 
@@ -413,12 +413,12 @@ mod tests {
     fn tools_on_single_provider_fails() {
         // Only consensus/debate orchestration consumes tools: — reject it
         // elsewhere instead of silently ignoring it.
-        let got = parse_prompt("#!local tools:none#! hello", ENDPOINTS);
+        let got = parse_prompt("#!local tools:none#! hello", MODELS);
         assert!(got.is_err());
     }
 
     fn parsed(input: &str) -> PromptDirectives {
-        match parse_prompt(input, ENDPOINTS) {
+        match parse_prompt(input, MODELS) {
             Ok(value) => value,
             Err(e) => panic!("failed to parse prompt: {e:#}"),
         }

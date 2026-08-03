@@ -42,31 +42,38 @@ maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. Plain
 completion calls (synthesis, compaction, memory extraction) never include
 them, so background work cannot trigger paid searches.
 
-## Endpoints
+## Providers and models
 
 There is one protocol: OpenAI Chat Completions. A local llama-server and a
-hosted model differ only by URL, model name, and whether a key is required,
-so a single `ChatProvider` serves both and "which provider" becomes a naming
-question.
+hosted model differ only by URL, model id, and whether a key is required, so
+a single `ChatProvider` serves both.
 
-Endpoints are named in `~/.oneloop/endpoints.json`; a missing file yields
-built-in defaults of `local` (default, no key) and `openrouter`. Because the
-default needs no credentials, an unconfigured checkout cannot accidentally
-bill a hosted model.
+A provider is a place — base URL plus the environment variable naming its
+key. A model is one thing that place will run, carrying a short alias used
+everywhere else. `catalog.rs` flattens the two into resolved `Model` values
+with provider settings folded in, so nothing downstream knows about the
+nesting. Aliases must be unique across providers, or a directive naming one
+would be ambiguous; that is refused at load.
 
-Override the active endpoint with `ONELOOP_PROVIDER`. Route per-prompt with
-`#!endpoint` directives. Use `#!consensus` or `#!debate` to ask several
-endpoints the same question and synthesize a final answer. Use `model:` in a
-single-endpoint directive to override the model for that prompt.
+Config is `~/.oneloop/config.json`, written from `src/default-config.json`
+on first run. It holds no secrets — a provider names an environment
+variable, and keys live in `auth.json`. The default model is `local`, which
+needs no credentials, so an unconfigured checkout cannot accidentally bill a
+hosted model.
+
+Override the active model with `ONELOOP_MODEL`. Route per-prompt with
+`#!alias` directives. Use `#!consensus` or `#!debate` to ask several models
+the same question and synthesize a final answer. Use `model:` to send a
+one-off wire id.
 
 ## Multi-model orchestration
 
-`#!consensus` and `#!debate` ask several endpoints the same question and have
-a judge synthesize the answers. Because endpoints name models rather than
-vendors, this compares models — `#!consensus local openrouter#!` puts a local
-model against a hosted one. Orchestrated endpoints never get direct tool
-access: they see a single `request_evidence` tool and ask the main agent,
-which executes, caches, and shares results across all of them in the run.
+`#!consensus` and `#!debate` ask several models the same question and have a
+judge synthesize the answers — `#!consensus local flash#!` puts a local model
+against a hosted one, and several models from one provider cost nothing extra
+to configure. Orchestrated models never get direct tool access: they see a
+single `request_evidence` tool and ask the main agent, which executes,
+caches, and shares results across all of them in the run.
 
 The evidence tools (`read`, `shell`) are defined in one table
 (`EVIDENCE_TOOLS` in `evidence.rs`): the allowlist, the `request_evidence`
@@ -120,9 +127,9 @@ an explicitly set env var always wins (blank values are ignored). Supported vari
 
 - `OPENROUTER_API_KEY`
 
-An endpoint names the variable holding its key via `api_key_env`, or omits it
+A provider names the variable holding its key via `api_key_env`, or omits it
 for a server that needs none. `auth.json` is written with owner-only (0600)
-permissions.
+permissions and is the only file holding secrets.
 
 ## Source layout
 
@@ -140,13 +147,13 @@ src/
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL (rustyline), directive dispatch, Ctrl+C handling
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
-  endpoints.rs      Named endpoints from ~/.oneloop/endpoints.json, built-in defaults
+  catalog.rs        Providers and models from ~/.oneloop/config.json; alias resolution
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
   output.rs         Output truncation utilities, ANSI style constants
   providers.rs      Provider trait, request/response types, shared HTTP send/read
   providers/
-    chat.rs         Chat Completions provider (one per endpoint, local or hosted)
-    registry.rs     Endpoint registration, selection, retry with interactive fallback
+    chat.rs         Chat Completions provider (one per model, local or hosted)
+    registry.rs     Model registration, selection, retry with interactive fallback
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution

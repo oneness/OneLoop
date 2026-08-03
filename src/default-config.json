@@ -1,0 +1,26 @@
+{
+  "default": "local",
+  "providers": {
+    "local": {
+      "base_url": "http://localhost:8080/v1",
+      "models": {
+        "local": {
+          "id": "local",
+          "max_tokens": 4096,
+          "context_window": 128000
+        }
+      }
+    },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "web_tools": true,
+      "models": {
+        "flash": {
+          "id": "~deepseek/deepseek-v4-flash-latest",
+          "context_window": 128000
+        }
+      }
+    }
+  }
+}

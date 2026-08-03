@@ -297,7 +297,7 @@
   <div class="box">
     <div class="label">orchestration</div>
     <h2>Multi-Model</h2>
-    <p class="big">Route to any endpoint. Run <strong>consensus</strong> or <strong>debate</strong> across models. A judge synthesizes the final answer.</p>
+    <p class="big">Route to any model. Run <strong>consensus</strong> or <strong>debate</strong> across models. A judge synthesizes the final answer.</p>
   </div>
 </section>
 
@@ -306,7 +306,7 @@
   <div class="box">
     <div class="label">safety</div>
     <h2>Evidence Agent</h2>
-    <p class="big">Orchestrated endpoints <strong>never</strong> get direct tool access.<br>They ask the main agent for context. Cached, shared, deduplicated.</p>
+    <p class="big">Orchestrated models <strong>never</strong> get direct tool access.<br>They ask the main agent for context. Cached, shared, deduplicated.</p>
   </div>
 </section>
 
@@ -334,7 +334,7 @@
     <div class="label">principles</div>
     <div class="principle-num">3</div>
     <h2>The main agent owns safety</h2>
-    <p class="big">Orchestrated endpoints ask for evidence.<br>They do not get direct tool access.</p>
+    <p class="big">Orchestrated models ask for evidence.<br>They do not get direct tool access.</p>
   </div>
 </section>
 
@@ -423,20 +423,20 @@
       <span class="kw">#!</span><span class="str">directive words</span><span class="kw">#!</span> your message here
     </div>
     <p class="big" style="margin-top: 28px; font-size: 16px; text-align: left;">
-      <strong>Single endpoint</strong><br>
-      <code>#!openrouter#! review this code</code>
+      <strong>Single model</strong><br>
+      <code>#!flash#! review this code</code>
     </p>
     <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
       <strong>Model override</strong><br>
-      <code>#!openrouter model:deepseek/deepseek-v3-0324#! refactor this</code>
+      <code>#!flash model:deepseek/deepseek-v3-0324#! refactor this</code>
     </p>
     <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
       <strong>Consensus</strong><br>
-      <code>#!local openrouter#! should we use X?</code>
+      <code>#!local flash#! should we use X?</code>
     </p>
     <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
       <strong>Debate + judge</strong><br>
-      <code>#!debate local openrouter rounds:2 judge:openrouter#! argue this</code>
+      <code>#!debate local flash rounds:2 judge:flash#! argue this</code>
     </p>
   </div>
 </section>
@@ -447,7 +447,7 @@
     <div class="label">how it works</div>
     <h2>Evidence flow</h2>
     <div class="flow">
-      <div class="flow-box">Endpoint calls<br><code>request_evidence</code></div>
+      <div class="flow-box">Model calls<br><code>request_evidence</code></div>
       <div class="flow-arrow">→</div>
       <div class="flow-box hi">Main agent<br>checks cache</div>
       <div class="flow-arrow">→</div>
@@ -455,7 +455,7 @@
       <div class="flow-arrow">→</div>
       <div class="flow-box hi">Cache &amp; return</div>
     </div>
-    <p class="big" style="font-size: 16px; margin-top: 16px;">Same query = cached result. Shared across all endpoints.<br>Shell commands are read-only only (find, grep, git log).</p>
+    <p class="big" style="font-size: 16px; margin-top: 16px;">Same query = cached result. Shared across all models.<br>Shell commands are read-only only (find, grep, git log).</p>
   </div>
 </section>
 
@@ -489,7 +489,7 @@
     <div class="label">reliability</div>
     <h2>Resilience</h2>
     <table>
-      <tr><td><strong>Retry with fallback</strong></td><td>Retries 3× on transient failures, then offers another endpoint; a rejected request fails at once</td></tr>
+      <tr><td><strong>Retry with fallback</strong></td><td>Retries 3× on transient failures, then offers another model; a rejected request fails at once</td></tr>
       <tr><td><strong>Parallel tools</strong></td><td>Multiple calls execute concurrently</td></tr>
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>

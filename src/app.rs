@@ -71,7 +71,7 @@ fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
 }
 
 async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
-    let directives = parse_prompt(input, &agent.endpoint_names())?;
+    let directives = parse_prompt(input, &agent.model_names())?;
     run_directives(agent, directives).await
 }
 
@@ -150,7 +150,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 /// One REPL turn: parse directives, run them racing Ctrl+C, then tidy up.
 /// Errors are reported, never propagated — a failed turn must not end the REPL.
 async fn run_interactive_turn(agent: &mut Agent, line: &str) {
-    let directives = match parse_prompt(line, &agent.endpoint_names()) {
+    let directives = match parse_prompt(line, &agent.model_names()) {
         Ok(directives) => directives,
         Err(e) => {
             eprintln!("{RED}  ✗ {e:#}{RESET}");

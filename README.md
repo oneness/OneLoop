@@ -47,7 +47,7 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 ```
 
 Stores the API key in `~/.oneloop/auth.json`. Only needed to reach hosted
-models — the default `local` endpoint uses no credentials.
+models — the default `local` model uses no credentials.
 
 `./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `skill` (when skill files exist under `.oneloop/skills/`). Web search and page fetching are not OneLoop tools: on OpenRouter, the agent enables the server-side `openrouter:web_search` and `openrouter:web_fetch` tools, which the model invokes when it needs the web and OpenRouter executes itself (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 
@@ -55,66 +55,87 @@ models — the default `local` endpoint uses no credentials.
 
 Directives use `#!directive words#!` followed by the user message:
 
-- `#!openrouter#! explain this file` — route to the `openrouter` endpoint
-- `#!openrouter model:deepseek/deepseek-v3-0324#! refactor this` — specific model
-- `#!model:anthropic/claude-opus-4#! hard problem` — model override, default endpoint
-- `#!local openrouter#! should we do X?` — consensus (2+ endpoints defaults to consensus)
-- `#!consensus local openrouter judge:openrouter#! question` — explicit consensus with judge
-- `#!debate local openrouter rounds:2 judge:openrouter#! question` — debate with 2 rounds
-- `#!local format:md#! summarize` — single endpoint with markdown output
+- `#!flash#! explain this file` — route to the `flash` model
+- `#!flash model:deepseek/deepseek-v3-0324#! refactor this` — one-off wire id
+- `#!model:anthropic/claude-opus-4#! hard problem` — one-off id, default model
+- `#!local flash#! should we do X?` — consensus (2+ models defaults to consensus)
+- `#!consensus local flash judge:flash#! question` — explicit consensus with judge
+- `#!debate local flash rounds:2 judge:flash#! question` — debate with 2 rounds
+- `#!local format:md#! summarize` — single model with markdown output
 
-Tokens between `#!...#!` are space-separated: endpoint names, mode keywords
+Tokens between `#!...#!` are space-separated: model aliases, mode keywords
 (`consensus`, `debate`), and key:value modifiers (`model:provider/name`,
-`judge:openrouter`, `rounds:2`, `tools:none`, `format:md`, `format:html`). No
-`#!` at all means plain prompt with the default endpoint. `model:` is only
-valid in single-endpoint mode; `judge:`, `rounds:`, and `tools:` require
-consensus or debate mode.
+`judge:flash`, `rounds:2`, `tools:none`, `format:md`, `format:html`). No `#!`
+at all means plain prompt with the default model. `model:` is only valid in
+single-model mode; `judge:`, `rounds:`, and `tools:` require consensus or
+debate mode.
 
-## Endpoints
+## Providers and models
 
-Every endpoint speaks OpenAI Chat Completions, so a local llama-server and a
-hosted model differ only by URL, model name, and whether a key is needed.
-They are configured in `~/.oneloop/endpoints.json`:
+A **provider** is a place to send requests — a base URL and, if hosted, the
+environment variable holding its key. A **model** is one thing that place
+will run. OpenRouter is a single provider serving hundreds of models, so the
+URL and key are stated once and the models listed under them.
+
+Every model has a short **alias**, which is the name used everywhere else:
+`#!consensus flash sonnet#!` rather than the wire ids those resolve to.
+Aliases are unique across all providers, so a directive never has to say
+which provider it meant.
+
+Config is `~/.oneloop/config.json`, written from a template on first run:
 
 ```json
 {
   "default": "local",
-  "endpoints": {
-    "local":      { "base_url": "http://localhost:8080/v1",
-                    "model": "local",
-                    "max_tokens": 4096 },
-    "openrouter": { "base_url": "https://openrouter.ai/api/v1",
-                    "model": "deepseek/deepseek-v4-flash",
-                    "api_key_env": "OPENROUTER_API_KEY",
-                    "web_tools": true }
+  "providers": {
+    "local": {
+      "base_url": "http://localhost:8080/v1",
+      "models": {
+        "local": { "id": "local", "max_tokens": 4096, "context_window": 128000 }
+      }
+    },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "web_tools": true,
+      "models": {
+        "flash":  { "id": "~deepseek/deepseek-v4-flash-latest", "context_window": 128000 },
+        "sonnet": { "id": "anthropic/claude-sonnet-5", "context_window": 200000 }
+      }
+    }
   }
 }
 ```
 
-Without that file those two endpoints are the built-in defaults, and `local`
-is the default — an unconfigured checkout cannot accidentally bill a hosted
-model. Add as many endpoints as you like; the names are what `#!consensus
-local openrouter#!` refers to.
+Adding a model for consensus is a few lines under its provider — no repeated
+URL, no repeated key. Provider keys: `base_url`, `api_key_env` (omit for a
+server that needs none), `web_tools`, `models`. Model keys: `id` (what goes
+on the wire), `context_window`, `max_tokens`, `temperature`, `web_tools`;
+model settings override the provider's.
 
-Per-endpoint keys: `base_url`, `model`, `api_key_env` (omit for a server that
-needs no key), `web_tools`, `max_tokens`, `temperature`.
+`default` names the alias used when nothing else is asked for. It is `local`
+out of the box, which needs no credentials, so an unconfigured checkout
+cannot accidentally bill a hosted model.
 
-Override with environment variables:
+**This file holds no secrets.** A provider names the environment variable
+its key lives in; the key itself is written by `oneloop login openrouter`
+into `~/.oneloop/auth.json` (0600). That keeps the config shareable —
+committable to dotfiles, diffable, pasteable — which it could not be if a
+key were in it.
 
-- `ONELOOP_PROVIDER=<endpoint>` — use a different endpoint for this run
-- `ONELOOP_OPENROUTER_MODEL` — override the default endpoint's model
-- `ONELOOP_OPENROUTER_BASE_URL` — override the default endpoint's URL
-- `ONELOOP_OPENROUTER_MAX_TOKENS` — override the default endpoint's output cap
-- `ONELOOP_OPENROUTER_TEMPERATURE` — override the default endpoint's temperature
-- `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the default endpoint
+Override for a single run:
 
-Only OpenRouter needs credentials (`oneloop login openrouter`). Earlier
-versions also supported direct OpenAI and Anthropic providers; any
-`openai`/`anthropic` entries left in `~/.oneloop/auth.json` are ignored.
+- `ONELOOP_MODEL=<alias>` — use a different model
+- `ONELOOP_CONTEXT_WINDOW_TOKENS` — override the active model's window
+- `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the active model
+
+`ONELOOP_PROVIDER` is accepted as the old name for `ONELOOP_MODEL`. Earlier
+versions had direct OpenAI and Anthropic providers; any `openai`/`anthropic`
+entries left in `auth.json` are ignored.
 
 ### Running the local server
 
-The `local` endpoint expects an OpenAI-compatible server on port 8080. This
+The `local` provider expects an OpenAI-compatible server on port 8080. This
 flake builds and runs one:
 
 ```bash

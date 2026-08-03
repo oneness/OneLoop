@@ -100,7 +100,7 @@ When to use `for` loops instead:
     providers.rs      ← trait, shared types/helpers, pub use re-exports
     providers/
       chat.rs         ← the Chat Completions provider
-      registry.rs     ← endpoint registration, selection, retry
+      registry.rs     ← model registration, selection, retry
   ```
 
 ## Environment Variables
