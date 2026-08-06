@@ -22,9 +22,8 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
-    /// Scan global (~/.oneloop/skills/) then project-local (.oneloop/skills/) skill dirs.
-    /// Project-local skills shadow global ones with the same name.
-    /// Returns None if no skill files are found.
+    /// Global (~/.oneloop/skills/) then project-local (.oneloop/skills/), so
+    /// a project-local skill shadows a global one of the same name.
     pub fn new(cwd: &Path) -> Option<Self> {
         let mut skills: Vec<Skill> = Vec::new();
 

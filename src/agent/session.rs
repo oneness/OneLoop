@@ -88,10 +88,8 @@ impl Session {
         &self.path
     }
 
-    /// Start a new session file, preserving the old one on disk.
-    /// Returns a fresh session with empty messages and a new file path.
-    /// Suffix is always derived from the base date, so files go
-    /// 2026-04-20.jsonl, 2026-04-20-001.jsonl, 2026-04-20-002.jsonl, etc.
+    /// The old file stays on disk. Suffixes derive from the base date:
+    /// 2026-04-20.jsonl, 2026-04-20-001.jsonl, 2026-04-20-002.jsonl.
     pub fn rotate(&self) -> Result<Self> {
         let sessions_dir = self
             .path
@@ -195,8 +193,6 @@ fn append_message(path: &Path, message: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Highest numeric suffix among `<prefix>-NNN.jsonl` files in the directory,
-/// if any exist.
 fn max_suffix(sessions_dir: &Path, prefix: &str) -> Option<u32> {
     let entries = fs::read_dir(sessions_dir).ok()?;
     entries
@@ -210,8 +206,7 @@ fn max_suffix(sessions_dir: &Path, prefix: &str) -> Option<u32> {
         .max()
 }
 
-/// Find the latest session file for a given date: the highest-suffixed file
-/// (e.g. "2026-04-20-002.jsonl") or the base file ("2026-04-20.jsonl").
+/// The highest-suffixed file for the date, or the base one.
 fn find_latest_session(sessions_dir: &Path, date: &str) -> PathBuf {
     match max_suffix(sessions_dir, date) {
         Some(n) => sessions_dir.join(format!("{date}-{n:03}.jsonl")),

@@ -14,21 +14,16 @@ use crate::providers::ProviderRequest;
 /// Approximate characters per token (conservative for mixed code/prose).
 const CHARS_PER_TOKEN: usize = 4;
 
-/// Default threshold percentage to trigger auto-compaction.
 const DEFAULT_COMPACTION_THRESHOLD: u8 = 85;
 
-/// Maximum characters to keep from a tool result when stripping.
 const TOOL_RESULT_MAX_CHARS: usize = 200;
 
-/// Maximum tokens of recent user messages to preserve after compaction.
 const RECENT_USER_MESSAGES_MAX_TOKENS: usize = 20_000;
 
-/// Prefix prepended to the compaction summary in the new session.
 pub const SUMMARY_PREFIX: &str = "\
 Another language model started working on this task and produced a handoff summary. \
 Use it to build on the work already done and avoid duplicating effort.\n\n";
 
-/// The prompt sent to the model to generate a compacted summary.
 const COMPACTION_PROMPT: &str = r#"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
 Include:
@@ -39,14 +34,10 @@ Include:
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work."#;
 
-/// Check whether the session is near the context limit and, if so, hand off:
-/// summarize the session, distil durable facts into memory.md, and start a
-/// fresh session seeded with the summary and recent user messages.
-pub async fn auto_compact_if_needed(
-    agent: &mut Agent,
-    provider_override: Option<&str>,
-) -> Result<()> {
-    let context_window = agent.context_window_for(provider_override);
+/// Summarize, distil to memory.md, and reseed a fresh session with the
+/// summary and recent user messages.
+pub async fn auto_compact_if_needed(agent: &mut Agent, model_override: Option<&str>) -> Result<()> {
+    let context_window = agent.models.context_window_for(model_override);
     if !should_compact(
         agent.session.messages(),
         agent.system_prompt_chars(),
@@ -60,7 +51,7 @@ pub async fn auto_compact_if_needed(
     let tokens_before = estimate_tokens(agent.session.messages(), agent.system_prompt_chars());
     let compact_start = Instant::now();
 
-    let Some(summary) = generate_summary(agent, provider_override).await else {
+    let Some(summary) = generate_summary(agent, model_override).await else {
         return Ok(()); // failure already reported; keep the session running
     };
     extract_memory(agent, &summary).await;
@@ -89,9 +80,8 @@ pub async fn auto_compact_if_needed(
     Ok(())
 }
 
-/// Ask the provider for a handoff summary of the session. Returns None
-/// (after reporting) on failure — compaction is best-effort.
-async fn generate_summary(agent: &mut Agent, provider_override: Option<&str>) -> Option<String> {
+/// None (after reporting) on failure — compaction is best-effort.
+async fn generate_summary(agent: &mut Agent, model_override: Option<&str>) -> Option<String> {
     let spinner = SpinnerGuard::new("compacting...");
 
     let mut compact_messages = strip_tool_outputs(agent.session.messages());
@@ -103,13 +93,13 @@ async fn generate_summary(agent: &mut Agent, provider_override: Option<&str>) ->
         system_prompt: agent.config.system_prompt.clone(),
         messages: compact_messages,
         tools: Vec::new(),
-        model_override: None,
+        model_id_override: None,
     };
 
     let result = agent
-        .provider_registry
+        .models
         .complete_with_retry(
-            provider_override,
+            model_override,
             request,
             Some(spinner.stop_callback()),
             Some(spinner.start_callback("compacting...")),
@@ -118,7 +108,7 @@ async fn generate_summary(agent: &mut Agent, provider_override: Option<&str>) ->
     spinner.stop();
 
     match result {
-        Ok((_used_provider, response)) => Some(response.content),
+        Ok((_used_model, response)) => Some(response.content),
         Err(e) => {
             eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}");
             None
@@ -126,28 +116,24 @@ async fn generate_summary(agent: &mut Agent, provider_override: Option<&str>) ->
     }
 }
 
-/// Distil durable facts from the summary into memory.md and reload the
-/// system prompt so new memory is visible for the remainder of this session.
-/// Failures warn and are otherwise ignored — memory is a background step
-/// that must never block the loop.
+/// Distil durable facts into memory.md and reload the system prompt.
+/// Failures warn and are otherwise ignored — a background step must never
+/// block the loop.
 async fn extract_memory(agent: &mut Agent, summary: &str) {
-    // The summary (not the full context) goes to a second, cheap call.
-    // Always uses the default provider — memory is infrastructure, not
-    // user-directed, so the provider_override from the prompt must not
-    // carry over (it may name a provider that is rate-limited or
-    // unconfigured). complete_once: single attempt, no retries, no
-    // interactive stdin prompt.
+    // The active model, not the prompt's override: memory is infrastructure,
+    // and the override may name a model that is rate-limited or unconfigured.
+    // `complete_once` keeps it to one attempt with no interactive prompt.
     let memory_request = ProviderRequest {
         system_prompt: None,
         messages: vec![Message::User(UserMessage {
             content: memory_extraction_message(summary),
         })],
         tools: Vec::new(),
-        model_override: None,
+        model_id_override: None,
     };
     match agent
-        .provider_registry
-        .complete_once(agent.provider_registry.active_name(), memory_request)
+        .models
+        .complete_once(&agent.models.active().alias, memory_request)
         .await
     {
         Ok(memory_response) => {
@@ -209,12 +195,9 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
     (system_prompt_chars + msg_chars) / CHARS_PER_TOKEN
 }
 
-/// Check whether the session has exceeded the compaction threshold.
-///
-/// `context_window` is the endpoint's, not a global: a local server rejects
-/// anything over the `-c` it was started with, and borrowing a hosted
-/// model's 128k here means the request is refused outright with nothing to
-/// compact after the fact.
+/// `context_window` is the model's, not a global: borrowing a hosted model's
+/// 128k for a local server started with a smaller `-c` gets the request
+/// refused outright, with nothing to compact after the fact.
 pub fn should_compact(
     messages: &[Message],
     system_prompt_chars: usize,

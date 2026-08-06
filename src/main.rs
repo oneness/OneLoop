@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod catalog;
 mod directives;
+mod models;
 mod output;
 mod providers;
 mod tools;

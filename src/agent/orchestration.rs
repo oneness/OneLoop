@@ -1,8 +1,8 @@
-//! Consensus, debate, and multi-provider orchestration.
+//! Consensus, debate, and multi-model orchestration.
 //!
-//! Providers never get direct tool access — they request evidence through the
-//! main agent via `request_evidence`. The main agent executes, caches, and
-//! shares results.
+//! Orchestrated models never get direct tool access — they request evidence
+//! through the main agent via `request_evidence`. The main agent executes,
+//! caches, and shares results.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -15,14 +15,15 @@ use crate::agent::evidence::SharedCache;
 use crate::agent::spinner::SpinnerGuard;
 use crate::agent::{AgentContext, messages};
 use crate::directives::ToolMode;
+use crate::models::ModelRegistry;
 use crate::output::{DIM, RESET};
-use crate::providers::{ProviderRegistry, ProviderRequest};
+use crate::providers::ProviderRequest;
 use crate::tools::{ToolDefinition, ToolRegistry, ToolResult};
 
 /// Shared context for orchestration operations — avoids passing the same
 /// handful of parameters through every function signature.
 pub struct OrchestrationCtx<'a> {
-    pub provider_registry: &'a Arc<ProviderRegistry>,
+    pub models: &'a Arc<ModelRegistry>,
     pub tool_registry: &'a ToolRegistry,
     pub system_prompt: &'a Option<String>,
     pub cwd: &'a Path,
@@ -30,10 +31,10 @@ pub struct OrchestrationCtx<'a> {
 }
 
 impl<'a> OrchestrationCtx<'a> {
-    /// The immutable subset used for provider response collection.
-    fn provider_ctx(&self) -> ProviderCtx<'a> {
-        ProviderCtx {
-            provider_registry: self.provider_registry,
+    /// The immutable subset used for collecting model responses.
+    fn model_ctx(&self) -> ModelCtx<'a> {
+        ModelCtx {
+            models: self.models,
             tool_registry: self.tool_registry,
             system_prompt: self.system_prompt,
             cwd: self.cwd,
@@ -46,7 +47,7 @@ impl<'a> OrchestrationCtx<'a> {
 fn format_labeled_responses(responses: &[(String, String)]) -> String {
     responses
         .iter()
-        .map(|(provider, content)| format!("── {provider} ──\n{}", content.trim()))
+        .map(|(model, content)| format!("── {model} ──\n{}", content.trim()))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -100,38 +101,38 @@ pub fn validate_orchestration_tools(tools: &ToolMode) -> Result<()> {
 
 // ── Orchestration ─────────────────────────────────────────────────────
 
-/// Shared opening for consensus and debate: validate providers, judge, and
+/// Shared opening for consensus and debate: validate the models, judge, and
 /// tools, then record the user prompt in the session.
 fn begin_orchestration(
     ctx: &mut OrchestrationCtx<'_>,
     prompt: &str,
-    providers: &[String],
+    models: &[String],
     judge: &Option<String>,
     tools: &ToolMode,
 ) -> Result<()> {
-    providers
-        .iter()
-        .try_for_each(|p| ctx.provider_registry.validate_provider(p))?;
+    for alias in models {
+        ctx.models.get(alias)?;
+    }
     if let Some(judge) = judge {
-        ctx.provider_registry.validate_provider(judge)?;
+        ctx.models.get(judge)?;
     }
     validate_orchestration_tools(tools)?;
     ctx.session.push_user(prompt.to_string())
 }
 
 /// Shared closing for consensus and debate: pick the judge (explicit, or the
-/// first provider), synthesize the transcript, print and record the result.
+/// first model), synthesize the transcript, print and record the result.
 async fn synthesize_and_record(
     ctx: &mut OrchestrationCtx<'_>,
     judge: &Option<String>,
-    providers: &[String],
+    models: &[String],
     prompt: &str,
     transcript: &[(String, String)],
     label: &str,
 ) -> Result<()> {
-    let judge_name = judge.as_deref().unwrap_or_else(|| providers[0].as_str());
+    let judge_name = judge.as_deref().unwrap_or_else(|| models[0].as_str());
     let synthesis = synthesize_consensus(
-        ctx.provider_registry,
+        ctx.models,
         ctx.system_prompt,
         judge_name,
         prompt,
@@ -147,35 +148,34 @@ async fn synthesize_and_record(
 pub async fn run_consensus(
     ctx: &mut OrchestrationCtx<'_>,
     prompt: &str,
-    providers: &[String],
+    models: &[String],
     judge: &Option<String>,
     tools: &ToolMode,
 ) -> Result<()> {
-    begin_orchestration(ctx, prompt, providers, judge, tools)?;
+    begin_orchestration(ctx, prompt, models, judge, tools)?;
 
     let responses =
-        collect_provider_responses(&ctx.provider_ctx(), providers, prompt, "consensus", tools)
-            .await?;
+        collect_model_responses(&ctx.model_ctx(), models, prompt, "consensus", tools).await?;
     let initial_output = format_labeled_responses(&responses);
     println!("{initial_output}");
     ctx.session.push_assistant(initial_output)?;
 
-    synthesize_and_record(ctx, judge, providers, prompt, &responses, "Consensus").await
+    synthesize_and_record(ctx, judge, models, prompt, &responses, "Consensus").await
 }
 
 pub async fn run_debate(
     ctx: &mut OrchestrationCtx<'_>,
     prompt: &str,
-    providers: &[String],
+    models: &[String],
     judge: &Option<String>,
     rounds: usize,
     tools: &ToolMode,
 ) -> Result<()> {
-    begin_orchestration(ctx, prompt, providers, judge, tools)?;
+    begin_orchestration(ctx, prompt, models, judge, tools)?;
 
-    let pctx = ctx.provider_ctx();
+    let mctx = ctx.model_ctx();
     let mut transcript =
-        collect_provider_responses(&pctx, providers, prompt, "initial answer", tools).await?;
+        collect_model_responses(&mctx, models, prompt, "initial answer", tools).await?;
     let mut output = format!(
         "── Round 1: Initial Answers ──\n\n{}",
         format_labeled_responses(&transcript)
@@ -184,14 +184,9 @@ pub async fn run_debate(
 
     for round in 1..=rounds {
         let debate_prompt = format_debate_round_prompt(prompt, &transcript, round);
-        let critiques = collect_provider_responses(
-            &pctx,
-            providers,
-            &debate_prompt,
-            "critique/revision",
-            tools,
-        )
-        .await?;
+        let critiques =
+            collect_model_responses(&mctx, models, &debate_prompt, "critique/revision", tools)
+                .await?;
         let section = format!(
             "── Round {}: Critiques/Revisions ──\n\n{}",
             round + 1,
@@ -205,11 +200,11 @@ pub async fn run_debate(
 
     ctx.session.push_assistant(output)?;
 
-    synthesize_and_record(ctx, judge, providers, prompt, &transcript, "Final Consensus").await
+    synthesize_and_record(ctx, judge, models, prompt, &transcript, "Final Consensus").await
 }
 
 async fn synthesize_consensus(
-    provider_registry: &ProviderRegistry,
+    models: &ModelRegistry,
     system_prompt: &Option<String>,
     judge: &str,
     prompt: &str,
@@ -221,36 +216,36 @@ async fn synthesize_consensus(
         system_prompt: system_prompt.clone(),
         messages: vec![messages::Message::User(messages::UserMessage { content })],
         tools: Vec::new(),
-        model_override: None,
+        model_id_override: None,
     };
 
     let spinner = SpinnerGuard::new("synthesizing consensus...");
-    let response = provider_registry.complete_once(judge, request).await;
+    let response = models.complete_once(judge, request).await;
     spinner.stop();
     response.map(|r| r.content)
 }
 
-/// Immutable context for provider response collection (no session needed).
-struct ProviderCtx<'a> {
-    provider_registry: &'a Arc<ProviderRegistry>,
+/// Immutable context for collecting model responses (no session needed).
+struct ModelCtx<'a> {
+    models: &'a Arc<ModelRegistry>,
     tool_registry: &'a ToolRegistry,
     system_prompt: &'a Option<String>,
     cwd: &'a Path,
 }
 
-async fn collect_provider_responses(
-    pctx: &ProviderCtx<'_>,
-    providers: &[String],
+async fn collect_model_responses(
+    mctx: &ModelCtx<'_>,
+    models: &[String],
     prompt: &str,
     purpose: &str,
     tools: &ToolMode,
 ) -> Result<Vec<(String, String)>> {
-    // If tools:none, run a simple single-call per provider (no evidence loop).
+    // If tools:none, run a simple single call per model (no evidence loop).
     if matches!(tools, ToolMode::None) {
-        return collect_provider_responses_no_tools(
-            pctx.provider_registry,
-            pctx.system_prompt,
-            providers,
+        return collect_model_responses_no_tools(
+            mctx.models,
+            mctx.system_prompt,
+            models,
             prompt,
             purpose,
         )
@@ -268,16 +263,16 @@ async fn collect_provider_responses(
 
     let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
 
-    // Run providers in parallel, each with its own evidence loop.
-    let handles: Vec<_> = providers
+    // Run the models in parallel, each with its own evidence loop.
+    let handles: Vec<_> = models
         .iter()
-        .map(|provider_name| {
+        .map(|alias| {
             tokio::spawn(run_evidence_loop(EvidenceLoop {
-                provider_name: provider_name.clone(),
-                provider_registry: pctx.provider_registry.clone(),
-                tool_registry: pctx.tool_registry.clone(),
-                system_prompt: pctx.system_prompt.clone(),
-                cwd: pctx.cwd.to_path_buf(),
+                alias: alias.clone(),
+                models: mctx.models.clone(),
+                tool_registry: mctx.tool_registry.clone(),
+                system_prompt: mctx.system_prompt.clone(),
+                cwd: mctx.cwd.to_path_buf(),
                 cache: cache.clone(),
                 allowed: allowed.clone(),
                 evidence_tool_def: evidence_tool_def.clone(),
@@ -294,16 +289,16 @@ async fn collect_provider_responses(
         .map(|res| match res {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e),
-            Err(join_err) => bail!("provider task failed: {join_err}"),
+            Err(join_err) => bail!("model task failed: {join_err}"),
         })
         .collect()
 }
 
-/// Owned inputs for one provider's evidence loop; each loop runs as its
-/// own tokio task.
+/// Owned inputs for one model's evidence loop; each loop runs as its own
+/// tokio task.
 struct EvidenceLoop {
-    provider_name: String,
-    provider_registry: Arc<ProviderRegistry>,
+    alias: String,
+    models: Arc<ModelRegistry>,
     tool_registry: ToolRegistry,
     system_prompt: Option<String>,
     cwd: PathBuf,
@@ -314,12 +309,12 @@ struct EvidenceLoop {
     max_iterations: usize,
 }
 
-/// Ask one provider repeatedly, serving its request_evidence calls through
-/// the shared cache, until it gives a final answer or iterations run out.
+/// Ask one model repeatedly, serving its request_evidence calls through the
+/// shared cache, until it gives a final answer or iterations run out.
 async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
     let EvidenceLoop {
-        provider_name,
-        provider_registry,
+        alias,
+        models,
         tool_registry,
         system_prompt,
         cwd,
@@ -336,22 +331,20 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
             content: prompt,
         })],
         tools: vec![evidence_tool_def],
-        model_override: None,
+        model_id_override: None,
     };
-    let provider_label = provider_name.clone();
+    let label = alias.clone();
     let ctx = AgentContext { cwd };
 
-    // If iterations run out while the provider is still requesting evidence,
+    // If iterations run out while the model is still requesting evidence,
     // its last text (possibly empty) is the best answer available.
     let mut last_content = String::new();
     for _ in 0..max_iterations {
-        let response = provider_registry
-            .complete_once(&provider_name, req.clone())
-            .await?;
+        let response = models.complete_once(&alias, req.clone()).await?;
 
         // No tool calls → final answer.
         if response.tool_calls.is_empty() {
-            return Ok((provider_label, response.content));
+            return Ok((label, response.content));
         }
 
         // Process each evidence request through the cache.
@@ -366,7 +359,11 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
                 continue;
             }
 
-            let evidence_tool = tc.arguments.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+            let evidence_tool = tc
+                .arguments
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let evidence_args = tc
                 .arguments
                 .get("args")
@@ -378,7 +375,7 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let label =
+            let request_label =
                 crate::agent::evidence::format_request(description, evidence_tool, &evidence_args);
 
             let (result, cached) = crate::agent::evidence::execute(
@@ -393,22 +390,20 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
             let cache_tag = if cached { " (cached)" } else { "" };
 
             if result.is_error {
-                eprintln!("{DIM}    {provider_label} ✗ {label}{cache_tag}{RESET}");
+                eprintln!("{DIM}    {label} ✗ {request_label}{cache_tag}{RESET}");
             } else {
                 let lines = result.content.lines().count();
                 let bytes = result.content.len();
                 eprintln!(
-                    "{DIM}    {provider_label} ✓ {label} ({lines} lines, {bytes} bytes){cache_tag}{RESET}"
+                    "{DIM}    {label} ✓ {request_label} ({lines} lines, {bytes} bytes){cache_tag}{RESET}"
                 );
             }
 
             tool_results.push(result);
         }
 
-        // Append tool call + result messages.
-        // Only include assistant text if non-empty. Providers have rejected
-        // empty text blocks outright, and a turn that carries only tool
-        // calls is expected to have no text — the call is the message.
+        // Assistant text only when non-empty: providers have rejected empty
+        // text blocks outright.
         use crate::agent::messages::{
             AssistantMessage, Message, ToolCall as MsgToolCall, ToolResultMessage,
         };
@@ -437,14 +432,14 @@ async fn run_evidence_loop(task: EvidenceLoop) -> Result<(String, String)> {
         last_content = response.content;
     }
 
-    Ok((provider_label, last_content))
+    Ok((label, last_content))
 }
 
-/// Simple single-call per provider, no tools.
-async fn collect_provider_responses_no_tools(
-    provider_registry: &Arc<ProviderRegistry>,
+/// Simple single call per model, no tools.
+async fn collect_model_responses_no_tools(
+    models: &Arc<ModelRegistry>,
     system_prompt: &Option<String>,
-    providers: &[String],
+    aliases: &[String],
     prompt: &str,
     purpose: &str,
 ) -> Result<Vec<(String, String)>> {
@@ -454,22 +449,19 @@ async fn collect_provider_responses_no_tools(
             content: prompt.to_string(),
         })],
         tools: Vec::new(),
-        model_override: None,
+        model_id_override: None,
     };
 
     let spinner = SpinnerGuard::new(&format!("multi-model {purpose}..."));
-    let provider_registry = provider_registry.clone();
-    let handles: Vec<_> = providers
+    let handles: Vec<_> = aliases
         .iter()
-        .map(|provider_name| {
-            let provider_name = provider_name.clone();
-            let provider_registry = provider_registry.clone();
+        .map(|alias| {
+            let alias = alias.clone();
+            let models = models.clone();
             let request = request.clone();
             async move {
-                let response = provider_registry
-                    .complete_once(&provider_name, request)
-                    .await?;
-                Ok::<_, anyhow::Error>((provider_name, response.content))
+                let response = models.complete_once(&alias, request).await?;
+                Ok::<_, anyhow::Error>((alias, response.content))
             }
         })
         .collect();

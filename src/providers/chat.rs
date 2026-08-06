@@ -1,40 +1,18 @@
+//! OpenAI Chat Completions — the one protocol OneLoop speaks.
+//!
+//! A local llama-server and a hosted provider differ only by URL, model id,
+//! and whether a key is required, so one module serves both. A second
+//! protocol would be a module beside this one and a `match` in
+//! `Model::complete`.
+
 use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
-use crate::catalog::Model;
+use crate::models::Model;
 
-use super::{Provider, ProviderRequest, ProviderResponse, send_and_read};
-
-/// One model, reachable over OpenAI Chat Completions. A local llama-server
-/// and a hosted provider differ only by URL, model id, and whether a key is
-/// required, so one implementation serves both.
-pub struct ChatProvider {
-    client: reqwest::Client,
-    api_key: Option<String>,
-    model: Model,
-}
-
-impl ChatProvider {
-    pub fn new(model: Model, api_key: Option<String>) -> Result<Self> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .with_context(|| format!("failed to build HTTP client for {}", model.alias))?;
-
-        Ok(Self {
-            client,
-            api_key,
-            model,
-        })
-    }
-}
+use super::{ProviderRequest, ProviderResponse, send_and_read};
 
 // ── Request types (Chat Completions) ──────────────────────────────────
 
@@ -63,11 +41,9 @@ struct ChatToolDefinition {
     function: Option<ChatFunctionDefinition>,
 }
 
-/// Append OpenRouter's server-side web tools to agentic requests. The model
-/// decides when to search or fetch; OpenRouter executes server-side and the
-/// results come back inside the assistant message. Plain completion calls
-/// (no tools) never get them, so synthesis, compaction, and memory
-/// extraction can't trigger paid searches.
+/// OpenRouter executes these itself and returns the results inside the
+/// assistant message. Plain completion calls never get them, so synthesis,
+/// compaction, and memory extraction cannot trigger paid searches.
 fn with_web_tools(mut tools: Vec<ChatToolDefinition>, enabled: bool) -> Vec<ChatToolDefinition> {
     if enabled && !tools.is_empty() {
         for name in ["openrouter:web_search", "openrouter:web_fetch"] {
@@ -157,12 +133,9 @@ struct ChatChoiceMessage {
 
 /// Text to show for an assistant turn.
 ///
-/// A turn that carries tool calls is expected to have empty content — the
-/// call is the message, and the model's thinking is not something to store
-/// as if it had been said. Only a turn with neither content nor tool calls
-/// is a dead end, and there the reasoning is better than nothing: it is the
-/// difference between the model's answer and "I wasn't able to generate a
-/// response".
+/// A turn with tool calls is expected to have no content — the call is the
+/// message. Only a turn with neither is a dead end, and there the reasoning
+/// beats "I wasn't able to generate a response".
 fn assistant_content(
     content: Option<String>,
     reasoning_content: Option<String>,
@@ -177,14 +150,12 @@ fn assistant_content(
         .unwrap_or_default()
 }
 
-/// Decode a tool call's `arguments`, keeping the raw text when it will not parse.
+/// Keeps the raw text when it will not parse.
 ///
-/// A truncated call is not a transport failure, so failing the whole response
-/// is the wrong shape: the retry spends another minute of local inference and
-/// arrives at the same place, and the turn dies with the work half-applied.
-/// The model is the only party that can fix this, and it can only do so if it
-/// is told. Returning the raw text keeps the call intact for the history the
-/// API requires, and the error travels alongside it.
+/// A truncated call is not a transport failure: retrying arrives at the same
+/// place a minute later, and the model is the only party that can fix it —
+/// which it can only do if told. The raw text keeps the call intact for the
+/// history the API requires, and the error travels alongside it.
 fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
     match arguments {
         Value::String(text) => match serde_json::from_str(&text) {
@@ -195,114 +166,87 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
     }
 }
 
-#[async_trait]
-impl Provider for ChatProvider {
-    fn name(&self) -> &str {
-        &self.model.alias
+pub async fn complete(model: &Model, request: ProviderRequest) -> Result<ProviderResponse> {
+    let wire_id = request
+        .model_id_override
+        .unwrap_or_else(|| model.id.clone());
+
+    let mut messages = Vec::new();
+    if let Some(system) = request.system_prompt {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: Some(system),
+            tool_call_id: None,
+            tool_calls: None,
+        });
     }
+    messages.extend(to_chat_messages(request.messages));
 
-    fn model(&self) -> String {
-        self.model.id.clone()
-    }
-
-    fn context_window(&self) -> usize {
-        self.model.context_window
-    }
-
-    async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
-        let model = request
-            .model_override
-            .as_deref()
-            .unwrap_or(&self.model.id)
-            .to_string();
-
-        // Inject system prompt as the first message if present.
-        let mut messages = Vec::new();
-        if let Some(system) = request.system_prompt {
-            messages.push(ChatMessage {
-                role: "system".to_string(),
-                content: Some(system),
-                tool_call_id: None,
-                tool_calls: None,
-            });
-        }
-        messages.extend(to_chat_messages(request.messages));
-
-        let tools: Vec<ChatToolDefinition> = request
-            .tools
-            .into_iter()
-            .map(|tool| ChatToolDefinition {
-                r#type: "function".to_string(),
-                function: Some(ChatFunctionDefinition {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.schema,
-                }),
-            })
-            .collect();
-        let tools = with_web_tools(tools, self.model.web_tools);
-
-        // Only set tool_choice when tools are actually provided — some models
-        // reject tool_choice: "auto" when the tools array is empty.
-        let tool_choice = if tools.is_empty() {
-            None
-        } else {
-            Some("auto".to_string())
-        };
-
-        let body = ChatRequest {
-            model,
-            messages,
-            tools,
-            tool_choice,
-            max_tokens: self.model.max_tokens,
-            temperature: self.model.temperature,
-        };
-
-        let url = format!(
-            "{}/chat/completions",
-            self.model.base_url.trim_end_matches('/')
-        );
-        let mut post = self.client.post(url).json(&body);
-        // A local server needs no credentials, and sending an empty bearer
-        // token makes some servers reject the request outright.
-        if let Some(key) = &self.api_key {
-            post = post.header("Authorization", format!("Bearer {key}"));
-        }
-        let text = send_and_read(post, &self.model.alias).await?;
-
-        let parsed: ChatResponse = serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse {} response JSON", self.model.alias))?;
-
-        let Some(choice) = parsed.choices.into_iter().next() else {
-            bail!("{} response contained no choices", self.model.alias);
-        };
-
-        let tool_calls = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tool_call| {
-                let (arguments, parse_error) = decode_tool_arguments(tool_call.function.arguments);
-                ToolCall {
-                    id: tool_call.id,
-                    name: tool_call.function.name,
-                    arguments,
-                    parse_error,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(ProviderResponse {
-            content: assistant_content(
-                choice.message.content,
-                choice.message.reasoning_content,
-                !tool_calls.is_empty(),
-            ),
-            tool_calls,
+    let tools: Vec<ChatToolDefinition> = request
+        .tools
+        .into_iter()
+        .map(|tool| ChatToolDefinition {
+            r#type: "function".to_string(),
+            function: Some(ChatFunctionDefinition {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.schema,
+            }),
         })
-    }
+        .collect();
+    let tools = with_web_tools(tools, model.web_tools);
+
+    // Only set tool_choice when tools are actually provided — some models
+    // reject tool_choice: "auto" when the tools array is empty.
+    let tool_choice = if tools.is_empty() {
+        None
+    } else {
+        Some("auto".to_string())
+    };
+
+    let body = ChatRequest {
+        model: wire_id,
+        messages,
+        tools,
+        tool_choice,
+        max_tokens: model.max_tokens,
+        temperature: model.temperature,
+    };
+
+    let post = model.provider.post("chat/completions").json(&body);
+    let text = send_and_read(post, &model.alias).await?;
+
+    let parsed: ChatResponse = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {} response JSON", model.alias))?;
+
+    let Some(choice) = parsed.choices.into_iter().next() else {
+        bail!("{} response contained no choices", model.alias);
+    };
+
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tool_call| {
+            let (arguments, parse_error) = decode_tool_arguments(tool_call.function.arguments);
+            ToolCall {
+                id: tool_call.id,
+                name: tool_call.function.name,
+                arguments,
+                parse_error,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(ProviderResponse {
+        content: assistant_content(
+            choice.message.content,
+            choice.message.reasoning_content,
+            !tool_calls.is_empty(),
+        ),
+        tool_calls,
+    })
 }
 
 fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {

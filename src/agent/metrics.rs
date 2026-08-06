@@ -15,7 +15,6 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Create a metrics file matching the given session path.
     /// `.oneloop/sessions/2026-04-20.jsonl` → `.oneloop/metrics/2026-04-20.jsonl`
     pub fn from_session_path(session_path: &Path) -> Result<Self> {
         let project_dir = session_path
@@ -40,7 +39,7 @@ impl Metrics {
         })
     }
 
-    /// Append a metrics event. Errors are printed to stderr, never propagated.
+    /// Errors are printed to stderr, never propagated.
     pub fn log(&self, event: &str, data: Value) {
         if let Err(e) = self.try_log(event, data) {
             eprintln!("{DIM}  [metrics] {e:#}{RESET}");
@@ -71,10 +70,5 @@ impl Metrics {
             .with_context(|| format!("failed to write metrics: {}", self.path.display()))?;
 
         Ok(())
-    }
-
-    #[expect(dead_code, reason = "useful for debugging, will be needed later")]
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }

@@ -21,6 +21,8 @@ hosted model only when you ask it to. One loop, four tools, zero config.
 Starts an interactive REPL. Type your message and press Enter.
 
 Commands:
+- `/model` — list the configured models and switch to one
+- `/model <alias>` — switch straight to that model
 - `/clear` — wipe context and start a fresh session
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
@@ -81,12 +83,17 @@ environment variable holding its key. A **model** is one thing that place
 will run. OpenRouter is a single provider serving hundreds of models, so the
 URL and key are stated once and the models listed under them.
 
+Each model belongs to its provider and is sent through it: one URL, one key,
+one connection, however many models are listed under it. `/model` shows them
+grouped that way.
+
 Every model has a short **alias**, which is the name used everywhere else:
 `#!consensus flash pinned#!` rather than the wire ids those resolve to.
 Aliases are unique across all providers, so a directive never has to say
 which provider it meant.
 
-Config is `~/.oneloop/config.json`, written from a template on first run:
+Config is `~/.oneloop/config.json`, written from a template on first run —
+shown here with a second OpenRouter model added:
 
 ```json
 {
@@ -120,6 +127,10 @@ model settings override the provider's.
 `default` names the alias used when nothing else is asked for. It is `local`
 out of the box, which needs no credentials, so an unconfigured checkout
 cannot accidentally bill a hosted model.
+
+`/model` switches the active model for the rest of a session and leaves the
+file alone; `default` is what the next run starts on, and changing that stays
+an edit you make on purpose.
 
 **This file holds no secrets.** A provider names the environment variable
 its key lives in; the key itself is written by `oneloop login openrouter`
@@ -183,9 +194,8 @@ pull it in.
 Tuning (all optional):
 
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
-- `ONELOOP_MAX_RETRIES` — provider retry attempts before offering a fallback (default: `3`)
+- `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
 - `ONELOOP_COMPACTION_THRESHOLD` — % of context window that triggers auto-compaction (default: `85`)
-- `ONELOOP_CONTEXT_WINDOW_TOKENS` — assumed context window size (default: `128000`)
 - `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
 
 A provider names the environment variable holding its key (`api_key_env`);

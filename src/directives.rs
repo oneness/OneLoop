@@ -11,15 +11,19 @@ pub struct PromptDirectives {
     pub rounds: usize,
     pub tools: ToolMode,
     pub format: OutputFormat,
-    pub model: Option<String>,
+    /// `model:` — a wire id to use in place of the selected model's own,
+    /// for this prompt only. Not an alias: it names something the provider
+    /// hosts that the config never listed.
+    pub model_id: Option<String>,
     pub prompt: String,
 }
 
+/// Model names here are aliases from the catalog, never wire ids.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunMode {
-    Single { provider: Option<String> },
-    Consensus { providers: Vec<String> },
-    Debate { providers: Vec<String> },
+    Single { model: Option<String> },
+    Consensus { models: Vec<String> },
+    Debate { models: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,12 +54,12 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
     // No directive marker → plain prompt with default single mode.
     if !trimmed.starts_with("#!") {
         return Ok(PromptDirectives {
-            mode: RunMode::Single { provider: None },
+            mode: RunMode::Single { model: None },
             judge: None,
             rounds: 1,
             tools: ToolMode::Default,
             format: OutputFormat::Plain,
-            model: None,
+            model_id: None,
             prompt: trimmed.to_string(),
         });
     }
@@ -79,34 +83,34 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
     let tokens: Vec<&str> = directive_text.split_whitespace().collect();
 
     // Collect tokens into categories.
-    let mut providers: Vec<String> = Vec::new();
+    let mut models: Vec<String> = Vec::new();
     let mut mode_name: Option<&str> = None;
     let mut judge: Option<String> = None;
     let mut rounds: Option<usize> = None;
     let mut tools: Option<ToolMode> = None;
     let mut format: Option<OutputFormat> = None;
-    let mut model: Option<String> = None;
+    let mut model_id: Option<String> = None;
 
     for token in &tokens {
         // key:value pairs
         if let Some(kv) = token.strip_prefix("model:") {
-            if model.is_some() {
+            if model_id.is_some() {
                 bail!("duplicate model: directive");
             }
-            let m = kv.trim().to_string();
-            if m.is_empty() {
-                bail!("model: requires a model name");
+            let id = kv.trim().to_string();
+            if id.is_empty() {
+                bail!("model: requires a model id");
             }
-            model = Some(m);
+            model_id = Some(id);
         } else if let Some(kv) = token.strip_prefix("judge:") {
             if judge.is_some() {
                 bail!("duplicate judge: directive");
             }
-            let provider = kv.trim().to_string();
-            if provider.is_empty() {
-                bail!("judge: requires a provider name");
+            let alias = kv.trim().to_string();
+            if alias.is_empty() {
+                bail!("judge: requires a model name");
             }
-            judge = Some(provider);
+            judge = Some(alias);
         } else if let Some(kv) = token.strip_prefix("rounds:") {
             if rounds.is_some() {
                 bail!("duplicate rounds: directive");
@@ -158,7 +162,7 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
         }
         // Model aliases
         else if known_models.contains(token) {
-            providers.push(token.to_string());
+            models.push(token.to_string());
         } else {
             bail!(
                 "unknown directive token: {token} (models: {})",
@@ -168,7 +172,7 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
     }
 
     // Resolve mode.
-    let mode = resolve_mode(mode_name, providers)?;
+    let mode = resolve_mode(mode_name, models)?;
 
     // Cross-validate.
     let is_multi = matches!(&mode, RunMode::Consensus { .. } | RunMode::Debate { .. });
@@ -183,8 +187,8 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
     if tools.is_some() && !is_multi {
         bail!("tools: is only valid with consensus or debate mode");
     }
-    if model.is_some() && is_multi {
-        bail!("model: is only valid in single-provider mode");
+    if model_id.is_some() && is_multi {
+        bail!("model: is only valid in single-model mode");
     }
 
     Ok(PromptDirectives {
@@ -193,33 +197,33 @@ pub fn parse_prompt(input: &str, known_models: &[&str]) -> Result<PromptDirectiv
         rounds: rounds.unwrap_or(1),
         tools: tools.unwrap_or(ToolMode::Default),
         format: format.unwrap_or(OutputFormat::Plain),
-        model,
+        model_id,
         prompt: body,
     })
 }
 
-fn resolve_mode(mode_name: Option<&str>, providers: Vec<String>) -> Result<RunMode> {
-    match (mode_name, providers.len()) {
-        // Explicit consensus with providers.
-        (Some("consensus"), n) if n >= 2 => Ok(RunMode::Consensus { providers }),
-        (Some("consensus"), _) => bail!("consensus requires at least two provider names"),
+fn resolve_mode(mode_name: Option<&str>, models: Vec<String>) -> Result<RunMode> {
+    match (mode_name, models.len()) {
+        // Explicit consensus with models.
+        (Some("consensus"), n) if n >= 2 => Ok(RunMode::Consensus { models }),
+        (Some("consensus"), _) => bail!("consensus requires at least two model names"),
 
-        // Explicit debate with providers.
-        (Some("debate"), n) if n >= 2 => Ok(RunMode::Debate { providers }),
-        (Some("debate"), _) => bail!("debate requires at least two provider names"),
+        // Explicit debate with models.
+        (Some("debate"), n) if n >= 2 => Ok(RunMode::Debate { models }),
+        (Some("debate"), _) => bail!("debate requires at least two model names"),
 
-        // No explicit mode, multiple providers → default to consensus.
-        (None, n) if n >= 2 => Ok(RunMode::Consensus { providers }),
+        // No explicit mode, multiple models → default to consensus.
+        (None, n) if n >= 2 => Ok(RunMode::Consensus { models }),
 
-        // No explicit mode, single provider → single mode.
+        // No explicit mode, one model → single mode.
         (None, 1) => Ok(RunMode::Single {
-            provider: providers.into_iter().next(),
+            model: models.into_iter().next(),
         }),
 
-        // No mode, no providers → just a plain prompt (single mode, no provider override).
-        (None, 0) => Ok(RunMode::Single { provider: None }),
+        // No mode, no models → just a plain prompt (single mode, active model).
+        (None, 0) => Ok(RunMode::Single { model: None }),
 
-        // Mode with no providers is nonsensical — but shouldn't reach here.
+        // Mode with no models is nonsensical — but shouldn't reach here.
         _ => bail!("invalid directive combination"),
     }
 }
@@ -237,29 +241,29 @@ mod tests {
     #[test]
     fn plain_prompt_uses_default_single_mode() {
         let got = parsed("hello");
-        assert_eq!(got.mode, RunMode::Single { provider: None });
+        assert_eq!(got.mode, RunMode::Single { model: None });
         assert_eq!(got.prompt, "hello");
     }
 
     #[test]
-    fn single_provider_shorthand() {
+    fn single_model_shorthand() {
         let got = parsed("#!local#! explain this");
         assert_eq!(
             got.mode,
             RunMode::Single {
-                provider: Some("local".to_string())
+                model: Some("local".to_string())
             }
         );
         assert_eq!(got.prompt, "explain this");
     }
 
     #[test]
-    fn multi_provider_defaults_to_consensus() {
+    fn multi_model_defaults_to_consensus() {
         let got = parsed("#!local openrouter#! should we do this");
         assert_eq!(
             got.mode,
             RunMode::Consensus {
-                providers: vec!["local".to_string(), "openrouter".to_string()]
+                models: vec!["local".to_string(), "openrouter".to_string()]
             }
         );
         assert_eq!(got.prompt, "should we do this");
@@ -271,7 +275,7 @@ mod tests {
         assert_eq!(
             got.mode,
             RunMode::Consensus {
-                providers: vec!["local".to_string(), "openrouter".to_string()]
+                models: vec!["local".to_string(), "openrouter".to_string()]
             }
         );
         assert_eq!(got.judge, Some("openrouter".to_string()));
@@ -283,7 +287,7 @@ mod tests {
         assert_eq!(
             got.mode,
             RunMode::Debate {
-                providers: vec![
+                models: vec![
                     "local".to_string(),
                     "openrouter".to_string(),
                     "openrouter".to_string()
@@ -328,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn judge_on_single_provider_fails() {
+    fn judge_on_a_single_model_fails() {
         let got = parse_prompt("#!local judge:openrouter#! hello", MODELS);
         assert!(got.is_err());
     }
@@ -359,34 +363,34 @@ mod tests {
     }
 
     #[test]
-    fn no_providers_no_mode_is_plain() {
+    fn no_models_no_mode_is_plain() {
         let got = parsed("#!format:md#! summarize this file");
-        assert_eq!(got.mode, RunMode::Single { provider: None });
+        assert_eq!(got.mode, RunMode::Single { model: None });
         assert_eq!(got.format, OutputFormat::Md);
     }
 
     #[test]
-    fn model_override_single_provider() {
+    fn model_id_override_with_an_alias() {
         let got = parsed("#!openrouter model:deepseek/deepseek-v3-0324#! explain this");
         assert_eq!(
             got.mode,
             RunMode::Single {
-                provider: Some("openrouter".to_string())
+                model: Some("openrouter".to_string())
             }
         );
-        assert_eq!(got.model, Some("deepseek/deepseek-v3-0324".to_string()));
+        assert_eq!(got.model_id, Some("deepseek/deepseek-v3-0324".to_string()));
         assert_eq!(got.prompt, "explain this");
     }
 
     #[test]
-    fn model_override_no_provider() {
+    fn model_id_override_without_an_alias() {
         let got = parsed("#!model:deepseek/deepseek-v3-0324#! explain this");
-        assert_eq!(got.mode, RunMode::Single { provider: None });
-        assert_eq!(got.model, Some("deepseek/deepseek-v3-0324".to_string()));
+        assert_eq!(got.mode, RunMode::Single { model: None });
+        assert_eq!(got.model_id, Some("deepseek/deepseek-v3-0324".to_string()));
     }
 
     #[test]
-    fn model_override_in_consensus_fails() {
+    fn model_id_override_in_consensus_fails() {
         let got = parse_prompt("#!consensus local openrouter model:gpt-4o#! hello", MODELS);
         assert!(got.is_err());
     }
@@ -410,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_on_single_provider_fails() {
+    fn tools_on_a_single_model_fails() {
         // Only consensus/debate orchestration consumes tools: — reject it
         // elsewhere instead of silently ignoring it.
         let got = parse_prompt("#!local tools:none#! hello", MODELS);

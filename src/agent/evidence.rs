@@ -1,8 +1,8 @@
 //! Evidence agent for multi-model orchestration.
 //!
-//! Instead of giving providers direct tool access, they ask the main agent
+//! Instead of giving orchestrated models direct tool access, they ask the main agent
 //! to gather evidence on their behalf. The main agent executes, caches,
-//! and shares results across all providers.
+//! and shares results across all of them.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -16,7 +16,7 @@ use crate::tools::{ToolDefinition, ToolRegistry, ToolResult};
 // ── Cache ─────────────────────────────────────────────────────────────
 
 /// Cache for evidence gathered during multi-model orchestration.
-/// Shared across all providers so evidence is gathered once and reused.
+/// Shared across all models so evidence is gathered once and reused.
 pub struct EvidenceCache {
     entries: HashMap<String, CachedEvidence>,
 }
@@ -63,13 +63,10 @@ pub fn shared_cache() -> SharedCache {
 
 // ── Evidence tool table ───────────────────────────────────────────────
 
-/// One evidence tool as offered to providers: the name they see, the registry
-/// tool that serves it, and the single string argument it takes.
-///
-/// This table is the single source of truth — the allowlist, the
-/// request_evidence definition, execution dispatch, and display formatting
-/// are all derived from it. Adding or renaming an evidence tool is one entry
-/// here (plus a guardrail in `execute_inner` if it needs one).
+/// The single source of truth: the allowlist, the `request_evidence`
+/// definition, execution dispatch, and display formatting all derive from
+/// this table. Adding one is one entry here (plus a guardrail in
+/// `execute_inner` if it needs one).
 struct EvidenceTool {
     name: &'static str,
     backing_tool: &'static str,

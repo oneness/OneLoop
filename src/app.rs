@@ -5,28 +5,84 @@ use crate::{
     agent::Agent,
     config::{self, Config},
     directives::{OutputFormat, PromptDirectives, RunMode, parse_prompt},
-    providers::ProviderRegistry,
+    models::ModelRegistry,
     tools::ToolRegistry,
 };
-use crate::output::{DIM, RED, RESET, YELLOW};
+use crate::output::{BOLD, DIM, RED, RESET, YELLOW};
 
 pub struct App {
     config: Config,
 }
 
+/// A line the REPL answers itself instead of sending to a model.
+enum Command<'a> {
+    Clear,
+    /// An alias switches straight to it; without one, the list is offered.
+    Model(Option<&'a str>),
+}
+
+/// An unknown `/word` is a prompt, not an error: a message can legitimately
+/// start with a path.
+fn parse_command(line: &str) -> Option<Command<'_>> {
+    let (name, argument) = match line.strip_prefix('/')?.split_once(char::is_whitespace) {
+        Some((name, argument)) => (name, argument.trim()),
+        None => (line.trim_start_matches('/'), ""),
+    };
+    let argument = (!argument.is_empty()).then_some(argument);
+    match name {
+        "clear" => Some(Command::Clear),
+        "model" => Some(Command::Model(argument)),
+        _ => None,
+    }
+}
+
+async fn run_command(agent: &mut Agent, command: Command<'_>) {
+    match command {
+        Command::Clear => {
+            if let Err(e) = agent.clear_session() {
+                eprintln!("{RED}  ✗ {e:#}{RESET}");
+            }
+        }
+        Command::Model(alias) => switch_model(agent, alias).await,
+    }
+}
+
+/// Lasts for this session; the config file is not touched, so what the next
+/// run starts on stays something the user wrote.
+async fn switch_model(agent: &Agent, requested: Option<&str>) {
+    let alias = match requested {
+        Some(alias) => alias.to_string(),
+        None => {
+            println!("{BOLD}  ── Models ──{RESET}");
+            match agent.models().pick_any().await {
+                Ok(alias) => alias,
+                // Cancelling is an ordinary outcome, not a failure.
+                Err(e) => return println!("{DIM}  {e:#}{RESET}"),
+            }
+        }
+    };
+    match agent.models().set_active(&alias) {
+        Ok(()) => {
+            println!("{DIM}  → model: {}{RESET}", agent.models().active());
+            println!(
+                "{DIM}  this session only — set \"default\" in ~/.oneloop/config.json to keep it{RESET}"
+            );
+        }
+        Err(e) => eprintln!("{RED}  ✗ {e:#}{RESET}"),
+    }
+}
+
 fn print_directive_summary(directives: &PromptDirectives) {
     match &directives.mode {
-        RunMode::Single {
-            provider: Some(provider),
-        } => {
-            eprintln!("{DIM}  → provider: {provider}{RESET}");
+        RunMode::Single { model: Some(model) } => {
+            eprintln!("{DIM}  → model: {model}{RESET}");
         }
-        RunMode::Single { provider: None } => {}
-        RunMode::Consensus { providers } => {
-            eprintln!("{DIM}  → consensus: {}{RESET}", providers.join(", "));
+        RunMode::Single { model: None } => {}
+        RunMode::Consensus { models } => {
+            eprintln!("{DIM}  → consensus: {}{RESET}", models.join(", "));
         }
-        RunMode::Debate { providers } => {
-            eprintln!("{DIM}  → debate: {}{RESET}", providers.join(", "));
+        RunMode::Debate { models } => {
+            eprintln!("{DIM}  → debate: {}{RESET}", models.join(", "));
         }
     }
 }
@@ -35,21 +91,21 @@ async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Resu
     print_directive_summary(&directives);
     let prompt = with_format_instruction(directives.prompt, &directives.format);
     match directives.mode {
-        RunMode::Single { provider } => {
+        RunMode::Single { model } => {
             agent
-                .run_once_with(prompt, provider.as_deref(), directives.model)
+                .run_once_with(prompt, model.as_deref(), directives.model_id)
                 .await
         }
-        RunMode::Consensus { providers } => {
+        RunMode::Consensus { models } => {
             agent
-                .run_consensus(prompt, providers, directives.judge, directives.tools)
+                .run_consensus(prompt, models, directives.judge, directives.tools)
                 .await
         }
-        RunMode::Debate { providers } => {
+        RunMode::Debate { models } => {
             agent
                 .run_debate(
                     prompt,
-                    providers,
+                    models,
                     directives.judge,
                     directives.rounds,
                     directives.tools,
@@ -59,8 +115,7 @@ async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Resu
     }
 }
 
-/// Turn the `format:` directive into a plain instruction appended to the
-/// prompt — the model does the formatting; there is no post-processing.
+/// The model does the formatting; there is no post-processing.
 fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
     let instruction = match format {
         OutputFormat::Plain => return prompt,
@@ -71,13 +126,13 @@ fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
 }
 
 async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
-    let directives = parse_prompt(input, &agent.model_names())?;
+    let directives = parse_prompt(input, &agent.models().aliases())?;
     run_directives(agent, directives).await
 }
 
-fn provider_override(directives: &PromptDirectives) -> Option<&str> {
+fn model_override(directives: &PromptDirectives) -> Option<&str> {
     match &directives.mode {
-        RunMode::Single { provider } => provider.as_deref(),
+        RunMode::Single { model } => model.as_deref(),
         RunMode::Consensus { .. } | RunMode::Debate { .. } => None,
     }
 }
@@ -88,17 +143,17 @@ impl App {
     }
 
     pub async fn run(mut self, prompt: Option<String>) -> Result<()> {
-        let provider_registry = ProviderRegistry::new()?;
+        let models = ModelRegistry::new()?;
         let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
         self.config.system_prompt =
             config::build_system_prompt(&self.config.cwd, &tool_registry.names());
-        let mut agent = Agent::new(self.config, provider_registry, tool_registry)?;
+        let mut agent = Agent::new(self.config, models, tool_registry)?;
 
         match prompt {
             Some(prompt) => {
-                // Interactive mode prints a full banner; one-shot runs must
-                // also never be silent about which model they are spending on.
-                eprintln!("{DIM}  → {}{RESET}", agent.provider_line());
+                // A one-shot run must not be silent about which model it is
+                // spending on.
+                eprintln!("{DIM}  → {}{RESET}", agent.models().active());
                 run_directed_prompt(&mut agent, &prompt).await
             }
             None => run_interactive(&mut agent).await,
@@ -111,12 +166,13 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     println!("OneLoop");
     println!("{}", agent.summary());
     println!();
-    println!("interactive mode — type your message, /clear to reset context, Ctrl+C to stop");
+    println!(
+        "interactive mode — type your message, /model to switch model, /clear to reset context, Ctrl+C to stop"
+    );
     println!();
 
-    // A raw-mode line editor instead of stdin's canonical mode, which
-    // silently drops input past the tty's 4096-byte line buffer and locks
-    // up the prompt on long pastes.
+    // Canonical mode silently drops input past the tty's 4096-byte line
+    // buffer and locks up the prompt on long pastes.
     let mut editor = rustyline::DefaultEditor::new()?;
 
     loop {
@@ -133,9 +189,8 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         }
         let _ = editor.add_history_entry(&line);
 
-        // Built-in command: /clear resets the session.
-        if line == "/clear" {
-            agent.clear_session()?;
+        if let Some(command) = parse_command(&line) {
+            run_command(agent, command).await;
             println!();
             continue;
         }
@@ -147,10 +202,10 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     Ok(())
 }
 
-/// One REPL turn: parse directives, run them racing Ctrl+C, then tidy up.
-/// Errors are reported, never propagated — a failed turn must not end the REPL.
+/// Errors are reported, never propagated — a failed turn must not end the
+/// REPL.
 async fn run_interactive_turn(agent: &mut Agent, line: &str) {
-    let directives = match parse_prompt(line, &agent.model_names()) {
+    let directives = match parse_prompt(line, &agent.models().aliases()) {
         Ok(directives) => directives,
         Err(e) => {
             eprintln!("{RED}  ✗ {e:#}{RESET}");
@@ -160,9 +215,8 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
             return;
         }
     };
-    let compact_provider_override = provider_override(&directives).map(String::from);
+    let compact_model_override = model_override(&directives).map(String::from);
 
-    // Use select to race the agent run against Ctrl+C.
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
     tokio::select! {
@@ -177,18 +231,44 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
         }
     }
 
-    // A dropped run may have recorded tool calls whose results never
-    // arrived; close them out or providers will reject every later
-    // request in this session.
+    // A dropped run leaves tool calls without results, which providers
+    // reject on every later request in this session.
     if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
         eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
     }
 
-    // Auto-compact if context is near limit.
     if let Err(e) = agent
-        .auto_compact_if_needed(compact_provider_override.as_deref())
+        .auto_compact_if_needed(compact_model_override.as_deref())
         .await
     {
         eprintln!("{RED}  ✗ auto-compaction failed: {e:#}{RESET}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, parse_command};
+
+    #[test]
+    fn clear_is_a_command() {
+        assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
+    }
+
+    #[test]
+    fn model_takes_an_optional_alias() {
+        assert!(matches!(
+            parse_command("/model"),
+            Some(Command::Model(None))
+        ));
+        assert!(matches!(
+            parse_command("/model flash"),
+            Some(Command::Model(Some("flash")))
+        ));
+    }
+
+    #[test]
+    fn a_message_starting_with_a_path_is_not_a_command() {
+        // Refusing unknown /words would swallow this as a typo.
+        assert!(parse_command("/etc/hosts is unreadable, why?").is_none());
     }
 }

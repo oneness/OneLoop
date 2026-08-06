@@ -10,7 +10,7 @@ The initial core is intentionally small:
 
 - agent loop
 - session/messages
-- provider abstraction
+- providers and the models they host
 - tool abstraction
 - config loading
 - auth loading
@@ -55,14 +55,17 @@ them, so background work cannot trigger paid searches.
 
 There is one protocol: OpenAI Chat Completions. A local llama-server and a
 hosted model differ only by URL, model id, and whether a key is required, so
-a single `ChatProvider` serves both.
+`providers/chat.rs` serves both. A second protocol would be a second module
+beside it and a `match` in `Model::complete` — there is no client trait to
+implement, because one protocol does not need a plug-in point.
 
-A provider is a place — base URL plus the environment variable naming its
-key. A model is one thing that place will run, carrying a short alias used
-everywhere else. `catalog.rs` flattens the two into resolved `Model` values
-with provider settings folded in, so nothing downstream knows about the
-nesting. Aliases must be unique across providers, or a directive naming one
-would be ambiguous; that is refused at load.
+A provider is a place: base URL, the environment variable naming its key,
+and one HTTP client. A model is one thing that place will run, carrying a
+short alias used everywhere else. Every `Model` holds an `Arc<Provider>`, so
+two models from the same provider share one connection pool, one key, one
+URL — and a model can always say where it is sent, which is what `/model`
+and the error messages show. Aliases must be unique across providers, or a
+directive naming one would be ambiguous; that is refused at load.
 
 Config is `~/.oneloop/config.json`, written from `src/default-config.json`
 on first run. It holds no secrets — a provider names an environment
@@ -70,10 +73,21 @@ variable, and keys live in `auth.json`. The default model is `local`, which
 needs no credentials, so an unconfigured checkout cannot accidentally bill a
 hosted model.
 
-Override the active model with `ONELOOP_MODEL`. Route per-prompt with
-`#!alias` directives. Use `#!consensus` or `#!debate` to ask several models
-the same question and synthesize a final answer. Use `model:` to send a
-one-off wire id.
+Which model is active is decided once, in `catalog.rs`: the file's `default`
+unless `ONELOOP_MODEL` names another. The per-run environment overrides then
+apply to whatever that resolved to. `catalog.rs` keeps the config's nesting
+rather than flattening it — providers, each with the models it hosts — and
+`models.rs` makes that live, then flattens only the lookup: everything
+downstream asks for a model by alias. It owns the one thing that moves:
+which model a request goes to when nothing names another. That index is
+atomic because the registry is shared with orchestration tasks while
+`/model` can change it.
+
+Setting a model, narrowest scope first: `model:` sends a one-off wire id for
+one prompt; `#!alias` routes one prompt; `/model` switches the session;
+`ONELOOP_MODEL` sets a run; `default` in the config sets every run. Only the
+last is persistent, and only it is edited by hand — a session-scoped command
+that rewrote the config would make the next run's model a side effect.
 
 ## Multi-model orchestration
 
@@ -90,7 +104,7 @@ schema, execution dispatch, display formatting, and directive validation are
 all derived from it. Adding or renaming an evidence tool is one entry there.
 `shell` is backed by the `bash` tool behind a read-only command guardrail —
 a seatbelt against state-changing commands, not a security boundary.
-Orchestrated providers reached via OpenRouter also get the server-side web
+Orchestrated models reached via OpenRouter also get the server-side web
 tools, since their requests carry the `request_evidence` tool.
 
 ## Skills
@@ -148,21 +162,23 @@ src/
   agent.rs          Agent struct, run_once_with, execute_tool_calls, session repair
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
-    orchestration.rs Consensus, debate, per-provider evidence loops
+    orchestration.rs Consensus, debate, per-model evidence loops
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
     compaction.rs   Auto-compaction, token estimation, memory extraction
     evidence.rs     Evidence-tool table (single source of truth), cache, shell guardrail
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
-  app.rs            Interactive REPL (rustyline), directive dispatch, Ctrl+C handling
+  app.rs            Interactive REPL (rustyline), /commands, directive dispatch, Ctrl+C handling
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
-  catalog.rs        Providers and models from ~/.oneloop/config.json; alias resolution
+  catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
   config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
+  models.rs         Model (alias + settings + its provider), registry, active-model switching
+  models/
+    retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Output truncation utilities, ANSI style constants
-  providers.rs      Provider trait, request/response types, shared HTTP send/read
+  providers.rs      Provider (endpoint: URL, key, one HTTP client), request/response types
   providers/
-    chat.rs         Chat Completions provider (one per model, local or hosted)
-    registry.rs     Model registration, selection, retry with interactive fallback
+    chat.rs         The Chat Completions wire format — the one protocol
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution

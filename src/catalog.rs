@@ -1,21 +1,11 @@
-//! What OneLoop can talk to: providers, and the models each one hosts.
+//! `~/.oneloop/config.json`: providers, and the models each one hosts.
 //!
-//! A provider is a place — a base URL and, if hosted, the environment
-//! variable holding its key. A model is one thing that place will run.
-//! OpenRouter is a single provider serving hundreds of models, so the URL
-//! and key are stated once and the models listed under them; a local
-//! llama-server is a provider that happens to host one.
+//! OpenRouter is one provider serving hundreds of models, so its URL and key
+//! are stated once and the models listed under them. Aliases are unique
+//! across providers, so a directive never has to name one.
 //!
-//! Every model carries a short alias, which is the name used everywhere
-//! else — `#!consensus flash sonnet#!` rather than the wire ids those
-//! resolve to. Aliases are unique across all providers, so a directive
-//! never has to say which provider it meant.
-//!
-//! Config is `~/.oneloop/config.json`, written from a template on first
-//! run. It holds no secrets: a model names the environment variable its key
-//! lives in, and the key itself is `auth.json`'s business. That keeps the
-//! config shareable — committable to dotfiles, diffable, pasteable — which
-//! it could not be if a key were in it.
+//! No secrets here — a provider names the environment variable its key lives
+//! in, which is what keeps the file committable to dotfiles.
 
 use std::collections::BTreeMap;
 use std::{env, fs, path::PathBuf};
@@ -25,14 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::output::{DIM, RESET};
 
-/// Written to `~/.oneloop/config.json` the first time OneLoop runs without
-/// one, and used in memory if that write fails. A JSON file rather than
-/// structs built in Rust: which models exist is configuration, and a value
-/// compiled into the binary is one nobody can see or change.
+/// A JSON file rather than structs in Rust: which models exist is
+/// configuration, and a value compiled into the binary is one nobody can see
+/// or change. Used in memory if the first-run write fails.
 const DEFAULT_CONFIG_JSON: &str = include_str!("default-config.json");
-
-/// Used when a model does not state its own.
-const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
 // ── On-disk shape ─────────────────────────────────────────────────────
 
@@ -49,9 +35,8 @@ pub struct ProviderEntry {
     /// Absent means no credentials — the local server case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    /// Server-side web_search/web_fetch. Metered per use ($0.005/search,
-    /// $0.001/fetch) and absent from a local server, so it is off unless a
-    /// provider asks for it. A model may override.
+    /// Server-side web_search/web_fetch, metered per use ($0.005/search,
+    /// $0.001/fetch) — off unless a provider asks for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_tools: Option<bool>,
     pub models: BTreeMap<String, ModelEntry>,
@@ -59,14 +44,11 @@ pub struct ProviderEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
-    /// What goes on the wire. Kept separate from the alias because the real
-    /// ids are unwieldy — `~deepseek/deepseek-v4-flash-latest` is not
-    /// something to type into a directive.
+    /// What goes on the wire — `~deepseek/deepseek-v4-flash-latest`, not
+    /// something to type into a directive, hence the alias.
     pub id: String,
-    /// Tokens this model accepts in one request; what compaction aims to
-    /// stay under. Not a preference — a self-hosted server rejects anything
-    /// over the `-c` it was started with, and a hosted model rejects
-    /// anything over its own limit.
+    /// Not a preference: a self-hosted server rejects anything over the `-c`
+    /// it was started with, and a hosted model over its own limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,32 +59,17 @@ pub struct ModelEntry {
     pub web_tools: Option<bool>,
 }
 
-// ── Resolved shape ────────────────────────────────────────────────────
+// ── What this run will use ────────────────────────────────────────────
 
-/// One model with its provider's settings folded in. Everything downstream
-/// works on these, so nothing else has to know about the nesting.
-#[derive(Debug, Clone)]
-pub struct Model {
-    pub alias: String,
-    pub provider: String,
-    pub base_url: String,
-    pub id: String,
-    pub api_key_env: Option<String>,
-    pub web_tools: bool,
-    pub context_window: usize,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
-}
-
+/// The configuration this run will use.
 #[derive(Debug, Clone)]
 pub struct Catalog {
-    /// Alias of the default model; guaranteed to be present in `models`.
-    pub default: String,
-    pub models: Vec<Model>,
+    /// The file's `default` unless the environment named another. Guaranteed
+    /// to be an alias one of the providers hosts.
+    pub active: String,
+    pub providers: BTreeMap<String, ProviderEntry>,
 }
 
-/// Load the catalog, applying environment overrides to the default model.
-///
 /// A missing file is written from the template. A malformed one is an error
 /// rather than a silent fallback: a typo should not quietly send work
 /// somewhere other than where it says.
@@ -119,85 +86,96 @@ pub fn load() -> Result<Catalog> {
             ConfigFile::default()
         }
     };
-    let mut catalog = resolve(file)?;
+    // ONELOOP_MODEL names the model for this run; ONELOOP_PROVIDER is the
+    // name it had before models and providers were separated.
+    let requested = env::var("ONELOOP_MODEL")
+        .or_else(|_| env::var("ONELOOP_PROVIDER"))
+        .ok();
+    let mut catalog = resolve(file, requested)?;
     apply_env_overrides(&mut catalog);
     Ok(catalog)
 }
 
-/// Flatten providers into models, folding provider settings into each and
-/// rejecting anything a directive could not name unambiguously.
-pub fn resolve(file: ConfigFile) -> Result<Catalog> {
-    let mut models: Vec<Model> = Vec::new();
-    for (provider_name, provider) in &file.providers {
-        for (alias, model) in &provider.models {
-            // Two providers offering the same alias would make
-            // `#!consensus <alias> ...#!` ambiguous, and picking one
-            // silently is worse than refusing.
-            if let Some(existing) = models.iter().find(|m| &m.alias == alias) {
-                bail!(
-                    "model alias {alias} is defined by both {} and {provider_name}; \
-                     aliases must be unique",
-                    existing.provider
-                );
-            }
-            models.push(Model {
-                alias: alias.clone(),
-                provider: provider_name.clone(),
-                base_url: provider.base_url.clone(),
-                id: model.id.clone(),
-                api_key_env: provider.api_key_env.clone(),
-                web_tools: model.web_tools.or(provider.web_tools).unwrap_or(false),
-                context_window: model.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
-                max_tokens: model.max_tokens,
-                temperature: model.temperature,
-            });
-        }
-    }
+/// Settles the active model here, rather than where the models are built,
+/// so the per-run overrides below land on the model actually selected.
+pub fn resolve(file: ConfigFile, requested: Option<String>) -> Result<Catalog> {
+    let catalog = Catalog {
+        active: requested.unwrap_or(file.default),
+        providers: file.providers,
+    };
+    catalog.check_aliases_are_unique()?;
 
-    if models.is_empty() {
+    let aliases = catalog.aliases();
+    if aliases.is_empty() {
         bail!("no models configured — see ~/.oneloop/config.json");
     }
-    if !models.iter().any(|m| m.alias == file.default) {
-        let available: Vec<&str> = models.iter().map(|m| m.alias.as_str()).collect();
+    if !aliases.contains(&catalog.active.as_str()) {
         bail!(
-            "default model {} is not defined. available: {}",
-            file.default,
-            available.join(", ")
+            "no model named {}. configured: {}",
+            catalog.active,
+            aliases.join(", ")
         );
     }
-
-    Ok(Catalog {
-        default: file.default,
-        models,
-    })
+    Ok(catalog)
 }
 
-/// Escape hatches that apply to the default model only. Per-model settings
-/// belong in the config file; these exist for one-off runs.
+impl Catalog {
+    fn aliases(&self) -> Vec<&str> {
+        self.providers
+            .values()
+            .flat_map(|provider| provider.models.keys())
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// A duplicate alias would make `#!consensus <alias> ...#!` ambiguous,
+    /// and picking one silently is worse than refusing.
+    fn check_aliases_are_unique(&self) -> Result<()> {
+        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+        for (name, provider) in &self.providers {
+            for alias in provider.models.keys() {
+                if let Some(owner) = seen.insert(alias, name) {
+                    bail!(
+                        "model alias {alias} is defined by both {owner} and {name}; \
+                         aliases must be unique"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn active_model_mut(&mut self) -> Option<&mut ModelEntry> {
+        let active = self.active.clone();
+        self.providers
+            .values_mut()
+            .find_map(|provider| provider.models.get_mut(&active))
+    }
+}
+
+/// Escape hatches for one-off runs; per-model settings belong in the file.
 fn apply_env_overrides(catalog: &mut Catalog) {
-    let default_alias = catalog.default.clone();
-    let Some(model) = catalog.models.iter_mut().find(|m| m.alias == default_alias) else {
+    let Some(model) = catalog.active_model_mut() else {
         return;
     };
     if let Some(window) = env::var("ONELOOP_CONTEXT_WINDOW_TOKENS")
         .ok()
         .and_then(|value| value.parse().ok())
     {
-        model.context_window = window;
+        model.context_window = Some(window);
     }
     // A cost control, so it stays reachable without editing the file.
     if let Some(web_tools) = env::var("ONELOOP_WEB_TOOLS")
         .ok()
         .and_then(|value| value.parse().ok())
     {
-        model.web_tools = web_tools;
+        model.web_tools = Some(web_tools);
     }
 }
 
 impl Default for ConfigFile {
     fn default() -> Self {
-        // The template ships with the binary and is covered by a test, so a
-        // parse failure is a build-time mistake, not a runtime one.
+        // Covered by a test, so a parse failure is a build-time mistake.
         serde_json::from_str(DEFAULT_CONFIG_JSON).expect("built-in default-config.json must parse")
     }
 }
@@ -235,77 +213,72 @@ mod tests {
     use super::*;
 
     fn parse(json: &str) -> Result<Catalog> {
-        resolve(serde_json::from_str(json).expect("test json must parse"))
+        resolve(
+            serde_json::from_str(json).expect("test json must parse"),
+            None,
+        )
+    }
+
+    fn template() -> Catalog {
+        resolve(ConfigFile::default(), None).expect("template must resolve")
     }
 
     #[test]
     fn the_shipped_template_resolves() {
-        // `Default` unwraps the template, so a mistake in it would panic on
-        // first run rather than fail the build.
-        let catalog = load_template();
-        assert_eq!(catalog.default, "local");
-        assert!(catalog.models.iter().any(|m| m.alias == "local"));
-        assert!(catalog.models.iter().any(|m| m.alias == "flash"));
-    }
-
-    fn load_template() -> Catalog {
-        resolve(ConfigFile::default()).expect("template must resolve")
+        // `Default` unwraps it, so a mistake would panic on first run.
+        let catalog = template();
+        assert_eq!(catalog.active, "local");
+        assert_eq!(catalog.aliases(), vec!["local", "flash"]);
     }
 
     #[test]
     fn the_default_model_needs_no_key() {
         // An unconfigured checkout must not be able to bill anyone.
-        let catalog = load_template();
-        let default = catalog
-            .models
-            .iter()
-            .find(|m| m.alias == catalog.default)
-            .unwrap();
-        assert!(default.api_key_env.is_none());
-        assert!(!default.web_tools);
+        let catalog = template();
+        let local = catalog.providers.get("local").unwrap();
+        assert!(local.api_key_env.is_none());
+        assert!(local.web_tools.is_none());
     }
 
     #[test]
-    fn provider_settings_fold_into_each_model() {
-        let catalog = parse(
-            r#"{"default":"a","providers":{"p":{
-                 "base_url":"http://u","api_key_env":"K","web_tools":true,
-                 "models":{"a":{"id":"vendor/a"},"b":{"id":"vendor/b"}}}}}"#,
+    fn the_environment_can_pick_another_model() {
+        let file = serde_json::from_str(
+            r#"{"default":"a","providers":{"p":{"base_url":"u",
+                 "models":{"a":{"id":"x"},"b":{"id":"y"}}}}}"#,
         )
         .unwrap();
-        for m in &catalog.models {
-            assert_eq!(m.base_url, "http://u", "url is stated once, on the provider");
-            assert_eq!(m.api_key_env.as_deref(), Some("K"));
-            assert!(m.web_tools);
-        }
-        assert_eq!(catalog.models.iter().find(|m| m.alias == "a").unwrap().id, "vendor/a");
+        let catalog = resolve(file, Some("b".to_string())).unwrap();
+        assert_eq!(catalog.active, "b");
     }
 
     #[test]
-    fn a_model_overrides_its_provider() {
-        let catalog = parse(
-            r#"{"default":"a","providers":{"p":{
-                 "base_url":"http://u","web_tools":true,
-                 "models":{"a":{"id":"x","web_tools":false,"context_window":9}}}}}"#,
-        )
-        .unwrap();
-        let a = &catalog.models[0];
-        assert!(!a.web_tools, "model must win over provider");
-        assert_eq!(a.context_window, 9);
-    }
+    fn a_model_that_is_not_configured_is_refused() {
+        // Falling back to something that does exist would send the run — and
+        // the spending — somewhere other than what was asked for.
+        let json =
+            r#"{"default":"a","providers":{"p":{"base_url":"u","models":{"a":{"id":"x"}}}}}"#;
+        let from_env = resolve(
+            serde_json::from_str(json).unwrap(),
+            Some("nope".to_string()),
+        );
+        assert!(
+            format!("{:#}", from_env.unwrap_err()).contains("no model named nope"),
+            "the environment naming an unconfigured model must fail"
+        );
 
-    #[test]
-    fn an_unset_context_window_falls_back() {
-        let catalog =
-            parse(r#"{"default":"a","providers":{"p":{"base_url":"u","models":{"a":{"id":"x"}}}}}"#)
-                .unwrap();
-        assert_eq!(catalog.models[0].context_window, DEFAULT_CONTEXT_WINDOW);
+        let json =
+            r#"{"default":"nope","providers":{"p":{"base_url":"u","models":{"a":{"id":"x"}}}}}"#;
+        let from_file = parse(json);
+        assert!(
+            format!("{:#}", from_file.unwrap_err()).contains("no model named nope"),
+            "the file naming an unconfigured model must fail"
+        );
     }
 
     #[test]
     fn a_duplicate_alias_across_providers_is_refused() {
-        // Silently picking one would make `#!consensus dup ...#!` mean
-        // whichever provider happened to sort first.
+        // Picking one would make `#!consensus dup ...#!` mean whichever
+        // provider happened to sort first.
         let err = parse(
             r#"{"default":"dup","providers":{
                  "p1":{"base_url":"u1","models":{"dup":{"id":"x"}}},
@@ -316,25 +289,8 @@ mod tests {
     }
 
     #[test]
-    fn a_default_naming_no_model_is_refused() {
-        let err =
-            parse(r#"{"default":"nope","providers":{"p":{"base_url":"u","models":{"a":{"id":"x"}}}}}"#)
-                .unwrap_err();
-        assert!(format!("{err:#}").contains("not defined"), "got: {err:#}");
-    }
-
-    #[test]
     fn a_catalog_with_no_models_is_refused() {
         let err = parse(r#"{"default":"a","providers":{}}"#).unwrap_err();
         assert!(format!("{err:#}").contains("no models"), "got: {err:#}");
-    }
-
-    #[test]
-    fn the_file_round_trips() {
-        let file = ConfigFile::default();
-        let json = serde_json::to_string(&file).unwrap();
-        let back: ConfigFile = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.default, file.default);
-        assert_eq!(back.providers.len(), file.providers.len());
     }
 }
