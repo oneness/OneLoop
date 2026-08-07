@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 
+use crate::output::{BOLD, DIM, RED, RESET, YELLOW};
 use crate::{
     agent::Agent,
     config::{self, Config},
@@ -8,7 +9,6 @@ use crate::{
     models::ModelRegistry,
     tools::ToolRegistry,
 };
-use crate::output::{BOLD, DIM, RED, RESET, YELLOW};
 
 pub struct App {
     config: Config,
@@ -147,6 +147,7 @@ impl App {
         let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
         self.config.system_prompt =
             config::build_system_prompt(&self.config.cwd, &tool_registry.names());
+        self.config.prompt_sources = config::prompt_sources(&self.config.cwd);
         let mut agent = Agent::new(self.config, models, tool_registry)?;
 
         match prompt {

@@ -94,18 +94,37 @@ struct ChatToolFunction {
     arguments: Value,
 }
 
-/// Always send `arguments` as a string, whichever shape it arrived in.
+/// Always send `arguments` as an encoded object, whichever shape it arrived in.
 fn serialize_tool_arguments<S>(arguments: &Value, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    match arguments {
-        Value::String(text) => serializer.serialize_str(text),
-        other => {
-            let encoded = serde_json::to_string(other).map_err(serde::ser::Error::custom)?;
-            serializer.serialize_str(&encoded)
-        }
-    }
+    serializer.serialize_str(&encode_arguments(arguments))
+}
+
+/// The one place the wire shape of `arguments` is decided: a JSON object,
+/// encoded as a string.
+///
+/// The field is typed as a string, but a server that renders history through a
+/// chat template needs an object *inside* it — Qwen's template reaches for
+/// `arguments|items`, and a string or an array there fails the whole request
+/// with a 500. The message stays in the session, so that is every request from
+/// then on, not just the one.
+///
+/// A call whose arguments never parsed (`decode_tool_arguments` keeps the raw
+/// text) therefore goes out as `{}`. Nothing is lost by it: the tool result
+/// travelling beside the call is what tells the model to send it again, and
+/// half a truncated argument list is no more use to the model than none.
+fn encode_arguments(arguments: &Value) -> String {
+    let object = match arguments {
+        Value::Object(_) => Some(arguments.to_string()),
+        // Already encoded — pass the model's own bytes through rather than
+        // re-encoding them, but only once it is known to be an object.
+        Value::String(text) => matches!(serde_json::from_str::<Value>(text), Ok(Value::Object(_)))
+            .then(|| text.clone()),
+        _ => None,
+    };
+    object.unwrap_or_else(|| "{}".to_string())
 }
 
 // ── Response types (Chat Completions) ─────────────────────────────────
@@ -278,7 +297,11 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
                     r#type: "function".to_string(),
                     function: ChatToolFunction {
                         name: tool_call.name,
-                        arguments: Value::String(tool_call.arguments.to_string()),
+                        // Whatever shape it was stored in — `encode_arguments`
+                        // decides the wire form. Pre-encoding here with
+                        // `to_string` would encode a raw-text argument list a
+                        // second time and send back a string.
+                        arguments: tool_call.arguments,
                     },
                 };
                 // Merge into the preceding assistant message so that content
@@ -379,11 +402,50 @@ mod tests {
         assert_eq!(result[0].content.as_deref(), Some("ok"));
     }
 
+    /// What a replayed call looks like on the wire, not in the struct.
     #[test]
-    fn tool_call_arguments_are_serialized_as_a_json_string() {
+    fn a_replayed_tool_call_is_sent_as_an_encoded_object() {
         let result = to_chat_messages(vec![tool_call("t1")]);
-        let calls = result[0].tool_calls.as_ref().unwrap();
-        assert!(matches!(&calls[0].function.arguments, Value::String(s) if s.contains("ls")));
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(
+            json["tool_calls"][0]["function"]["arguments"],
+            json!(r#"{"command":"ls"}"#)
+        );
+    }
+
+    /// The regression: generation stopped mid-string, `decode_tool_arguments`
+    /// kept the raw text, and replaying it encoded that text a second time. The
+    /// server parsed it back to a string, its chat template failed on
+    /// `arguments|items`, and every later request in the session failed with it.
+    #[test]
+    fn arguments_that_never_parsed_are_replayed_as_an_empty_object() {
+        let truncated = r##"{"new_text":"# Emacs"##;
+        let result = to_chat_messages(vec![Message::ToolCall(ToolCall {
+            id: "t1".into(),
+            name: "edit".into(),
+            arguments: Value::String(truncated.to_string()),
+            parse_error: Some("EOF while parsing a string".into()),
+        })]);
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["tool_calls"][0]["function"]["arguments"], json!("{}"));
+    }
+
+    #[test]
+    fn only_an_object_reaches_the_wire() {
+        assert_eq!(
+            encode_arguments(&json!({"path": "a.rs"})),
+            r#"{"path":"a.rs"}"#
+        );
+        let encoded = Value::String(r#"{"path":"a.rs"}"#.to_string());
+        assert_eq!(encode_arguments(&encoded), r#"{"path":"a.rs"}"#);
+        // Valid JSON, but not an object — the shape that produced
+        // `Unknown (built-in) filter 'items' for type String`.
+        assert_eq!(
+            encode_arguments(&Value::String("\"just text\"".into())),
+            "{}"
+        );
+        assert_eq!(encode_arguments(&json!(["a", "b"])), "{}");
+        assert_eq!(encode_arguments(&Value::Null), "{}");
     }
 
     fn function_tool() -> ChatToolDefinition {

@@ -169,21 +169,24 @@ mod tests {
         // SAFETY: no other test reads or writes this variable concurrently.
         unsafe { env::set_var("OPENROUTER_API_KEY", "from-env") };
         assert_eq!(
-            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var())
+                .as_deref(),
             Some("from-env")
         );
 
         // SAFETY: as above.
         unsafe { env::set_var("OPENROUTER_API_KEY", "  ") };
         assert_eq!(
-            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var())
+                .as_deref(),
             Some("stored")
         );
 
         // SAFETY: as above.
         unsafe { env::remove_var("OPENROUTER_API_KEY") };
         assert_eq!(
-            auth.api_key_for(AuthProvider::OpenRouter.env_var()).as_deref(),
+            auth.api_key_for(AuthProvider::OpenRouter.env_var())
+                .as_deref(),
             Some("stored")
         );
     }

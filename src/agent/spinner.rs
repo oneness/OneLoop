@@ -3,8 +3,8 @@
 //! Uses `JoinHandle::abort_handle()` — cheaply cloneable — behind an `Arc<Mutex>`
 //! so the `start_callback` can replace it with a fresh handle.
 
-use std::io::IsTerminal;
 use crate::output::{CLEAR_LINE, DIM, RESET};
+use std::io::IsTerminal;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

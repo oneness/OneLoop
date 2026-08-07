@@ -1,8 +1,8 @@
 mod agent;
 mod app;
 mod auth;
-mod config;
 mod catalog;
+mod config;
 mod directives;
 mod models;
 mod output;

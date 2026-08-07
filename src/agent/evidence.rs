@@ -249,7 +249,10 @@ async fn execute_inner(
     let backing_args = Value::Object(
         std::iter::once((spec.arg.to_string(), Value::String(value.to_string()))).collect(),
     );
-    match tool_registry.execute(spec.backing_tool, backing_args, ctx).await {
+    match tool_registry
+        .execute(spec.backing_tool, backing_args, ctx)
+        .await
+    {
         Ok(result) => result,
         Err(e) => ToolResult {
             content: format!("{} failed: {e:#}", spec.name),

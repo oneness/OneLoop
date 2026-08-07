@@ -2,10 +2,10 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::output::{DIM, RESET};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde_json::Value;
-use crate::output::{DIM, RESET};
 
 /// Append-only metrics log, one JSON line per event.
 /// File lives at `.oneloop/metrics/<session-filename>.jsonl`,

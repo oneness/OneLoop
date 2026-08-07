@@ -18,6 +18,8 @@ impl Default for Config {
             .map(PathBuf::from)
             .or_else(|_| env::current_dir())
             .unwrap_or_else(|_| PathBuf::from("."));
+        // Overwritten in `App::run` once the tool registry exists: which
+        // tools registered decides part of both.
         let prompt_sources = prompt_sources(&cwd);
         Self {
             cwd,
@@ -28,17 +30,23 @@ impl Default for Config {
 }
 
 pub fn build_system_prompt(cwd: &Path, tool_names: &[&str]) -> Option<String> {
-    let agents = load_file(cwd.join("AGENTS.md").as_path());
-    let memory = load_file(cwd.join(".oneloop").join("memory.md").as_path())
-        .map(|m| format!("## Memory\n\n{m}"));
+    let sections: Vec<String> = [
+        load_file(cwd.join("AGENTS.md").as_path()),
+        load_file(cwd.join(".oneloop").join("memory.md").as_path())
+            .map(|m| format!("## Memory\n\n{m}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    let body = match (agents, memory) {
-        (None, None) => return None,
-        (Some(a), None) => a,
-        (None, Some(m)) => m,
-        (Some(a), Some(m)) => format!("{a}\n\n{m}"),
-    };
-    Some(format!("{}\n\n{body}", tool_preamble(tool_names)))
+    if sections.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}\n\n{}",
+        tool_preamble(tool_names),
+        sections.join("\n\n")
+    ))
 }
 
 /// Inoculate loaded project instructions: AGENTS.md files are often written
@@ -93,10 +101,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "oneloop-config-test-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("oneloop-config-test-{}-{name}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

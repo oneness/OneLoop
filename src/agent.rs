@@ -15,6 +15,7 @@ use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::output::{DIM, RED, RESET};
 use crate::{
     config::Config,
     directives::ToolMode,
@@ -22,7 +23,6 @@ use crate::{
     providers::ProviderRequest,
     tools::{ToolRegistry, ToolResult},
 };
-use crate::output::{DIM, RED, RESET};
 
 use spinner::SpinnerGuard;
 
@@ -43,9 +43,18 @@ fn key_argument<'a>(name: &str, arguments: &'a serde_json::Value) -> Option<&'a 
     Some(arguments.get(field).and_then(|v| v.as_str()).unwrap_or("?"))
 }
 
+/// One line, always: a multi-line argument would otherwise scroll the
+/// spinner's line away mid-run.
+fn first_line(argument: &str) -> String {
+    match argument.split_once('\n') {
+        Some((first, _)) => format!("{} …", first.trim_end()),
+        None => argument.to_string(),
+    }
+}
+
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     match key_argument(name, arguments) {
-        Some(argument) => format!("{name}: {argument}"),
+        Some(argument) => format!("{name}: {}", first_line(argument)),
         None => name.to_string(),
     }
 }
