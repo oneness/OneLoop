@@ -47,10 +47,6 @@ pub struct ModelEntry {
     /// What goes on the wire — `~deepseek/deepseek-v4-flash-latest`, not
     /// something to type into a directive, hence the alias.
     pub id: String,
-    /// Not a preference: a self-hosted server rejects anything over the `-c`
-    /// it was started with, and a hosted model over its own limit.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,12 +154,6 @@ fn apply_env_overrides(catalog: &mut Catalog) {
     let Some(model) = catalog.active_model_mut() else {
         return;
     };
-    if let Some(window) = env::var("ONELOOP_CONTEXT_WINDOW_TOKENS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-    {
-        model.context_window = Some(window);
-    }
     // A cost control, so it stays reachable without editing the file.
     if let Some(web_tools) = env::var("ONELOOP_WEB_TOOLS")
         .ok()

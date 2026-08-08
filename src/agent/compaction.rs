@@ -12,11 +12,19 @@ use crate::output::{DIM, GREEN, RED, RESET, YELLOW};
 use crate::providers::ProviderRequest;
 
 /// Approximate characters per token (conservative for mixed code/prose).
+/// Good enough to size a metric by; never good enough to decide on, which is
+/// why nothing branches on it.
 const CHARS_PER_TOKEN: usize = 4;
 
-const DEFAULT_COMPACTION_THRESHOLD: u8 = 85;
-
 const TOOL_RESULT_MAX_CHARS: usize = 200;
+
+/// Generous next to a tool result, because an assistant turn is reasoning
+/// rather than bulk output — but bounded, because it is the one message the
+/// model writes without a ceiling of its own. A local server told to predict
+/// until the context fills can answer with the whole window, and a summary
+/// request carrying that verbatim is refused for exactly the reason it was
+/// sent.
+const ASSISTANT_MAX_CHARS: usize = 8_000;
 
 const RECENT_USER_MESSAGES_MAX_TOKENS: usize = 20_000;
 
@@ -36,23 +44,17 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
 
 /// Summarize, distil to memory.md, and reseed a fresh session with the
 /// summary and recent user messages.
-pub async fn auto_compact_if_needed(agent: &mut Agent, model_override: Option<&str>) -> Result<()> {
-    let context_window = agent.models.context_window_for(model_override);
-    if !should_compact(
-        agent.session.messages(),
-        agent.system_prompt_chars(),
-        context_window,
-    ) {
-        return Ok(());
-    }
-
-    println!("{YELLOW}  ⚠ context near limit — auto-compacting...{RESET}");
-
+///
+/// Unconditional: the caller decides when, because only the caller knows
+/// whether it was asked for or forced. `Ok(false)` means the summary call
+/// itself failed and the session was left exactly as it was — the one
+/// outcome a caller that meant to retry afterwards must not ignore.
+pub async fn compact(agent: &mut Agent, model_override: Option<&str>) -> Result<bool> {
     let tokens_before = estimate_tokens(agent.session.messages(), agent.system_prompt_chars());
     let compact_start = Instant::now();
 
     let Some(summary) = generate_summary(agent, model_override).await else {
-        return Ok(()); // failure already reported; keep the session running
+        return Ok(false); // failure already reported; keep the session running
     };
     extract_memory(agent, &summary).await;
     let preserved = reseed_session(agent, &summary)?;
@@ -77,7 +79,7 @@ pub async fn auto_compact_if_needed(agent: &mut Agent, model_override: Option<&s
         "{DIM}  ⚠ long threads and multiple compactions can reduce accuracy. use /clear when possible to keep sessions focused.{RESET}"
     );
 
-    Ok(())
+    Ok(true)
 }
 
 /// None (after reporting) on failure — compaction is best-effort.
@@ -195,23 +197,6 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
     (system_prompt_chars + msg_chars) / CHARS_PER_TOKEN
 }
 
-/// `context_window` is the model's, not a global: borrowing a hosted model's
-/// 128k for a local server started with a smaller `-c` gets the request
-/// refused outright, with nothing to compact after the fact.
-pub fn should_compact(
-    messages: &[Message],
-    system_prompt_chars: usize,
-    context_window: usize,
-) -> bool {
-    let threshold: u8 =
-        crate::config::env_or("ONELOOP_COMPACTION_THRESHOLD", DEFAULT_COMPACTION_THRESHOLD);
-
-    let limit_tokens = (context_window as u64 * threshold as u64 / 100) as usize;
-    let used_tokens = estimate_tokens(messages, system_prompt_chars);
-
-    used_tokens >= limit_tokens
-}
-
 /// Strip large tool outputs from messages, keeping user/assistant messages intact.
 /// Tool results are truncated to a short summary so the compaction call is fast.
 /// Tool calls are kept but with simplified arguments (just the tool name and path/cmd).
@@ -223,7 +208,7 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
                 content: user.content.clone(),
             }),
             Message::Assistant(assistant) => Message::Assistant(AssistantMessage {
-                content: assistant.content.clone(),
+                content: truncate_with_note(&assistant.content, ASSISTANT_MAX_CHARS),
             }),
             Message::ToolCall(tool_call) => {
                 // Keep tool calls but summarize arguments to just the key info.
@@ -233,18 +218,7 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
                 })
             }
             Message::ToolResult(tool_result) => {
-                let truncated = if tool_result.content.len() > TOOL_RESULT_MAX_CHARS {
-                    format!(
-                        "{}... ({} chars truncated)",
-                        crate::output::truncate_at_char_boundary(
-                            &tool_result.content,
-                            TOOL_RESULT_MAX_CHARS
-                        ),
-                        tool_result.content.len()
-                    )
-                } else {
-                    tool_result.content.clone()
-                };
+                let truncated = truncate_with_note(&tool_result.content, TOOL_RESULT_MAX_CHARS);
                 Message::Assistant(AssistantMessage {
                     content: format!(
                         "[{} result: {}] {}",
@@ -257,6 +231,21 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
             Message::System(text) => Message::System(text.clone()),
         })
         .collect()
+}
+
+/// Shorten to `max_chars`, saying how much went. The note is the point:
+/// silently shortened text reads to the summarizing model as though that was
+/// all there ever was, and it will summarize the gap as fact.
+fn truncate_with_note(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let kept = crate::output::truncate_at_char_boundary(text, max_chars);
+    format!(
+        "{kept}... ({} of {} chars truncated)",
+        text.len() - kept.len(),
+        text.len()
+    )
 }
 
 /// Extract just the useful part of tool arguments for a summary.
@@ -380,40 +369,109 @@ pub fn collect_recent_user_messages(messages: &[Message]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_compact;
-    use crate::agent::messages::{Message, UserMessage};
+    use super::{SUMMARY_PREFIX, collect_recent_user_messages, strip_tool_outputs};
+    use crate::agent::messages::{AssistantMessage, Message, ToolResultMessage, UserMessage};
 
-    /// Roughly `tokens` worth of conversation, at CHARS_PER_TOKEN.
-    fn session_of(tokens: usize) -> Vec<Message> {
-        vec![Message::User(UserMessage {
-            content: "x".repeat(tokens * 4),
-        })]
+    fn user(content: &str) -> Message {
+        Message::User(UserMessage {
+            content: content.to_string(),
+        })
     }
 
     #[test]
-    fn compacts_before_a_small_local_window_is_exceeded() {
-        // The bug this replaced: a 34k-token request against a server
-        // started with -c 32768 was let through, because the window was a
-        // global 128k and 34k never reached 85% of it.
-        assert!(
-            should_compact(&session_of(30_000), 0, 32_000),
-            "30k tokens must compact against a 32k window"
+    fn compact_preserves_recent_user_messages_in_order() {
+        let messages = vec![user("first"), user("second"), user("third")];
+        assert_eq!(
+            collect_recent_user_messages(&messages),
+            vec!["first", "second", "third"],
+            "the newest are chosen, but chronological order is what is replayed"
         );
     }
 
     #[test]
-    fn leaves_the_same_session_alone_on_a_large_window() {
-        assert!(
-            !should_compact(&session_of(30_000), 0, 128_000),
-            "30k tokens is nowhere near a 128k window"
+    fn a_previous_summary_is_not_replayed_as_a_user_message() {
+        // Compacting twice would otherwise carry a summary of a summary
+        // forward, and grow the thing it exists to shrink.
+        let messages = vec![
+            user("the actual question"),
+            user(&format!("{SUMMARY_PREFIX}an earlier handoff")),
+        ];
+        assert_eq!(
+            collect_recent_user_messages(&messages),
+            vec!["the actual question"]
         );
     }
 
     #[test]
-    fn the_system_prompt_counts_against_the_window() {
-        // Tool definitions and AGENTS.md are sent on every request, so a
-        // session that fits without them can still be refused.
-        assert!(!should_compact(&session_of(20_000), 0, 32_000));
-        assert!(should_compact(&session_of(20_000), 40_000, 32_000));
+    fn the_newest_user_messages_win_the_budget() {
+        let budget_tokens: usize = crate::config::env_or(
+            "ONELOOP_COMPACT_USER_MSG_TOKENS",
+            super::RECENT_USER_MESSAGES_MAX_TOKENS,
+        );
+        // One message that alone eats the whole budget, then a newer one.
+        let huge = "x".repeat(budget_tokens * super::CHARS_PER_TOKEN);
+        let messages = vec![user(&huge), user("what I just asked")];
+
+        let kept = collect_recent_user_messages(&messages);
+        assert_eq!(
+            kept.last().map(String::as_str),
+            Some("what I just asked"),
+            "the newest ask is chosen first and replayed last, whatever precedes it"
+        );
+        assert!(
+            kept[0].len() < huge.len(),
+            "the oversized predecessor is truncated to what is left, not dropped"
+        );
+    }
+
+    #[test]
+    fn a_runaway_assistant_turn_cannot_oversize_the_summary_request() {
+        // A local server predicting until the context fills answers with the
+        // whole window. Replaying that verbatim gets the summary call
+        // refused for the very reason it was made.
+        let runaway = "na ".repeat(50_000);
+        let stripped = strip_tool_outputs(&[Message::Assistant(AssistantMessage {
+            content: runaway.clone(),
+        })]);
+
+        let Some(Message::Assistant(assistant)) = stripped.first() else {
+            panic!("an assistant message stays one");
+        };
+        assert!(assistant.content.len() < runaway.len() / 10);
+        assert!(assistant.content.contains("truncated"));
+    }
+
+    #[test]
+    fn an_ordinary_assistant_turn_is_left_whole() {
+        // The cap is for runaways; normal reasoning must reach the
+        // summarizer unedited, or compaction quietly degrades every session.
+        let answer = "The bug is in the retry path.".repeat(20);
+        let stripped = strip_tool_outputs(&[Message::Assistant(AssistantMessage {
+            content: answer.clone(),
+        })]);
+
+        let Some(Message::Assistant(assistant)) = stripped.first() else {
+            panic!("an assistant message stays one");
+        };
+        assert_eq!(assistant.content, answer);
+    }
+
+    #[test]
+    fn a_tool_result_is_summarised_rather_than_replayed() {
+        // The summary request must not carry the output that overflowed the
+        // window in the first place.
+        let messages = vec![Message::ToolResult(ToolResultMessage {
+            tool_call_id: "1".to_string(),
+            tool_name: "read".to_string(),
+            content: "y".repeat(10_000),
+            is_error: false,
+        })];
+
+        let stripped = strip_tool_outputs(&messages);
+        let Some(Message::Assistant(assistant)) = stripped.first() else {
+            panic!("a tool result must become an assistant note");
+        };
+        assert!(assistant.content.len() < 1_000, "output must be truncated");
+        assert!(assistant.content.contains("truncated"));
     }
 }

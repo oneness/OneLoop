@@ -108,6 +108,40 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
     true
 }
 
+/// Whether the request was refused because the conversation no longer fits.
+///
+/// The one rejection the agent can cure by itself, so it is worth telling
+/// apart from the rest. Every server words it differently — llama.cpp
+/// "exceeds the available context size", OpenAI "maximum context length",
+/// Anthropic "prompt is too long" — and none of them use a status of their
+/// own, so the message is all there is to go on. An unrecognised phrasing
+/// stays an ordinary error, which is what every one of them was before this
+/// existed: the cost of missing one is the behaviour we already had.
+pub fn is_context_overflow(error: &anyhow::Error) -> bool {
+    /// Lowercase, and matched as substrings: the numbers around them differ
+    /// on every occurrence.
+    const PHRASES: [&str; 6] = [
+        "context length",
+        "context size",
+        "context window",
+        "prompt is too long",
+        "too many tokens",
+        "token count",
+    ];
+
+    let Some(error) = error.downcast_ref::<ProviderHttpError>() else {
+        return false;
+    };
+    if !matches!(
+        error.status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE
+    ) {
+        return false;
+    }
+    let message = error.message.to_lowercase();
+    PHRASES.iter().any(|phrase| message.contains(phrase))
+}
+
 pub mod chat;
 
 /// Non-2xx becomes an error carrying the provider's own message.
@@ -155,13 +189,19 @@ fn extract_error_message(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Provider, ProviderHttpError, extract_error_message, is_retryable};
+    use super::{
+        Provider, ProviderHttpError, extract_error_message, is_context_overflow, is_retryable,
+    };
     use reqwest::StatusCode;
 
     fn http_error(status: StatusCode) -> anyhow::Error {
+        refusal(status, "boom")
+    }
+
+    fn refusal(status: StatusCode, message: &str) -> anyhow::Error {
         ProviderHttpError {
             status,
-            message: "boom".to_string(),
+            message: message.to_string(),
             provider: "local".to_string(),
         }
         .into()
@@ -227,6 +267,51 @@ mod tests {
     fn server_errors_are_retried() {
         assert!(is_retryable(&http_error(StatusCode::INTERNAL_SERVER_ERROR)));
         assert!(is_retryable(&http_error(StatusCode::SERVICE_UNAVAILABLE)));
+    }
+
+    #[test]
+    fn every_server_words_an_overflow_differently() {
+        // Verbatim shapes, because the substrings are chosen to survive the
+        // numbers each one interpolates.
+        for message in [
+            "the request exceeds the available context size. try increasing the context size",
+            "This model's maximum context length is 8192 tokens. However, your messages resulted in 9001 tokens",
+            "prompt is too long: 215427 tokens > 200000 maximum",
+            "The input token count (1048576) exceeds the maximum number of tokens allowed",
+        ] {
+            assert!(
+                is_context_overflow(&refusal(StatusCode::BAD_REQUEST, message)),
+                "not recognised: {message}"
+            );
+        }
+        assert!(is_context_overflow(&refusal(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body too many tokens"
+        )));
+    }
+
+    #[test]
+    fn an_ordinary_refusal_is_not_an_overflow() {
+        // Compacting and retrying would cure none of these, and would throw
+        // away the conversation trying.
+        assert!(!is_context_overflow(&refusal(
+            StatusCode::BAD_REQUEST,
+            "unknown model: gpt-9"
+        )));
+        assert!(!is_context_overflow(&refusal(
+            StatusCode::UNAUTHORIZED,
+            "invalid api key"
+        )));
+        assert!(!is_context_overflow(&anyhow::anyhow!("connection reset")));
+    }
+
+    #[test]
+    fn an_overflow_is_never_retried_as_it_stands() {
+        // The two classifiers must agree: sending the identical oversized
+        // body again is what compaction exists to avoid.
+        let error = refusal(StatusCode::BAD_REQUEST, "maximum context length is 8192");
+        assert!(is_context_overflow(&error));
+        assert!(!is_retryable(&error));
     }
 
     #[test]

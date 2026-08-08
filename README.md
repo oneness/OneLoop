@@ -23,6 +23,7 @@ Starts an interactive REPL. Type your message and press Enter.
 Commands:
 - `/model` — list the configured models and switch to one
 - `/model <alias>` — switch straight to that model
+- `/compact` — summarize the session and continue from the summary
 - `/clear` — wipe context and start a fresh session
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
@@ -102,7 +103,7 @@ shown here with a second OpenRouter model added:
     "local": {
       "base_url": "http://localhost:8080/v1",
       "models": {
-        "local": { "id": "local", "max_tokens": 4096, "context_window": 128000 }
+        "local": { "id": "local" }
       }
     },
     "openrouter": {
@@ -110,8 +111,8 @@ shown here with a second OpenRouter model added:
       "api_key_env": "OPENROUTER_API_KEY",
       "web_tools": true,
       "models": {
-        "flash":  { "id": "~deepseek/deepseek-v4-flash-latest", "context_window": 128000 },
-        "pinned": { "id": "deepseek/deepseek-v4-flash-0731", "context_window": 128000 }
+        "flash":  { "id": "~deepseek/deepseek-v4-flash-latest" },
+        "pinned": { "id": "deepseek/deepseek-v4-flash-0731" }
       }
     }
   }
@@ -121,8 +122,16 @@ shown here with a second OpenRouter model added:
 Adding a model for consensus is a few lines under its provider — no repeated
 URL, no repeated key. Provider keys: `base_url`, `api_key_env` (omit for a
 server that needs none), `web_tools`, `models`. Model keys: `id` (what goes
-on the wire), `context_window`, `max_tokens`, `temperature`, `web_tools`;
-model settings override the provider's.
+on the wire), `max_tokens`, `temperature`, `web_tools`; model settings
+override the provider's.
+
+There is no `context_window` to declare. The server is the authority on what
+fits, and it says so by refusing the request — see [Compaction](#compaction).
+
+`max_tokens` caps output per response and is omitted unless you set it, so a
+hosted provider's own default applies. The bundled `local` model leaves it
+unset too: `nix run .#serve` starts llama-server with `-n 32768`, which is
+the same ceiling in one place instead of two.
 
 `default` names the alias used when nothing else is asked for. It is `local`
 out of the box, which needs no credentials, so an unconfigured checkout
@@ -141,7 +150,6 @@ key were in it.
 Override for a single run:
 
 - `ONELOOP_MODEL=<alias>` — use a different model
-- `ONELOOP_CONTEXT_WINDOW_TOKENS` — override the active model's window
 - `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the active model
 
 `ONELOOP_PROVIDER` is accepted as the old name for `ONELOOP_MODEL`.
@@ -195,13 +203,37 @@ Tuning (all optional):
 
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
-- `ONELOOP_COMPACTION_THRESHOLD` — % of context window that triggers auto-compaction (default: `85`)
 - `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
 
 A provider names the environment variable holding its key (`api_key_env`);
 that variable is read first, then `~/.oneloop/auth.json` — an explicitly set
 env var always wins. The default `local` provider names none, so a default
 run needs no credentials anywhere.
+
+## Compaction
+
+Nothing compacts on a schedule, and no context window is configured anywhere.
+Compaction happens for exactly two reasons:
+
+- **You asked** — `/compact` in interactive mode.
+- **The model refused** — a request that no longer fits comes back as a
+  rejection, and only then does the agent summarize and send it again.
+
+The server is the only thing that reliably knows what fits: a llama-server
+started with `-c 8192` and a hosted model with a 200k window are the same
+code path, because both say so in the same place. A declared window is a
+number that goes stale, guesses wrong for local servers, and has to be
+maintained per model.
+
+The retry is offered once per prompt. A second refusal means the summary did
+not shrink things enough, and OneLoop says so rather than summarizing a
+summary — use `/clear`, or a model with a larger window.
+
+Compaction summarizes the thread, appends durable facts to
+`.oneloop/memory.md`, rotates to a fresh session file, and replays recent
+user messages verbatim ahead of the summary. Long threads and repeated
+compactions cost accuracy, so `/clear` is the better habit where the next
+task is genuinely new.
 
 ## Development
 

@@ -85,6 +85,20 @@
         #                         30k-token request, same as at 32k), while
         #                         the earlier 32768 was a benchmark artifact
         #                         and made ordinary sessions fail outright.
+        #   -n 32768              output ceiling per response, and the only
+        #                         place one is set — the config file names
+        #                         no `max_tokens`, so nothing has to be kept
+        #                         in sync. The default is -1 (infinity), and
+        #                         with context shift disabled that lets a
+        #                         model that never emits EOS generate until
+        #                         it fills -c: a repetition loop then costs
+        #                         the whole window, and the reply is too
+        #                         large for the agent to summarize its way
+        #                         out of. A quarter of the context bounds
+        #                         that while clearing any real answer — the
+        #                         earlier 4096 was inherited from a hosted
+        #                         API that requires the field, and cut
+        #                         large write/edit calls off mid-JSON.
         #
         # No Vulkan environment setup: unlike a hand-built binary, this one
         # finds the GPU on its own — VK_ICD_FILENAMES and LD_LIBRARY_PATH are
@@ -166,7 +180,7 @@
 
             exec llama-server \
               -m "$MODEL" \
-              -t 12 -c 131072 -n 4096 \
+              -t 12 -c 131072 -n 32768 \
               --jinja --reasoning-preserve --reasoning-budget 600 \
               --host 127.0.0.1 --port "$PORT" --alias local \
               "$@"

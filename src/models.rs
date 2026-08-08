@@ -18,9 +18,6 @@ use crate::providers::{Provider, ProviderRequest, ProviderResponse, chat};
 
 mod retry;
 
-/// Used when a model does not state its own.
-const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
-
 /// One model, ready to answer.
 #[derive(Debug)]
 pub struct Model {
@@ -29,9 +26,6 @@ pub struct Model {
     /// What goes on the wire.
     pub id: String,
     pub provider: Arc<Provider>,
-    /// Not a tuning knob: too high and the request is rejected outright,
-    /// with nothing to fall back on.
-    pub context_window: usize,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub web_tools: bool,
@@ -76,7 +70,6 @@ impl ModelRegistry {
                 alias: alias.clone(),
                 id: model.id.clone(),
                 provider: Arc::clone(&provider),
-                context_window: model.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
                 max_tokens: model.max_tokens,
                 temperature: model.temperature,
                 web_tools: model.web_tools.or(entry.web_tools).unwrap_or(false),
@@ -149,14 +142,6 @@ impl ModelRegistry {
             .map(|(provider, aliases)| format!("{provider} ({})", aliases.join(", ")))
             .collect::<Vec<_>>()
             .join(", ")
-    }
-
-    /// Compaction needs this before the request exists, so it resolves by
-    /// alias rather than reading a global.
-    pub fn context_window_for(&self, alias: Option<&str>) -> usize {
-        self.resolve(alias)
-            .unwrap_or_else(|_| self.active())
-            .context_window
     }
 
     fn unknown_alias(&self, alias: &str) -> String {
@@ -280,16 +265,14 @@ mod tests {
         let registry = registry(
             r#"{"default":"a","providers":{"p":{
                  "base_url":"http://u","web_tools":true,
-                 "models":{"a":{"id":"x","web_tools":false,"context_window":9},
+                 "models":{"a":{"id":"x","web_tools":false},
                            "b":{"id":"y"}}}}}"#,
         );
         let a = registry.get("a").unwrap();
         assert!(!a.web_tools, "model must win over provider");
-        assert_eq!(a.context_window, 9);
 
         let b = registry.get("b").unwrap();
         assert!(b.web_tools, "provider otherwise");
-        assert_eq!(b.context_window, DEFAULT_CONTEXT_WINDOW, "then the default");
     }
 
     #[test]

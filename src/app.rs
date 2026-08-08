@@ -17,6 +17,9 @@ pub struct App {
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
     Clear,
+    /// Summarize now, rather than waiting for a model to refuse the next
+    /// request. Nothing else compacts on a schedule.
+    Compact,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
 }
@@ -31,6 +34,7 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
         "clear" => Some(Command::Clear),
+        "compact" => Some(Command::Compact),
         "model" => Some(Command::Model(argument)),
         _ => None,
     }
@@ -40,6 +44,13 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) {
     match command {
         Command::Clear => {
             if let Err(e) = agent.clear_session() {
+                eprintln!("{RED}  ✗ {e:#}{RESET}");
+            }
+        }
+        // A failed summary is reported where it happens, and leaves the
+        // session untouched — there is nothing to add here.
+        Command::Compact => {
+            if let Err(e) = agent.compact(None).await {
                 eprintln!("{RED}  ✗ {e:#}{RESET}");
             }
         }
@@ -130,13 +141,6 @@ async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
     run_directives(agent, directives).await
 }
 
-fn model_override(directives: &PromptDirectives) -> Option<&str> {
-    match &directives.mode {
-        RunMode::Single { model } => model.as_deref(),
-        RunMode::Consensus { .. } | RunMode::Debate { .. } => None,
-    }
-}
-
 impl App {
     pub fn new(config: Config) -> Self {
         Self { config }
@@ -168,7 +172,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     println!("{}", agent.summary());
     println!();
     println!(
-        "interactive mode — type your message, /model to switch model, /clear to reset context, Ctrl+C to stop"
+        "interactive mode — type your message, /model to switch model, /compact to summarize, /clear to reset context, Ctrl+C to stop"
     );
     println!();
 
@@ -216,7 +220,6 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
             return;
         }
     };
-    let compact_model_override = model_override(&directives).map(String::from);
 
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
@@ -237,13 +240,6 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
     if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
         eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
     }
-
-    if let Err(e) = agent
-        .auto_compact_if_needed(compact_model_override.as_deref())
-        .await
-    {
-        eprintln!("{RED}  ✗ auto-compaction failed: {e:#}{RESET}");
-    }
 }
 
 #[cfg(test)]
@@ -253,6 +249,12 @@ mod tests {
     #[test]
     fn clear_is_a_command() {
         assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
+    }
+
+    #[test]
+    fn compact_is_a_command() {
+        // The only way to compact on purpose: nothing does it on a timer.
+        assert!(matches!(parse_command("/compact"), Some(Command::Compact)));
     }
 
     #[test]

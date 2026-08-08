@@ -39,8 +39,12 @@ impl ModelRegistry {
                     last_error = Some(err_msg.clone());
 
                     // Rejected once is rejected identically next time.
+                    // `context` rather than `bail!`: the caller downcasts to
+                    // tell a body over the context limit — which it can cure
+                    // by compacting — from a refusal it cannot, and a
+                    // formatted string would have thrown the type away.
                     if !is_retryable(&e) {
-                        bail!("[{label}] {err_msg}");
+                        return Err(e.context(format!("[{label}]")));
                     }
 
                     if attempt < max_retries {

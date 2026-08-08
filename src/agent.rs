@@ -15,12 +15,12 @@ use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::output::{DIM, RED, RESET};
+use crate::output::{DIM, RED, RESET, YELLOW};
 use crate::{
     config::Config,
     directives::ToolMode,
     models::ModelRegistry,
-    providers::ProviderRequest,
+    providers::{ProviderRequest, is_context_overflow},
     tools::{ToolRegistry, ToolResult},
 };
 
@@ -113,8 +113,9 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn auto_compact_if_needed(&mut self, model_override: Option<&str>) -> Result<()> {
-        compaction::auto_compact_if_needed(self, model_override).await
+    /// `Ok(false)` when the summary call failed and the session is unchanged.
+    pub async fn compact(&mut self, model_override: Option<&str>) -> Result<bool> {
+        compaction::compact(self, model_override).await
     }
 
     fn orchestration_ctx(&mut self) -> orchestration::OrchestrationCtx<'_> {
@@ -177,6 +178,10 @@ impl Agent {
         );
 
         let mut active_model = model_override.map(String::from);
+        // Compaction is offered once per turn. A second overflow means the
+        // summary did not shrink the conversation enough to matter, and
+        // summarising a summary is how a loop that never ends starts.
+        let mut compacted = false;
 
         for _iteration in 1..=max_iterations {
             let spinner = SpinnerGuard::new("thinking...");
@@ -219,6 +224,27 @@ impl Agent {
                         tokens_estimated,
                         false,
                     );
+                    // The only refusal the loop can answer by itself. The
+                    // server is the authority on what fits — no window is
+                    // configured anywhere — so this is where compaction is
+                    // decided, mid-loop and in one-shot runs alike.
+                    if !compacted && is_context_overflow(&e) {
+                        compacted = true;
+                        println!("{YELLOW}  ⚠ context exceeded — compacting and retrying{RESET}");
+                        match compaction::compact(self, active_model.as_deref()).await {
+                            Ok(true) => continue,
+                            // Already reported; falling through says what to
+                            // do about it rather than repeating why.
+                            Ok(false) => {}
+                            Err(e) => eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}"),
+                        }
+                        println!(
+                            "{DIM}  the conversation is too large for {requested_model} to \
+                             summarize — use /clear, or switch to a model with a larger \
+                             window{RESET}"
+                        );
+                        break;
+                    }
                     println!("{RED}  ✗ provider error: {e:#}{RESET}");
                     break;
                 }

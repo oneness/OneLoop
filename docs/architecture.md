@@ -127,6 +127,18 @@ Memory is updated automatically at compaction time via a second, cheap LLM call 
 
 The file is human-readable and hand-editable. Delete lines to forget things, add lines to seed memory before the first compaction.
 
+## Compaction
+
+Compaction is never scheduled and never predicted. It runs when the user types `/compact`, or when a provider rejects a request for not fitting — `is_context_overflow` in `providers.rs` classifies a 400/413 by the phrases every server words differently ("context length", "prompt is too long", "context size"), beside `is_retryable` and answering the same kind of question about the same error.
+
+The agent loop owns the reaction, because the session is what has to change: `run_once_with` catches the refusal, compacts, and retries the same iteration. Once per prompt — a second refusal means the summary did not help, and summarizing a summary is how a loop that never terminates begins.
+
+Deciding at the point of refusal rather than ahead of it is what removes the machinery: no per-model `context_window` to declare, no threshold percentage to tune, no character-per-token estimate in a branch. The server already knows what fits and says so. `estimate_tokens` survives only to size the `tokens_estimated` metric, where being approximate is harmless.
+
+The consequence is one wasted request per overflow. That is cheap — a rejected request is not billed by hosted providers, and a local server refuses after tokenizing rather than after generating.
+
+Compacting summarizes the thread through a plain completion call (tool outputs stripped to short notes first, so the summary request is not itself oversized), extracts memory, rotates to a fresh session file, then replays recent user messages verbatim followed by the summary. An unrecognised refusal phrasing costs nothing new: it stays an ordinary reported error, which is what it was before.
+
 ## Sessions
 
 Sessions are linear append-only JSONL files stored at:
@@ -165,7 +177,7 @@ src/
     orchestration.rs Consensus, debate, per-model evidence loops
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
-    compaction.rs   Auto-compaction, token estimation, memory extraction
+    compaction.rs   Summarize-and-reseed, token estimation, memory extraction
     evidence.rs     Evidence-tool table (single source of truth), cache, shell guardrail
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
   app.rs            Interactive REPL (rustyline), /commands, directive dispatch, Ctrl+C handling

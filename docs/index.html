@@ -472,13 +472,14 @@
   </div>
 </section>
 
-<!-- ═══ 17. Auto-Compaction ═══ -->
+<!-- ═══ 17. Compaction ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
-    <h2>Auto-compaction</h2>
-    <p class="big">When context nears the model's limit, the agent compacts:<br>generates a summary, rotates to a new session,<br>replays recent user messages verbatim.</p>
-    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">Triggered at <strong>85%</strong> of context window.</p>
+    <h2>Compaction</h2>
+    <p class="big">When context runs out, the agent compacts:<br>generates a summary, rotates to a new session,<br>replays recent user messages verbatim.</p>
+    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">Triggered by <strong>/compact</strong>, or by the model <strong>refusing the request</strong>.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">No context window is configured anywhere — the server is the<br>authority on what fits, and it says so by saying no.</p>
     <p class="big" style="margin-top: 16px; font-size: 16px;">A second cheap call distils the summary into <strong>memory.md</strong> —<br>durable facts that survive across sessions.</p>
   </div>
 </section>
