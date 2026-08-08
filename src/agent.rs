@@ -312,7 +312,7 @@ impl Agent {
             )?;
 
             if result.is_error {
-                println!("{RED}  ✗ {tool_label} (failed){RESET}");
+                println!("{RED}  ✗ {tool_label} (failed: {}){RESET}", result.content);
             } else {
                 let lines = result.content.lines().count();
                 let bytes = result.content.len();
