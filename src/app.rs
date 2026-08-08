@@ -90,8 +90,10 @@ impl App {
     pub async fn run(mut self, prompt: Option<String>) -> Result<()> {
         let models = ModelRegistry::new()?;
         let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
-        self.config.system_prompt =
-            config::build_system_prompt(&self.config.cwd, &tool_registry.names());
+        self.config.system_prompt = Some(config::build_system_prompt(
+            &self.config.cwd,
+            &tool_registry.names(),
+        ));
         self.config.prompt_sources = config::prompt_sources(&self.config.cwd);
         let mut agent = Agent::new(self.config, models, tool_registry)?;
 

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
 
-use super::{Tool, ToolResult};
+use super::{Tool, ToolResult, resolve_path};
 
 pub struct WriteTool;
 
@@ -33,7 +33,9 @@ impl Tool for WriteTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to write"
+                    "description": "Path to the file to write. Relative to the \
+                                    working directory unless absolute. `~` is \
+                                    expanded; pass it through as-is."
                 },
                 "content": {
                     "type": "string",
@@ -48,8 +50,7 @@ impl Tool for WriteTool {
         let input: WriteInput = serde_json::from_value(input)
             .context("invalid write input; expected { path: string, content: string }")?;
 
-        let relative_path = input.path.trim_start_matches('@');
-        let path = ctx.cwd.join(relative_path);
+        let path = resolve_path(&ctx.cwd, &input.path);
 
         if let Some(parent) = path.parent()
             && parent != Path::new("")

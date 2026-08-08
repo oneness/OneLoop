@@ -1,5 +1,3 @@
-use std::env;
-
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -10,21 +8,9 @@ use crate::{
     output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head},
 };
 
-use super::{Tool, ToolResult};
+use super::{Tool, ToolResult, resolve_path};
 
 pub struct ReadTool;
-
-/// Expand `~` to the user's home directory, or leave the path unchanged
-/// if there is no `~` prefix or the home directory cannot be determined.
-fn expand_tilde(path: &str) -> String {
-    let Some(home) = env::var("HOME").ok() else {
-        return path.to_string();
-    };
-    let prefix = "~";
-    path.strip_prefix(prefix)
-        .map(|rest| format!("{home}{rest}"))
-        .unwrap_or_else(|| path.to_string())
-}
 
 #[derive(Debug, Deserialize)]
 struct ReadInput {
@@ -47,7 +33,9 @@ impl Tool for ReadTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to read"
+                    "description": "Path to the file to read. Relative to the \
+                                    working directory unless absolute. `~` is \
+                                    expanded; pass it through as-is."
                 }
             },
             "required": ["path"]
@@ -58,13 +46,7 @@ impl Tool for ReadTool {
         let input: ReadInput = serde_json::from_value(input)
             .context("invalid read input; expected { path: string }")?;
 
-        let trimmed = input.path.trim_start_matches('@');
-        let expanded = expand_tilde(trimmed);
-        let path = if expanded.starts_with('/') {
-            std::path::PathBuf::from(&expanded)
-        } else {
-            ctx.cwd.join(&expanded)
-        };
+        let path = resolve_path(&ctx.cwd, &input.path);
 
         if !tokio::fs::try_exists(&path)
             .await

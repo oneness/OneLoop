@@ -29,8 +29,30 @@ impl Default for Config {
     }
 }
 
-pub fn build_system_prompt(cwd: &Path, tool_names: &[&str]) -> Option<String> {
+/// Runtime facts the model cannot observe on its own. Without them it invents
+/// a home directory — `/Users/runner`, straight out of CI logs in training
+/// data — and hands the read tool an absolute path that never existed here.
+fn environment_block(cwd: &Path) -> String {
+    let home = env::var("HOME").unwrap_or_else(|_| "<unknown>".to_string());
+    format!(
+        "## Environment\n\n\
+         - Working directory: {}\n\
+         - Home directory: {home}\n\
+         - Platform: {}\n\n\
+         A path beginning with `/` or `~` is already anchored: pass it to a \
+         tool exactly as written, and never prefix the working directory onto \
+         it. Only a path with no such prefix is relative, and those resolve \
+         against the working directory. `~` is expanded for you. Never invent \
+         an absolute path from any root other than the two above — the \
+         working directory is often not the home directory.",
+        cwd.display(),
+        env::consts::OS,
+    )
+}
+
+pub fn build_system_prompt(cwd: &Path, tool_names: &[&str]) -> String {
     let sections: Vec<String> = [
+        Some(environment_block(cwd)),
         load_file(cwd.join("AGENTS.md").as_path()),
         load_file(cwd.join(".oneloop").join("memory.md").as_path())
             .map(|m| format!("## Memory\n\n{m}")),
@@ -39,14 +61,7 @@ pub fn build_system_prompt(cwd: &Path, tool_names: &[&str]) -> Option<String> {
     .flatten()
     .collect();
 
-    if sections.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "{}\n\n{}",
-        tool_preamble(tool_names),
-        sections.join("\n\n")
-    ))
+    format!("{}\n\n{}", tool_preamble(tool_names), sections.join("\n\n"))
 }
 
 /// Inoculate loaded project instructions: AGENTS.md files are often written
@@ -111,7 +126,7 @@ mod tests {
         let dir = temp_dir("preamble");
         fs::write(dir.join("AGENTS.md"), "Use `semble search` to find code.").unwrap();
 
-        let prompt = build_system_prompt(&dir, &["read", "bash"]).unwrap();
+        let prompt = build_system_prompt(&dir, &["read", "bash"]);
 
         assert!(prompt.starts_with("Your only tools are: read, bash"));
         assert!(prompt.contains("semble search"));
@@ -119,9 +134,13 @@ mod tests {
     }
 
     #[test]
-    fn no_sources_means_no_system_prompt() {
+    fn prompt_always_carries_environment() {
         let dir = temp_dir("empty");
-        assert!(build_system_prompt(&dir, &["read"]).is_none());
+
+        let prompt = build_system_prompt(&dir, &["read"]);
+
+        assert!(prompt.contains("## Environment"));
+        assert!(prompt.contains(&dir.display().to_string()));
         let _ = fs::remove_dir_all(&dir);
     }
 }

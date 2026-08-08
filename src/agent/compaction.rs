@@ -139,10 +139,10 @@ async fn extract_memory(agent: &mut Agent, summary: &str) {
         Ok(memory_response) => {
             match append_and_trim_memory(&agent.config.cwd, &memory_response.content) {
                 Ok(()) => {
-                    agent.config.system_prompt = crate::config::build_system_prompt(
+                    agent.config.system_prompt = Some(crate::config::build_system_prompt(
                         &agent.config.cwd,
                         &agent.tool_registry.names(),
-                    );
+                    ));
                     agent.config.prompt_sources = crate::config::prompt_sources(&agent.config.cwd);
                 }
                 Err(e) => {

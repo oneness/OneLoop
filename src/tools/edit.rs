@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::agent::AgentContext;
 
-use super::{Tool, ToolResult};
+use super::{Tool, ToolResult, resolve_path};
 
 pub struct EditTool;
 
@@ -32,7 +32,9 @@ impl Tool for EditTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to edit"
+                    "description": "Path to the file to edit. Relative to the \
+                                    working directory unless absolute. `~` is \
+                                    expanded; pass it through as-is."
                 },
                 "old_text": {
                     "type": "string",
@@ -52,8 +54,7 @@ impl Tool for EditTool {
             "invalid edit input; expected { path: string, old_text: string, new_text: string }",
         )?;
 
-        let relative_path = input.path.trim_start_matches('@');
-        let path = ctx.cwd.join(relative_path);
+        let path = resolve_path(&ctx.cwd, &input.path);
 
         if !tokio::fs::try_exists(&path)
             .await
