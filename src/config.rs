@@ -60,8 +60,7 @@ fn tool_preamble(tool_names: &[&str]) -> String {
     )
 }
 
-/// Cap on agent-loop iterations per prompt (shared by the main loop and
-/// orchestration evidence loops).
+/// Cap on agent-loop iterations per prompt.
 pub const DEFAULT_MAX_ITERATIONS: usize = 50;
 
 /// Read an env var, falling back to `default` when unset or unparsable.

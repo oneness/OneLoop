@@ -1,8 +1,6 @@
 pub mod compaction;
-pub mod evidence;
 pub mod messages;
 pub mod metrics;
-pub mod orchestration;
 pub mod session;
 
 mod spinner;
@@ -18,7 +16,6 @@ use std::sync::Arc;
 use crate::output::{DIM, RED, RESET, YELLOW};
 use crate::{
     config::Config,
-    directives::ToolMode,
     models::ModelRegistry,
     providers::{ProviderRequest, is_context_overflow},
     tools::{ToolRegistry, ToolResult},
@@ -118,58 +115,7 @@ impl Agent {
         compaction::compact(self, model_override).await
     }
 
-    fn orchestration_ctx(&mut self) -> orchestration::OrchestrationCtx<'_> {
-        orchestration::OrchestrationCtx {
-            models: &self.models,
-            tool_registry: &self.tool_registry,
-            system_prompt: &self.config.system_prompt,
-            cwd: &self.config.cwd,
-            session: &mut self.session,
-        }
-    }
-
-    pub async fn run_consensus(
-        &mut self,
-        prompt: String,
-        models: Vec<String>,
-        judge: Option<String>,
-        tools: ToolMode,
-    ) -> Result<()> {
-        orchestration::run_consensus(
-            &mut self.orchestration_ctx(),
-            &prompt,
-            &models,
-            &judge,
-            &tools,
-        )
-        .await
-    }
-
-    pub async fn run_debate(
-        &mut self,
-        prompt: String,
-        models: Vec<String>,
-        judge: Option<String>,
-        rounds: usize,
-        tools: ToolMode,
-    ) -> Result<()> {
-        orchestration::run_debate(
-            &mut self.orchestration_ctx(),
-            &prompt,
-            &models,
-            &judge,
-            rounds,
-            &tools,
-        )
-        .await
-    }
-
-    pub async fn run_once_with(
-        &mut self,
-        prompt: String,
-        model_override: Option<&str>,
-        model_id_override: Option<String>,
-    ) -> Result<()> {
+    pub async fn run_once(&mut self, prompt: String) -> Result<()> {
         self.session.push_user(prompt)?;
 
         let max_iterations: usize = crate::config::env_or(
@@ -177,7 +123,9 @@ impl Agent {
             crate::config::DEFAULT_MAX_ITERATIONS,
         );
 
-        let mut active_model = model_override.map(String::from);
+        // None until a request completes; a fallback answer pins the loop to
+        // whichever model actually replied.
+        let mut active_model: Option<String> = None;
         // Compaction is offered once per turn. A second overflow means the
         // summary did not shrink the conversation enough to matter, and
         // summarising a summary is how a loop that never ends starts.
@@ -189,8 +137,7 @@ impl Agent {
                 compaction::estimate_tokens(self.session.messages(), self.system_prompt_chars());
             let api_start = Instant::now();
             // For metrics: the model this request is aimed at, which the
-            // registry's active one only approximates when an override is in
-            // play.
+            // registry's active one only approximates after a fallback.
             let requested_model = active_model
                 .clone()
                 .unwrap_or_else(|| self.models.active().alias.clone());
@@ -198,7 +145,6 @@ impl Agent {
                 system_prompt: self.config.system_prompt.clone(),
                 messages: self.session.messages().to_vec(),
                 tools: self.tool_registry.definitions(),
-                model_id_override: model_id_override.clone(),
             };
 
             let response = match self
@@ -217,13 +163,7 @@ impl Agent {
                 }
                 Err(e) => {
                     spinner.stop();
-                    self.log_api_call(
-                        &requested_model,
-                        model_id_override.as_deref(),
-                        api_start,
-                        tokens_estimated,
-                        false,
-                    );
+                    self.log_api_call(&requested_model, api_start, tokens_estimated, false);
                     // The only refusal the loop can answer by itself. The
                     // server is the authority on what fits — no window is
                     // configured anywhere — so this is where compaction is
@@ -254,13 +194,7 @@ impl Agent {
             // active_model was just set to the model that answered (it may
             // differ from the requested one after a fallback).
             let used_model = active_model.clone().unwrap_or(requested_model);
-            self.log_api_call(
-                &used_model,
-                model_id_override.as_deref(),
-                api_start,
-                tokens_estimated,
-                true,
-            );
+            self.log_api_call(&used_model, api_start, tokens_estimated, true);
 
             if !response.content.trim().is_empty() {
                 self.session.push_assistant(response.content.clone())?;
@@ -289,22 +223,14 @@ impl Agent {
             .unwrap_or(0)
     }
 
-    fn log_api_call(
-        &self,
-        model: &str,
-        model_id_override: Option<&str>,
-        started: Instant,
-        tokens_estimated: usize,
-        success: bool,
-    ) {
+    fn log_api_call(&self, model: &str, started: Instant, tokens_estimated: usize, success: bool) {
         self.metrics.log(
             "api_call",
             json!({
                 "model": model,
                 // A log line is not worth failing over an unknown name.
-                "model_id": model_id_override.map(String::from).unwrap_or_else(|| {
-                    self.models.get(model).map_or_else(|_| "?".to_string(), |m| m.id.clone())
-                }),
+                "model_id": self.models.get(model)
+                    .map_or_else(|_| "?".to_string(), |m| m.id.clone()),
                 "duration_ms": started.elapsed().as_millis(),
                 "tokens_estimated": tokens_estimated,
                 "success": success,

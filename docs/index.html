@@ -292,26 +292,17 @@
   </div>
 </section>
 
-<!-- ═══ 3. Multi-Model ═══ -->
+<!-- ═══ 3. Models ═══ -->
 <section class="slide">
   <div class="box">
-    <div class="label">orchestration</div>
-    <h2>Multi-Model</h2>
-    <p class="big">Route to any model. Run <strong>consensus</strong> or <strong>debate</strong> across models. A judge synthesizes the final answer.</p>
+    <div class="label">models</div>
+    <h2>Any Model</h2>
+    <p class="big">A local model by default — no key, no account, nothing leaving the box.<br>Reach a hosted one only when you ask for it.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one key, one connection. The models it hosts get short aliases: <code>local</code>, <code>flash</code>. <code>/model</code> switches which one answers for the session.</p>
   </div>
 </section>
 
-<!-- ═══ 4. Evidence Agent ═══ -->
-<section class="slide">
-  <div class="box">
-    <div class="label">safety</div>
-    <h2>Evidence Agent</h2>
-    <p class="big">Orchestrated models <strong>never</strong> get direct tool access.<br>They ask the main agent for context. Cached, shared, deduplicated.</p>
-  </div>
-</section>
-
-<!-- ═══ 5–12. Principles ═══ -->
+<!-- ═══ 4–8. Principles ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">principles</div>
@@ -334,15 +325,6 @@
   <div class="box">
     <div class="label">principles</div>
     <div class="principle-num">3</div>
-    <h2>The main agent owns safety</h2>
-    <p class="big">Orchestrated models ask for evidence.<br>They do not get direct tool access.</p>
-  </div>
-</section>
-
-<section class="slide">
-  <div class="box">
-    <div class="label">principles</div>
-    <div class="principle-num">4</div>
     <h2>Default to readable systems</h2>
     <p class="big">Simple files, explicit flows, minimal magic.</p>
   </div>
@@ -351,7 +333,7 @@
 <section class="slide">
   <div class="box">
     <div class="label">principles</div>
-    <div class="principle-num">5</div>
+    <div class="principle-num">4</div>
     <h2>Optimize for the terminal</h2>
     <p class="big">Fast feedback, clear output, no hidden state.</p>
   </div>
@@ -360,31 +342,13 @@
 <section class="slide">
   <div class="box">
     <div class="label">principles</div>
-    <div class="principle-num">6</div>
-    <h2>One control knob</h2>
-    <p class="big">Prefer one env var or one directive<br>over a matrix of settings.</p>
-  </div>
-</section>
-
-<section class="slide">
-  <div class="box">
-    <div class="label">principles</div>
-    <div class="principle-num">7</div>
-    <h2>Cache and share</h2>
-    <p class="big">Gathered evidence is deduplicated and shared.<br>Never fetch the same thing twice.</p>
-  </div>
-</section>
-
-<section class="slide">
-  <div class="box">
-    <div class="label">principles</div>
-    <div class="principle-num">8</div>
+    <div class="principle-num">5</div>
     <h2>Graceful degradation</h2>
     <p class="big">When something fails, return a clear error. Never panic.</p>
   </div>
 </section>
 
-<!-- ═══ 13. Tools ═══ -->
+<!-- ═══ 9. Tools ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">tools</div>
@@ -399,7 +363,7 @@
   </div>
 </section>
 
-<!-- ═══ 14. Skills ═══ -->
+<!-- ═══ 10. Skills ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">skills</div>
@@ -414,52 +378,7 @@
   </div>
 </section>
 
-<!-- ═══ 14. Directive Syntax ═══ -->
-<section class="slide">
-  <div class="box">
-    <div class="label">syntax</div>
-    <h2>Directive syntax</h2>
-    <div class="mono">
-      <span class="kw">#!</span><span class="str">directive words</span><span class="kw">#!</span> your message here
-    </div>
-    <p class="big" style="margin-top: 28px; font-size: 16px; text-align: left;">
-      <strong>Single model</strong><br>
-      <code>#!flash#! review this code</code>
-    </p>
-    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
-      <strong>Model override</strong><br>
-      <code>#!flash model:deepseek/deepseek-v3-0324#! refactor this</code>
-    </p>
-    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
-      <strong>Consensus</strong><br>
-      <code>#!local flash#! should we use X?</code>
-    </p>
-    <p class="big" style="margin-top: 12px; font-size: 16px; text-align: left;">
-      <strong>Debate + judge</strong><br>
-      <code>#!debate local flash rounds:2 judge:flash#! argue this</code>
-    </p>
-  </div>
-</section>
-
-<!-- ═══ 15. Evidence Flow ═══ -->
-<section class="slide">
-  <div class="box">
-    <div class="label">how it works</div>
-    <h2>Evidence flow</h2>
-    <div class="flow">
-      <div class="flow-box">Model calls<br><code>request_evidence</code></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-box hi">Main agent<br>checks cache</div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-box">Execute read,<br>search, or shell</div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-box hi">Cache &amp; return</div>
-    </div>
-    <p class="big" style="font-size: 16px; margin-top: 16px;">Same query = cached result. Shared across all models.<br>Shell commands are read-only only (find, grep, git log).</p>
-  </div>
-</section>
-
-<!-- ═══ 16. Sessions ═══ -->
+<!-- ═══ 11. Sessions ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -472,7 +391,7 @@
   </div>
 </section>
 
-<!-- ═══ 17. Compaction ═══ -->
+<!-- ═══ 12. Compaction ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -484,7 +403,7 @@
   </div>
 </section>
 
-<!-- ═══ 18. Resilience ═══ -->
+<!-- ═══ 13. Resilience ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -501,22 +420,22 @@
   </div>
 </section>
 
-<!-- ═══ 19. Codebase ═══ -->
+<!-- ═══ 14. Codebase ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">stats</div>
     <h2>Codebase</h2>
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">25</td><td style="text-align:right;">5,780</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">568</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">670</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">32</td><td style="text-align:right;">7,018</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">22</td><td style="text-align:right;">4,294</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">491</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">660</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">29</td><td style="text-align:right;">5,445</td></tr>
     </table>
   </div>
 </section>
 
-<!-- ═══ 20. Quick Start ═══ -->
+<!-- ═══ 15. Quick Start ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">get started</div>

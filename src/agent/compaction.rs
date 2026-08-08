@@ -95,7 +95,6 @@ async fn generate_summary(agent: &mut Agent, model_override: Option<&str>) -> Op
         system_prompt: agent.config.system_prompt.clone(),
         messages: compact_messages,
         tools: Vec::new(),
-        model_id_override: None,
     };
 
     let result = agent
@@ -131,7 +130,6 @@ async fn extract_memory(agent: &mut Agent, summary: &str) {
             content: memory_extraction_message(summary),
         })],
         tools: Vec::new(),
-        model_id_override: None,
     };
     match agent
         .models
@@ -184,7 +182,6 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
     let msg_chars: usize = messages
         .iter()
         .map(|msg| match msg {
-            Message::System(text) => text.len(),
             Message::User(user) => user.content.len(),
             Message::Assistant(assistant) => assistant.content.len(),
             Message::ToolCall(tool_call) => {
@@ -228,7 +225,6 @@ pub fn strip_tool_outputs(messages: &[Message]) -> Vec<Message> {
                     ),
                 })
             }
-            Message::System(text) => Message::System(text.clone()),
         })
         .collect()
 }

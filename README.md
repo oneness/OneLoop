@@ -58,25 +58,6 @@ models — the default `local` model uses no credentials.
 
 Two things are reachable but are not tools. `skill` is on-demand prompt engineering — it returns a markdown playbook from `.oneloop/skills/` for the model to follow, and does nothing to the machine; it is registered only when such files exist. Web search and fetching are OpenRouter's, executed server-side and returned inside the assistant message (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 
-## Directives
-
-Directives use `#!directive words#!` followed by the user message:
-
-- `#!flash#! explain this file` — route to the `flash` model
-- `#!flash model:deepseek/deepseek-v3-0324#! refactor this` — one-off wire id
-- `#!model:deepseek/deepseek-v4-flash-0731#! hard problem` — one-off id, default model
-- `#!local flash#! should we do X?` — consensus (2+ models defaults to consensus)
-- `#!consensus local flash judge:flash#! question` — explicit consensus with judge
-- `#!debate local flash rounds:2 judge:flash#! question` — debate with 2 rounds
-- `#!local format:md#! summarize` — single model with markdown output
-
-Tokens between `#!...#!` are space-separated: model aliases, mode keywords
-(`consensus`, `debate`), and key:value modifiers (`model:provider/name`,
-`judge:flash`, `rounds:2`, `tools:none`, `format:md`, `format:html`). No `#!`
-at all means plain prompt with the default model. `model:` is only valid in
-single-model mode; `judge:`, `rounds:`, and `tools:` require consensus or
-debate mode.
-
 ## Providers and models
 
 A **provider** is a place to send requests — a base URL and, if hosted, the
@@ -89,9 +70,8 @@ one connection, however many models are listed under it. `/model` shows them
 grouped that way.
 
 Every model has a short **alias**, which is the name used everywhere else:
-`#!consensus flash pinned#!` rather than the wire ids those resolve to.
-Aliases are unique across all providers, so a directive never has to say
-which provider it meant.
+`/model flash` rather than the wire id it resolves to. Aliases are unique
+across all providers, so naming one never has to say which provider it meant.
 
 Config is `~/.oneloop/config.json`, written from a template on first run —
 shown here with a second OpenRouter model added:
@@ -119,7 +99,7 @@ shown here with a second OpenRouter model added:
 }
 ```
 
-Adding a model for consensus is a few lines under its provider — no repeated
+Adding a model is a few lines under its provider — no repeated
 URL, no repeated key. Provider keys: `base_url`, `api_key_env` (omit for a
 server that needs none), `web_tools`, `models`. Model keys: `id` (what goes
 on the wire), `max_tokens`, `temperature`, `web_tools`; model settings
@@ -151,8 +131,6 @@ Override for a single run:
 
 - `ONELOOP_MODEL=<alias>` — use a different model
 - `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the active model
-
-`ONELOOP_PROVIDER` is accepted as the old name for `ONELOOP_MODEL`.
 
 ### Running the local server
 

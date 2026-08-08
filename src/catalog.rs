@@ -2,7 +2,7 @@
 //!
 //! OpenRouter is one provider serving hundreds of models, so its URL and key
 //! are stated once and the models listed under them. Aliases are unique
-//! across providers, so a directive never has to name one.
+//! across providers, so naming one never has to name its provider too.
 //!
 //! No secrets here — a provider names the environment variable its key lives
 //! in, which is what keeps the file committable to dotfiles.
@@ -45,7 +45,7 @@ pub struct ProviderEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
     /// What goes on the wire — `~deepseek/deepseek-v4-flash-latest`, not
-    /// something to type into a directive, hence the alias.
+    /// something to type at a prompt, hence the alias.
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -82,11 +82,8 @@ pub fn load() -> Result<Catalog> {
             ConfigFile::default()
         }
     };
-    // ONELOOP_MODEL names the model for this run; ONELOOP_PROVIDER is the
-    // name it had before models and providers were separated.
-    let requested = env::var("ONELOOP_MODEL")
-        .or_else(|_| env::var("ONELOOP_PROVIDER"))
-        .ok();
+    // Names the model for this run, by alias; the config's `default` when unset.
+    let requested = env::var("ONELOOP_MODEL").ok();
     let mut catalog = resolve(file, requested)?;
     apply_env_overrides(&mut catalog);
     Ok(catalog)
@@ -124,8 +121,8 @@ impl Catalog {
             .collect()
     }
 
-    /// A duplicate alias would make `#!consensus <alias> ...#!` ambiguous,
-    /// and picking one silently is worse than refusing.
+    /// A duplicate alias would make `/model <alias>` ambiguous, and picking
+    /// one silently is worse than refusing.
     fn check_aliases_are_unique(&self) -> Result<()> {
         let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
         for (name, provider) in &self.providers {
@@ -267,8 +264,8 @@ mod tests {
 
     #[test]
     fn a_duplicate_alias_across_providers_is_refused() {
-        // Picking one would make `#!consensus dup ...#!` mean whichever
-        // provider happened to sort first.
+        // Picking one would make `/model dup` mean whichever provider
+        // happened to sort first.
         let err = parse(
             r#"{"default":"dup","providers":{
                  "p1":{"base_url":"u1","models":{"dup":{"id":"x"}}},

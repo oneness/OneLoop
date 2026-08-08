@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Endpoints (which URL, which model) live in ~/.oneloop/endpoints.json, and
-# the default is the local server. Nothing to export here: setting
-# ONELOOP_OPENROUTER_MODEL would override the default endpoint's model and
-# quietly defeat that.
+# Providers and the models they host live in ~/.oneloop/config.json, and the
+# default is the local server. Nothing to export here — leaving the default
+# alone is what keeps a plain run local.
 #
-# To use a hosted model for one run:  ONELOOP_PROVIDER=openrouter ol "..."
+# To use a hosted model for one run:  ONELOOP_MODEL=flash ol "..."
 
 export ONELOOP_ORIGINAL_DIR="$(pwd)"
 cd "$(dirname "$(readlink -f "$0")")"

@@ -97,10 +97,12 @@ When to use `for` loops instead:
 - Module file structure:
   ```
   src/
-    providers.rs      ← trait, shared types/helpers, pub use re-exports
+    providers.rs      ← provider type, shared request/response types, error helpers
     providers/
       chat.rs         ← the Chat Completions provider
-      registry.rs     ← model registration, selection, retry
+    models.rs         ← model registration and selection
+    models/
+      retry.rs        ← retry, then fall back to another model
   ```
 
 ## Environment Variables
@@ -108,7 +110,7 @@ When to use `for` loops instead:
 All env-based config follows the `ONELOOP_` prefix convention:
 
 ```
-ONELOOP_PROVIDER           default provider name
+ONELOOP_MODEL              model alias for this run
 ONELOOP_MAX_ITERATIONS     agent loop cap (default: 50)
 ONELOOP_MAX_RETRIES        retry cap (default: 3)
 ONELOOP_COMPACT_USER_MSG_TOKENS  user-message tokens replayed across compaction (default: 20000)

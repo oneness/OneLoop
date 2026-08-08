@@ -3,7 +3,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    System(String),
     User(UserMessage),
     Assistant(AssistantMessage),
     ToolCall(ToolCall),

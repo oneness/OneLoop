@@ -21,7 +21,7 @@ mod retry;
 /// One model, ready to answer.
 #[derive(Debug)]
 pub struct Model {
-    /// The short name used everywhere else — directives, `/model`, `default`.
+    /// The short name used everywhere else — `/model`, `default`.
     pub alias: String,
     /// What goes on the wire.
     pub id: String,
@@ -46,8 +46,8 @@ impl fmt::Display for Model {
 
 pub struct ModelRegistry {
     models: Vec<Model>,
-    /// Atomic because `/model` can switch it while orchestration tasks
-    /// already hold the registry behind an `Arc`.
+    /// Atomic because `/model` switches it through a shared reference —
+    /// the registry is held behind an `Arc`.
     active: AtomicUsize,
 }
 
@@ -119,10 +119,6 @@ impl ModelRegistry {
             Some(alias) => self.get(alias),
             None => Ok(self.active()),
         }
-    }
-
-    pub fn aliases(&self) -> Vec<&str> {
-        self.models.iter().map(|m| m.alias.as_str()).collect()
     }
 
     /// `local (local), openrouter (flash, sonnet)`.

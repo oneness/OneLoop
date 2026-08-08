@@ -5,7 +5,6 @@ use crate::output::{BOLD, DIM, RED, RESET, YELLOW};
 use crate::{
     agent::Agent,
     config::{self, Config},
-    directives::{OutputFormat, PromptDirectives, RunMode, parse_prompt},
     models::ModelRegistry,
     tools::ToolRegistry,
 };
@@ -83,64 +82,6 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) {
     }
 }
 
-fn print_directive_summary(directives: &PromptDirectives) {
-    match &directives.mode {
-        RunMode::Single { model: Some(model) } => {
-            eprintln!("{DIM}  → model: {model}{RESET}");
-        }
-        RunMode::Single { model: None } => {}
-        RunMode::Consensus { models } => {
-            eprintln!("{DIM}  → consensus: {}{RESET}", models.join(", "));
-        }
-        RunMode::Debate { models } => {
-            eprintln!("{DIM}  → debate: {}{RESET}", models.join(", "));
-        }
-    }
-}
-
-async fn run_directives(agent: &mut Agent, directives: PromptDirectives) -> Result<()> {
-    print_directive_summary(&directives);
-    let prompt = with_format_instruction(directives.prompt, &directives.format);
-    match directives.mode {
-        RunMode::Single { model } => {
-            agent
-                .run_once_with(prompt, model.as_deref(), directives.model_id)
-                .await
-        }
-        RunMode::Consensus { models } => {
-            agent
-                .run_consensus(prompt, models, directives.judge, directives.tools)
-                .await
-        }
-        RunMode::Debate { models } => {
-            agent
-                .run_debate(
-                    prompt,
-                    models,
-                    directives.judge,
-                    directives.rounds,
-                    directives.tools,
-                )
-                .await
-        }
-    }
-}
-
-/// The model does the formatting; there is no post-processing.
-fn with_format_instruction(prompt: String, format: &OutputFormat) -> String {
-    let instruction = match format {
-        OutputFormat::Plain => return prompt,
-        OutputFormat::Md => "Format your final answer as Markdown.",
-        OutputFormat::Html => "Format your final answer as a single self-contained HTML document.",
-    };
-    format!("{prompt}\n\n{instruction}")
-}
-
-async fn run_directed_prompt(agent: &mut Agent, input: &str) -> Result<()> {
-    let directives = parse_prompt(input, &agent.models().aliases())?;
-    run_directives(agent, directives).await
-}
-
 impl App {
     pub fn new(config: Config) -> Self {
         Self { config }
@@ -159,7 +100,7 @@ impl App {
                 // A one-shot run must not be silent about which model it is
                 // spending on.
                 eprintln!("{DIM}  → {}{RESET}", agent.models().active());
-                run_directed_prompt(&mut agent, &prompt).await
+                agent.run_once(prompt).await
             }
             None => run_interactive(&mut agent).await,
         }
@@ -210,21 +151,10 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 /// Errors are reported, never propagated — a failed turn must not end the
 /// REPL.
 async fn run_interactive_turn(agent: &mut Agent, line: &str) {
-    let directives = match parse_prompt(line, &agent.models().aliases()) {
-        Ok(directives) => directives,
-        Err(e) => {
-            eprintln!("{RED}  ✗ {e:#}{RESET}");
-            println!(
-                "{DIM}  hint: use #!directive words#! <your message>, e.g. #!local#! explain this file{RESET}"
-            );
-            return;
-        }
-    };
-
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
     tokio::select! {
-        result = run_directives(agent, directives) => {
+        result = agent.run_once(line.to_string()) => {
             if let Err(e) = result {
                 eprintln!("{RED}  ✗ {e:#}{RESET}");
             }

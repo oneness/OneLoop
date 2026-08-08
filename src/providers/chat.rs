@@ -42,8 +42,8 @@ struct ChatToolDefinition {
 }
 
 /// OpenRouter executes these itself and returns the results inside the
-/// assistant message. Plain completion calls never get them, so synthesis,
-/// compaction, and memory extraction cannot trigger paid searches.
+/// assistant message. Plain completion calls never get them, so compaction
+/// and memory extraction cannot trigger paid searches.
 fn with_web_tools(mut tools: Vec<ChatToolDefinition>, enabled: bool) -> Vec<ChatToolDefinition> {
     if enabled && !tools.is_empty() {
         for name in ["openrouter:web_search", "openrouter:web_fetch"] {
@@ -186,9 +186,7 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 }
 
 pub async fn complete(model: &Model, request: ProviderRequest) -> Result<ProviderResponse> {
-    let wire_id = request
-        .model_id_override
-        .unwrap_or_else(|| model.id.clone());
+    let wire_id = model.id.clone();
 
     let mut messages = Vec::new();
     if let Some(system) = request.system_prompt {
@@ -273,12 +271,6 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
 
     for message in messages {
         match message {
-            Message::System(text) => result.push(ChatMessage {
-                role: "system".to_string(),
-                content: Some(text),
-                tool_call_id: None,
-                tool_calls: None,
-            }),
             Message::User(user) => result.push(ChatMessage {
                 role: "user".to_string(),
                 content: Some(user.content),

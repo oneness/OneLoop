@@ -57,9 +57,6 @@ pub struct ProviderRequest {
     pub system_prompt: Option<String>,
     pub messages: Vec<crate::agent::messages::Message>,
     pub tools: Vec<crate::tools::ToolDefinition>,
-    /// The `model:` directive: something the provider hosts but the config
-    /// never listed, for this request only.
-    pub model_id_override: Option<String>,
 }
 
 #[derive(Debug, Clone)]

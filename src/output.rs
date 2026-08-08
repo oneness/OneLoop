@@ -46,6 +46,7 @@ struct TruncationResult {
     shown_lines: usize,
 }
 
+#[derive(Clone, Copy)]
 enum Keep {
     Head,
     Tail,

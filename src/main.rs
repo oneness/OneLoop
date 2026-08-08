@@ -3,7 +3,6 @@ mod app;
 mod auth;
 mod catalog;
 mod config;
-mod directives;
 mod models;
 mod output;
 mod providers;
