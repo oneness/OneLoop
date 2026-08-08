@@ -6,7 +6,6 @@ Read [`PRINCIPLES.md`](PRINCIPLES.md) first. Every decision should align with th
 
 ## Environment
 
-- I use NixOS.
 - Always use `nix-shell -p <package>` to install any tools you need. Never assume pip, apt, or other package managers are available.
 - Example: `nix-shell -p python3Packages.python-docx --run "python3 script.py"`
 - Rust toolchain is available via the project flake (`nix develop`).
@@ -27,7 +26,8 @@ See [`docs/style-guide.md`](docs/style-guide.md) for the full coding conventions
 The project has strict `[lints.clippy]` config in `Cargo.toml`. Run before committing:
 
 ```sh
-cargo clippy -- -D warnings
+
+nix develop --command bash -c 'cargo clippy -- -D warnings'
 ```
 
 Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use `#[expect(clippy::lint_name)]` with a comment.
