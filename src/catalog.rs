@@ -13,7 +13,7 @@ use std::{env, fs, path::PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::output::{DIM, RESET};
+use crate::output;
 
 /// A JSON file rather than structs in Rust: which models exist is
 /// configuration, and a value compiled into the binary is one nobody can see
@@ -74,10 +74,10 @@ pub fn load() -> Result<Catalog> {
         Some(file) => file,
         None => {
             match write_default_file() {
-                Ok(path) => eprintln!("{DIM}  → wrote starter config: {}{RESET}", path.display()),
-                Err(e) => eprintln!(
-                    "{DIM}  → could not write config ({e:#}); using built-in defaults{RESET}"
-                ),
+                Ok(path) => output::step(&format!("wrote starter config: {}", path.display())),
+                Err(e) => output::step(&format!(
+                    "could not write config ({e:#}); using built-in defaults"
+                )),
             }
             ConfigFile::default()
         }

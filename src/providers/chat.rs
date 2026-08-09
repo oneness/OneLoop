@@ -42,8 +42,8 @@ struct ChatToolDefinition {
 }
 
 /// OpenRouter executes these itself and returns the results inside the
-/// assistant message. Plain completion calls never get them, so compaction
-/// and memory extraction cannot trigger paid searches.
+/// assistant message. A request carrying no tools never gets them, so a
+/// background completion cannot trigger a paid search.
 fn with_web_tools(mut tools: Vec<ChatToolDefinition>, enabled: bool) -> Vec<ChatToolDefinition> {
     if enabled && !tools.is_empty() {
         for name in ["openrouter:web_search", "openrouter:web_fetch"] {

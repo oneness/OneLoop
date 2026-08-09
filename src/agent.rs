@@ -1,4 +1,3 @@
-pub mod compaction;
 pub mod messages;
 pub mod metrics;
 pub mod session;
@@ -13,7 +12,7 @@ use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::output::{DIM, RED, RESET, YELLOW};
+use crate::output;
 use crate::{
     config::Config,
     models::ModelRegistry,
@@ -71,9 +70,9 @@ impl Agent {
         // calls without results that providers would reject.
         let repaired = session.repair_dangling_tool_calls()?;
         if repaired > 0 {
-            println!(
-                "{DIM}  → closed {repaired} interrupted tool call(s) from a previous run{RESET}"
-            );
+            output::step(&format!(
+                "closed {repaired} interrupted tool call(s) from a previous run"
+            ));
         }
         let metrics = metrics::Metrics::from_session_path(session.path())?;
         Ok(Self {
@@ -94,7 +93,7 @@ impl Agent {
     pub fn repair_dangling_tool_calls(&mut self) -> Result<()> {
         let repaired = self.session.repair_dangling_tool_calls()?;
         if repaired > 0 {
-            println!("{DIM}  → closed {repaired} interrupted tool call(s){RESET}");
+            output::step(&format!("closed {repaired} interrupted tool call(s)"));
         }
         Ok(())
     }
@@ -103,16 +102,11 @@ impl Agent {
     pub fn clear_session(&mut self) -> Result<()> {
         self.session = self.session.rotate()?;
         self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
-        println!(
-            "{DIM}  → cleared context, new session: {}{RESET}",
+        output::step(&format!(
+            "cleared context, new session: {}",
             self.session.path().display()
-        );
+        ));
         Ok(())
-    }
-
-    /// `Ok(false)` when the summary call failed and the session is unchanged.
-    pub async fn compact(&mut self, model_override: Option<&str>) -> Result<bool> {
-        compaction::compact(self, model_override).await
     }
 
     pub async fn run_once(&mut self, prompt: String) -> Result<()> {
@@ -126,15 +120,11 @@ impl Agent {
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
         let mut active_model: Option<String> = None;
-        // Compaction is offered once per turn. A second overflow means the
-        // summary did not shrink the conversation enough to matter, and
-        // summarising a summary is how a loop that never ends starts.
-        let mut compacted = false;
 
         for _iteration in 1..=max_iterations {
             let spinner = SpinnerGuard::new("thinking...");
             let tokens_estimated =
-                compaction::estimate_tokens(self.session.messages(), self.system_prompt_chars());
+                metrics::estimate_tokens(self.session.messages(), self.system_prompt_chars());
             let api_start = Instant::now();
             // For metrics: the model this request is aimed at, which the
             // registry's active one only approximates after a fallback.
@@ -164,28 +154,16 @@ impl Agent {
                 Err(e) => {
                     spinner.stop();
                     self.log_api_call(&requested_model, api_start, tokens_estimated, false);
-                    // The only refusal the loop can answer by itself. The
-                    // server is the authority on what fits — no window is
-                    // configured anywhere — so this is where compaction is
-                    // decided, mid-loop and in one-shot runs alike.
-                    if !compacted && is_context_overflow(&e) {
-                        compacted = true;
-                        println!("{YELLOW}  ⚠ context exceeded — compacting and retrying{RESET}");
-                        match compaction::compact(self, active_model.as_deref()).await {
-                            Ok(true) => continue,
-                            // Already reported; falling through says what to
-                            // do about it rather than repeating why.
-                            Ok(false) => {}
-                            Err(e) => eprintln!("{RED}  ✗ compaction failed: {e:#}{RESET}"),
-                        }
-                        println!(
-                            "{DIM}  the conversation is too large for {requested_model} to \
-                             summarize — use /clear, or switch to a model with a larger \
-                             window{RESET}"
+                    output::fail(&format!("provider error: {e:#}"));
+                    // Nothing the loop can do about this one, but the cure is
+                    // one command away and worth naming: the server is the
+                    // authority on what fits, and it just said no.
+                    if is_context_overflow(&e) {
+                        output::note(
+                            "the conversation no longer fits — use /clear to start fresh, \
+                             or switch to a model with a larger context window",
                         );
-                        break;
                     }
-                    println!("{RED}  ✗ provider error: {e:#}{RESET}");
                     break;
                 }
             };
@@ -312,11 +290,11 @@ impl Agent {
             )?;
 
             if result.is_error {
-                println!("{RED}  ✗ {tool_label} (failed: {}){RESET}", result.content);
+                output::fail(&format!("{tool_label} (failed: {})", result.content));
             } else {
                 let lines = result.content.lines().count();
                 let bytes = result.content.len();
-                println!("{DIM}  ✓ {tool_label} ({lines} lines, {bytes} bytes){RESET}");
+                output::tick(&format!("{tool_label} ({lines} lines, {bytes} bytes)"));
             }
         }
 

@@ -54,8 +54,6 @@ pub fn build_system_prompt(cwd: &Path, tool_names: &[&str]) -> String {
     let sections: Vec<String> = [
         Some(environment_block(cwd)),
         load_file(cwd.join("AGENTS.md").as_path()),
-        load_file(cwd.join(".oneloop").join("memory.md").as_path())
-            .map(|m| format!("## Memory\n\n{m}")),
     ]
     .into_iter()
     .flatten()
@@ -86,17 +84,10 @@ pub fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-pub fn memory_path(cwd: &Path) -> PathBuf {
-    cwd.join(".oneloop").join("memory.md")
-}
-
 pub fn prompt_sources(cwd: &Path) -> Vec<&'static str> {
     let mut sources = Vec::new();
     if load_file(cwd.join("AGENTS.md").as_path()).is_some() {
         sources.push("AGENTS.md");
-    }
-    if load_file(memory_path(cwd).as_path()).is_some() {
-        sources.push(".oneloop/memory.md");
     }
     sources
 }

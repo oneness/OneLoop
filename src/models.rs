@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::auth;
 use crate::catalog::{self, Catalog};
-use crate::output::{BOLD, DIM, RESET};
+use crate::output::{self, BOLD, DIM, RESET};
 use crate::providers::{Provider, ProviderRequest, ProviderResponse, chat};
 
 mod retry;
@@ -145,14 +145,6 @@ impl ModelRegistry {
         format!("unknown model: {alias}. available: {}", self.by_provider())
     }
 
-    pub async fn complete_once(
-        &self,
-        alias: &str,
-        request: ProviderRequest,
-    ) -> Result<ProviderResponse> {
-        self.get(alias)?.complete(request).await
-    }
-
     /// Offer every configured model — what `/model` asks for.
     pub async fn pick_any(&self) -> Result<String> {
         let all: Vec<&Model> = self.models.iter().collect();
@@ -172,14 +164,16 @@ impl ModelRegistry {
         for (i, model) in candidates.iter().enumerate() {
             if model.provider.name != listed_provider {
                 listed_provider = &model.provider.name;
-                println!("{DIM}  {listed_provider}{RESET}");
+                output::note(listed_provider);
             }
             let marker = if model.alias == active {
                 "  ← active"
             } else {
                 ""
             };
-            println!(
+            // Column-aligned, so it stays here rather than becoming a shape
+            // in `output` that only one caller could ever want.
+            eprintln!(
                 "{BOLD}    {}. {:width$}  {DIM}{}{marker}{RESET}",
                 i + 1,
                 model.alias,
@@ -196,8 +190,10 @@ impl ModelRegistry {
 
 /// Zero-based index of the chosen line.
 async fn read_choice(count: usize) -> Result<usize> {
-    print!("{BOLD}  → select [1-{count}] or Enter to cancel: {RESET}");
-    io::stdout().flush()?;
+    // The prompt goes where the menu went, and carries no newline to flush
+    // it, hence the explicit flush.
+    eprint!("{BOLD}  → select [1-{count}] or Enter to cancel: {RESET}");
+    io::stderr().flush()?;
 
     // On a blocking thread, or Ctrl+C could not be heard until after the
     // answer it is trying to avoid.
@@ -207,7 +203,7 @@ async fn read_choice(count: usize) -> Result<usize> {
             io::stdin().read_line(&mut buf).map(|_| buf)
         }) => res,
         _ = tokio::signal::ctrl_c() => {
-            println!();
+            eprintln!();
             bail!("cancelled — no model selected");
         }
     };

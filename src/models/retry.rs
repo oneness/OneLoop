@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 
 use super::{Model, ModelRegistry};
-use crate::output::{BOLD, DIM, GREEN, RED, RESET, YELLOW};
+use crate::output;
 use crate::providers::{ProviderRequest, ProviderResponse, is_retryable};
 
 impl ModelRegistry {
@@ -40,8 +40,8 @@ impl ModelRegistry {
 
                     // Rejected once is rejected identically next time.
                     // `context` rather than `bail!`: the caller downcasts to
-                    // tell a body over the context limit — which it can cure
-                    // by compacting — from a refusal it cannot, and a
+                    // tell a body over the context limit from any other
+                    // refusal, so it can say what to do about it, and a
                     // formatted string would have thrown the type away.
                     if !is_retryable(&e) {
                         return Err(e.context(format!("[{label}]")));
@@ -49,10 +49,10 @@ impl ModelRegistry {
 
                     if attempt < max_retries {
                         let backoff = Duration::from_millis(500 * attempt as u64);
-                        eprintln!(
-                            "{YELLOW}  ⚠ [{label}] attempt {attempt}/{max_retries} failed: {err_msg}{RESET}"
-                        );
-                        eprintln!("{DIM}  ⏳ retrying in {}ms...{RESET}", backoff.as_millis());
+                        output::warn(&format!(
+                            "[{label}] attempt {attempt}/{max_retries} failed: {err_msg}"
+                        ));
+                        output::note(&format!("⏳ retrying in {}ms...", backoff.as_millis()));
                         tokio::time::sleep(backoff).await;
                     }
                 }
@@ -60,7 +60,9 @@ impl ModelRegistry {
         }
 
         let err_msg = last_error.as_deref().unwrap_or("unknown error");
-        eprintln!("{RED}  ✗ [{label}] all {max_retries} attempts failed: {err_msg}{RESET}");
+        output::fail(&format!(
+            "[{label}] all {max_retries} attempts failed: {err_msg}"
+        ));
 
         let alternatives: Vec<&Model> = self
             .models
@@ -81,11 +83,11 @@ impl ModelRegistry {
             stop();
         }
 
-        println!("{BOLD}  ── Model Unavailable ──{RESET}");
-        println!("{DIM}  {label} is not responding. Pick another:{RESET}");
+        output::head("Model Unavailable");
+        output::note(&format!("{label} is not responding. Pick another:"));
         let fallback = self.get(&self.pick(&alternatives).await?)?;
 
-        eprintln!("{GREEN}  → switching to {fallback}{RESET}");
+        output::ok(&format!("switching to {fallback}"));
         if let Some(start) = start_spinner {
             start();
         }

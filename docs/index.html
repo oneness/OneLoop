@@ -323,15 +323,15 @@
   </div>
 </section>
 
-<!-- ═══ 7. Compaction ═══ -->
+<!-- ═══ 7. Context ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
-    <h2>Compaction</h2>
-    <p class="big">When context runs out, the agent compacts:<br>generates a summary, rotates to a new session,<br>replays recent user messages verbatim.</p>
-    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">Triggered by <strong>/compact</strong>, or by the model <strong>refusing the request</strong>.</p>
+    <h2>No compaction</h2>
+    <p class="big">Nothing is summarized. Nothing is silently dropped.<br>A session is what was said, in order, until you clear it.</p>
     <p class="big" style="margin-top: 16px; font-size: 16px;">No context window is configured anywhere — the server is the<br>authority on what fits, and it says so by saying no.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">A second cheap call distils the summary into <strong>memory.md</strong> —<br>durable facts that survive across sessions.</p>
+    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">When it stops fitting, OneLoop says so and names the fix:<br><strong>/clear</strong>, or a model with a larger window.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">Summarizing a thread to keep it alive trades accuracy for length<br>on your behalf. <code>/clear</code> is the same move, made deliberately.</p>
   </div>
 </section>
 
@@ -346,7 +346,6 @@
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
       <tr><td><strong>AGENTS.md</strong></td><td>Loaded as system prompt if present</td></tr>
-      <tr><td><strong>memory.md</strong></td><td>Durable facts appended at compaction, loaded at startup</td></tr>
       <tr><td><strong>skills/</strong></td><td>Playbooks loaded on demand via the <code>skill</code> tool</td></tr>
     </table>
   </div>
@@ -359,10 +358,10 @@
     <h2>Codebase</h2>
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">22</td><td style="text-align:right;">4,283</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">423</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">660</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">29</td><td style="text-align:right;">5,366</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">21</td><td style="text-align:right;">4,012</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">422</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">674</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">28</td><td style="text-align:right;">5,108</td></tr>
     </table>
   </div>
 </section>

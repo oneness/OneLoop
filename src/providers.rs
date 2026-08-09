@@ -107,8 +107,10 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
 
 /// Whether the request was refused because the conversation no longer fits.
 ///
-/// The one rejection the agent can cure by itself, so it is worth telling
-/// apart from the rest. Every server words it differently — llama.cpp
+/// Worth telling apart from the rest not because the loop can cure it — it
+/// cannot — but because the cure is a specific one the user can apply, and
+/// "provider error: 400" does not suggest `/clear`. Every server words it
+/// differently — llama.cpp
 /// "exceeds the available context size", OpenAI "maximum context length",
 /// Anthropic "prompt is too long" — and none of them use a status of their
 /// own, so the message is all there is to go on. An unrecognised phrasing
@@ -289,8 +291,8 @@ mod tests {
 
     #[test]
     fn an_ordinary_refusal_is_not_an_overflow() {
-        // Compacting and retrying would cure none of these, and would throw
-        // away the conversation trying.
+        // Pointing any of these at /clear would be advice that cures
+        // nothing, on an error that has a real cause worth reading.
         assert!(!is_context_overflow(&refusal(
             StatusCode::BAD_REQUEST,
             "unknown model: gpt-9"
@@ -304,8 +306,8 @@ mod tests {
 
     #[test]
     fn an_overflow_is_never_retried_as_it_stands() {
-        // The two classifiers must agree: sending the identical oversized
-        // body again is what compaction exists to avoid.
+        // The two classifiers must agree: an oversized body is oversized on
+        // every attempt, so retrying only spends the wait again.
         let error = refusal(StatusCode::BAD_REQUEST, "maximum context length is 8192");
         assert!(is_context_overflow(&error));
         assert!(!is_retryable(&error));

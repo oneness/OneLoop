@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 
-use crate::output::{BOLD, DIM, RED, RESET, YELLOW};
+use crate::output;
 use crate::{
     agent::Agent,
     config::{self, Config},
@@ -16,9 +16,6 @@ pub struct App {
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
     Clear,
-    /// Summarize now, rather than waiting for a model to refuse the next
-    /// request. Nothing else compacts on a schedule.
-    Compact,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
 }
@@ -33,7 +30,6 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
         "clear" => Some(Command::Clear),
-        "compact" => Some(Command::Compact),
         "model" => Some(Command::Model(argument)),
         _ => None,
     }
@@ -43,14 +39,7 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) {
     match command {
         Command::Clear => {
             if let Err(e) = agent.clear_session() {
-                eprintln!("{RED}  ✗ {e:#}{RESET}");
-            }
-        }
-        // A failed summary is reported where it happens, and leaves the
-        // session untouched — there is nothing to add here.
-        Command::Compact => {
-            if let Err(e) = agent.compact(None).await {
-                eprintln!("{RED}  ✗ {e:#}{RESET}");
+                output::fail(&format!("{e:#}"));
             }
         }
         Command::Model(alias) => switch_model(agent, alias).await,
@@ -63,22 +52,22 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) {
     let alias = match requested {
         Some(alias) => alias.to_string(),
         None => {
-            println!("{BOLD}  ── Models ──{RESET}");
+            output::head("Models");
             match agent.models().pick_any().await {
                 Ok(alias) => alias,
                 // Cancelling is an ordinary outcome, not a failure.
-                Err(e) => return println!("{DIM}  {e:#}{RESET}"),
+                Err(e) => return output::note(&format!("{e:#}")),
             }
         }
     };
     match agent.models().set_active(&alias) {
         Ok(()) => {
-            println!("{DIM}  → model: {}{RESET}", agent.models().active());
-            println!(
-                "{DIM}  this session only — set \"default\" in ~/.oneloop/config.json to keep it{RESET}"
+            output::step(&format!("model: {}", agent.models().active()));
+            output::note(
+                "this session only — set \"default\" in ~/.oneloop/config.json to keep it",
             );
         }
-        Err(e) => eprintln!("{RED}  ✗ {e:#}{RESET}"),
+        Err(e) => output::fail(&format!("{e:#}")),
     }
 }
 
@@ -101,7 +90,7 @@ impl App {
             Some(prompt) => {
                 // A one-shot run must not be silent about which model it is
                 // spending on.
-                eprintln!("{DIM}  → {}{RESET}", agent.models().active());
+                output::step(&format!("{}", agent.models().active()));
                 agent.run_once(prompt).await
             }
             None => run_interactive(&mut agent).await,
@@ -111,13 +100,15 @@ impl App {
 
 /// The interactive REPL: read a line, run it, repeat until Ctrl+D.
 async fn run_interactive(agent: &mut Agent) -> Result<()> {
-    println!("OneLoop");
-    println!("{}", agent.summary());
-    println!();
-    println!(
-        "interactive mode — type your message, /model to switch model, /compact to summarize, /clear to reset context, Ctrl+C to stop"
+    // The banner is OneLoop talking about itself, so it goes where the rest
+    // of that goes — stdout stays the model's.
+    eprintln!("OneLoop");
+    eprintln!("{}", agent.summary());
+    eprintln!();
+    eprintln!(
+        "interactive mode — type your message, /model to switch model, /clear to reset context, Ctrl+C to stop"
     );
-    println!();
+    eprintln!();
 
     // Canonical mode silently drops input past the tty's 4096-byte line
     // buffer and locks up the prompt on long pastes.
@@ -139,12 +130,12 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 
         if let Some(command) = parse_command(&line) {
             run_command(agent, command).await;
-            println!();
+            eprintln!();
             continue;
         }
 
         run_interactive_turn(agent, &line).await;
-        println!();
+        eprintln!();
     }
 
     Ok(())
@@ -158,19 +149,19 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
     tokio::select! {
         result = agent.run_once(line.to_string()) => {
             if let Err(e) = result {
-                eprintln!("{RED}  ✗ {e:#}{RESET}");
+                output::fail(&format!("{e:#}"));
             }
         }
         _ = tokio::signal::ctrl_c() => {
             interrupted = true;
-            println!("{YELLOW}  ⏹ stopped{RESET}");
+            output::stopped("stopped");
         }
     }
 
     // A dropped run leaves tool calls without results, which providers
     // reject on every later request in this session.
     if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
-        eprintln!("{RED}  ✗ session repair failed: {e:#}{RESET}");
+        output::fail(&format!("session repair failed: {e:#}"));
     }
 }
 
@@ -181,12 +172,6 @@ mod tests {
     #[test]
     fn clear_is_a_command() {
         assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
-    }
-
-    #[test]
-    fn compact_is_a_command() {
-        // The only way to compact on purpose: nothing does it on a timer.
-        assert!(matches!(parse_command("/compact"), Some(Command::Compact)));
     }
 
     #[test]

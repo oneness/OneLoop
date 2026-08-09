@@ -113,7 +113,6 @@ All env-based config follows the `ONELOOP_` prefix convention:
 ONELOOP_MODEL              model alias for this run
 ONELOOP_MAX_ITERATIONS     agent loop cap (default: 50)
 ONELOOP_MAX_RETRIES        retry cap (default: 3)
-ONELOOP_COMPACT_USER_MSG_TOKENS  user-message tokens replayed across compaction (default: 20000)
 ONELOOP_WEB_TOOLS          OpenRouter server-side web search/fetch (default: true)
 ```
 
@@ -131,7 +130,7 @@ Fix warnings, don't silence them. If you must suppress, use
 
 ## Testing
 
-- Test names describe behavior: `compact_preserves_recent_user_messages()`.
+- Test names describe behavior: `repair_closes_tool_calls_without_results()`.
 - One assertion per test when practical.
 - `assert_eq!(got, expected)` — expected on the right.
 - Use `#[test]` unit tests in the same file via `#[cfg(test)] mod tests {}`.

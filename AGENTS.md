@@ -40,7 +40,7 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 
 ## Testing
 
-- Descriptive test names: `compact_preserves_recent_user_messages()`.
+- Descriptive test names: `repair_closes_tool_calls_without_results()`.
 - One assertion per test when practical.
 - `#[cfg(test)] mod tests {}` in the same file.
 

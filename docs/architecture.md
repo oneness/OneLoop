@@ -15,6 +15,9 @@ The initial core is intentionally small:
 - config loading
 - auth loading
 
+There is no summarization, no memory store, and no retrieval layer. A
+session is what was said, in order, until it is cleared.
+
 Built-in tools use the same core tool abstraction as future non-built-in tools.
 That keeps the core honest without forcing a full plugin runtime too early.
 
@@ -47,9 +50,9 @@ OpenRouter, requests that carry tools also enable the server-side
 `openrouter:web_search` and `openrouter:web_fetch` tools: the model decides
 when to use them, OpenRouter executes them, and the results arrive inside the
 assistant message — no client-side handling, no HTML sanitization to
-maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. Plain
-completion calls (compaction, memory extraction) never include them, so
-background work cannot trigger paid searches.
+maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. A
+request carrying no tools never includes them, so a background completion
+cannot trigger a paid search.
 
 ## Providers and models
 
@@ -100,25 +103,29 @@ The first non-empty, non-heading line of each file is used as the skill's descri
 
 If no skill files are found at startup, the `skill` tool is not registered.
 
-## Memory
+## Context that no longer fits
 
-`.oneloop/memory.md` is a plain markdown file of bullet-point facts the agent accumulates across sessions. It is loaded at startup and appended to the system prompt under a `## Memory` heading, alongside `AGENTS.md`.
+Nothing is summarized and nothing is silently dropped. A conversation grows
+until the server refuses it, and the refusal is reported — with the fix
+named, because "provider error: 400" does not suggest `/clear`.
 
-Memory is updated automatically at compaction time via a second, cheap LLM call that receives only the compaction summary (not the full context) and extracts durable facts — user preferences, project decisions, recurring constraints. The response is appended to `memory.md`; the file is trimmed to 200 lines oldest-first if it grows past that.
+`is_context_overflow` in `providers.rs` classifies a 400/413 by the phrases
+every server words differently ("context length", "prompt is too long",
+"context size"), beside `is_retryable` and answering the same kind of
+question about the same error. It decides what the message says, not what
+the loop does: an overflow ends the turn like any other refusal.
 
-The file is human-readable and hand-editable. Delete lines to forget things, add lines to seed memory before the first compaction.
+No per-model `context_window` is declared, no threshold percentage is tuned,
+and no character-per-token estimate appears in a branch. The server already
+knows what fits and says so. `estimate_tokens` survives only to size the
+`tokens_estimated` metric, where being approximate is harmless, which is why
+it lives in `metrics.rs`.
 
-## Compaction
-
-Compaction is never scheduled and never predicted. It runs when the user types `/compact`, or when a provider rejects a request for not fitting — `is_context_overflow` in `providers.rs` classifies a 400/413 by the phrases every server words differently ("context length", "prompt is too long", "context size"), beside `is_retryable` and answering the same kind of question about the same error.
-
-The agent loop owns the reaction, because the session is what has to change: `run_once` catches the refusal, compacts, and retries the same iteration. Once per prompt — a second refusal means the summary did not help, and summarizing a summary is how a loop that never terminates begins.
-
-Deciding at the point of refusal rather than ahead of it is what removes the machinery: no per-model `context_window` to declare, no threshold percentage to tune, no character-per-token estimate in a branch. The server already knows what fits and says so. `estimate_tokens` survives only to size the `tokens_estimated` metric, where being approximate is harmless.
-
-The consequence is one wasted request per overflow. That is cheap — a rejected request is not billed by hosted providers, and a local server refuses after tokenizing rather than after generating.
-
-Compacting summarizes the thread through a plain completion call (tool outputs stripped to short notes first, so the summary request is not itself oversized), extracts memory, rotates to a fresh session file, then replays recent user messages verbatim followed by the summary. An unrecognised refusal phrasing costs nothing new: it stays an ordinary reported error, which is what it was before.
+Summarizing a thread to keep it alive trades accuracy for length without
+being asked. `/clear` is the same move made deliberately: it costs one
+keystroke, it happens when the user decides, and what is lost is what they
+chose to lose. An unrecognised refusal phrasing costs nothing extra — it
+stays an ordinary reported error.
 
 ## Sessions
 
@@ -147,6 +154,25 @@ A provider names the variable holding its key via `api_key_env`, or omits it
 for a server that needs none. `auth.json` is written with owner-only (0600)
 permissions and is the only file holding secrets.
 
+## Output
+
+`output.rs` owns both the ANSI escapes and the shape of a status line, so a
+colour change, a `--no-color` flag, or `NO_COLOR` support is one edit rather
+than thirty. Callers pick a meaning — `fail`, `warn`, `ok`, `tick`, `step`,
+`note`, `head` — and the module decides the glyph, the colour, and the stream.
+
+The streams are split by what the text *is*, not by how bad it is:
+
+- **stdout** carries the model's answer, and nothing else.
+- **stderr** carries everything OneLoop says about itself — the tool trace,
+  the model banner, the picker, warnings, and errors.
+
+So `ol "..." > answer.md` captures the answer alone while the trace stays on
+the terminal, and a failing run writes nothing to stdout at all. Two shapes
+stay outside the module by design: the spinner's cursor manipulation, and the
+column-aligned model picker, which no general helper could serve without
+becoming one caller's shape.
+
 ## Source layout
 
 ```
@@ -157,16 +183,15 @@ src/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
-    compaction.rs   Summarize-and-reseed, token estimation, memory extraction
-    metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compaction)
+    metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
   app.rs            Interactive REPL (rustyline), /commands, Ctrl+C handling
   auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
   catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
-  config.rs         System prompt assembly (tool preamble + AGENTS.md + memory), env_or
+  config.rs         System prompt assembly (tool preamble + AGENTS.md), env_or
   models.rs         Model (alias + settings + its provider), registry, active-model switching
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
-  output.rs         Output truncation utilities, ANSI style constants
+  output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
   providers.rs      Provider (endpoint: URL, key, one HTTP client), request/response types
   providers/
     chat.rs         The Chat Completions wire format — the one protocol

@@ -23,7 +23,6 @@ Starts an interactive REPL. Type your message and press Enter.
 Commands:
 - `/model` — list the configured models and switch to one
 - `/model <alias>` — switch straight to that model
-- `/compact` — summarize the session and continue from the summary
 - `/clear` — wipe context and start a fresh session
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
@@ -106,7 +105,8 @@ on the wire), `max_tokens`, `temperature`, `web_tools`; model settings
 override the provider's.
 
 There is no `context_window` to declare. The server is the authority on what
-fits, and it says so by refusing the request — see [Compaction](#compaction).
+fits, and it says so by refusing the request — see [When a thread gets too
+long](#when-a-thread-gets-too-long).
 
 `max_tokens` caps output per response and is omitted unless you set it, so a
 hosted provider's own default applies. The bundled `local` model leaves it
@@ -181,21 +181,18 @@ Tuning (all optional):
 
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
-- `ONELOOP_COMPACT_USER_MSG_TOKENS` — recent user-message tokens preserved across compaction (default: `20000`)
 
 A provider names the environment variable holding its key (`api_key_env`);
 that variable is read first, then `~/.oneloop/auth.json` — an explicitly set
 env var always wins. The default `local` provider names none, so a default
 run needs no credentials anywhere.
 
-## Compaction
+## When a thread gets too long
 
-Nothing compacts on a schedule, and no context window is configured anywhere.
-Compaction happens for exactly two reasons:
-
-- **You asked** — `/compact` in interactive mode.
-- **The model refused** — a request that no longer fits comes back as a
-  rejection, and only then does the agent summarize and send it again.
+Nothing is summarized, nothing is dropped, and no context window is
+configured anywhere. When a conversation no longer fits, the server refuses
+the request and OneLoop tells you so, naming the fix: `/clear` to start a
+fresh session, or a model with a larger window.
 
 The server is the only thing that reliably knows what fits: a llama-server
 started with `-c 8192` and a hosted model with a 200k window are the same
@@ -203,15 +200,10 @@ code path, because both say so in the same place. A declared window is a
 number that goes stale, guesses wrong for local servers, and has to be
 maintained per model.
 
-The retry is offered once per prompt. A second refusal means the summary did
-not shrink things enough, and OneLoop says so rather than summarizing a
-summary — use `/clear`, or a model with a larger window.
-
-Compaction summarizes the thread, appends durable facts to
-`.oneloop/memory.md`, rotates to a fresh session file, and replays recent
-user messages verbatim ahead of the summary. Long threads and repeated
-compactions cost accuracy, so `/clear` is the better habit where the next
-task is genuinely new.
+Summarizing a thread to keep it alive trades accuracy for length, silently
+and on your behalf. `/clear` is the honest version of the same move: it is
+one keystroke, it happens when you decide it should, and what you lose is
+what you chose to lose.
 
 ## Development
 
