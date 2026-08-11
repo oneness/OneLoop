@@ -182,7 +182,7 @@
               -m "$MODEL" \
               -t 12 -c 131072 -n 32768 \
               --jinja --reasoning-preserve --reasoning-budget 600 \
-              --host 127.0.0.1 --port "$PORT" --alias local \
+              --host 127.0.0.1 --port "$PORT" --alias qwen \
               "$@"
           '';
         };

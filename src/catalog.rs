@@ -214,8 +214,8 @@ mod tests {
     fn the_shipped_template_resolves() {
         // `Default` unwraps it, so a mistake would panic on first run.
         let catalog = template();
-        assert_eq!(catalog.active, "local");
-        assert_eq!(catalog.aliases(), vec!["local", "flash"]);
+        assert_eq!(catalog.active, "qwen");
+        assert_eq!(catalog.aliases(), vec!["glimmer", "qwen", "flash"]);
     }
 
     #[test]

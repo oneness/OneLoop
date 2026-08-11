@@ -77,12 +77,13 @@ shown here with a second OpenRouter model added:
 
 ```json
 {
-  "default": "local",
+  "default": "qwen",
   "providers": {
     "local": {
       "base_url": "http://localhost:8080/v1",
       "models": {
-        "local": { "id": "local" }
+        "qwen":     { "id": "qwen" },
+        "glimmer":  { "id": "glimmer" }
       }
     },
     "openrouter": {
