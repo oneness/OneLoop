@@ -5,10 +5,10 @@
       "base_url": "http://localhost:8080/v1",
       "models": {
         "qwen": {
-          "id": "qwen"
+          "id": "Qwen3.6-35B-A3B-Q4_K_M.gguf"
         },
         "glimmer": {
-          "id": "glimmer"
+          "id": "Muse-Glimmer-30B-Q4_K_M.gguf"
         }
       }
     },

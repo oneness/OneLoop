@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fetch release notes for llama.cpp and the Qwen model so you can decide
+# whether to update either.
+#
+# Usage: ./check-updates [--help]
+#
+# Requires: curl, jq
+
+MODEL_REPO="${MODEL_REPO:-ggml-org/Qwen3.6-35B-A3B-GGUF}"
+MODEL_FILE="${MODEL_FILE:-Qwen3.6-35B-A3B-Q4_K_M.gguf}"
+
+for tool in curl jq; do
+  command -v "$tool" &>/dev/null || { echo "error: $tool not found" >&2; exit 1; }
+done
+
+echo "========================================"
+echo "llama.cpp"
+echo "========================================"
+
+# Latest release tag
+LATEST=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)
+TAG=$(echo "$LATEST" | jq -r '.tag_name')
+DATE=$(echo "$LATEST" | jq -r '.published_at' | cut -dT -f1)
+URL=$(echo "$LATEST" | jq -r '.html_url')
+
+echo "Latest release: $TAG ($DATE)"
+echo "Changelog:      $URL"
+echo ""
+echo "Release notes:"
+echo "$LATEST" | jq -r '.body' | sed -e 's/<[^>]*>//g' \
+  | sed -n '1,/^---/p' \
+  | grep -v '^-\{3,\}$' \
+  | sed '/^\s*$/d' \
+  | sed 's/^/  /'
+
+echo ""
+echo "========================================"
+echo "Qwen model: $MODEL_FILE"
+echo "========================================"
+
+# Model repo metadata and recent commit history
+MODEL_INFO=$(curl -s "https://huggingface.co/api/models/$MODEL_REPO")
+echo "Model:     $(echo "$MODEL_INFO" | jq -r '.modelId')"
+echo "Updated:   $(echo "$MODEL_INFO" | jq -r '.lastModified' | cut -dT -f1)"
+echo "Downloads: $(echo "$MODEL_INFO" | jq -r '.downloads')"
+echo ""
+echo "Files:"
+echo "$MODEL_INFO" | jq -r '.siblings[] | select(.rfilename | endswith(".gguf")) | .rfilename' \
+  | sed 's/^/  /'
+
+echo ""
+echo "Recent changes:"
+curl -s "https://huggingface.co/api/models/$MODEL_REPO/commits/main" \
+  | jq -r '.[:5][] | "  " + (.date | .[0:10]) + "  " + .title'
