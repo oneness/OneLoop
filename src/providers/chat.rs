@@ -1,9 +1,7 @@
-//! OpenAI Chat Completions — the one protocol OneLoop speaks.
+//! OpenAI Chat Completions for local and hosted API-key providers.
 //!
 //! A local llama-server and a hosted provider differ only by URL, model id,
-//! and whether a key is required, so one module serves both. A second
-//! protocol would be a module beside this one and a `match` in
-//! `Model::complete`.
+//! and whether a key is required, so one module serves both.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -12,7 +10,7 @@ use serde_json::Value;
 use crate::agent::messages::{Message, ToolCall};
 use crate::models::Model;
 
-use super::{ProviderRequest, ProviderResponse, send_and_read};
+use super::{ProviderRequest, ProviderResponse, decode_tool_arguments, send_and_read};
 
 // ── Request types (Chat Completions) ──────────────────────────────────
 
@@ -169,22 +167,6 @@ fn assistant_content(
         .unwrap_or_default()
 }
 
-/// Keeps the raw text when it will not parse.
-///
-/// A truncated call is not a transport failure: retrying arrives at the same
-/// place a minute later, and the model is the only party that can fix it —
-/// which it can only do if told. The raw text keeps the call intact for the
-/// history the API requires, and the error travels alongside it.
-fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
-    match arguments {
-        Value::String(text) => match serde_json::from_str(&text) {
-            Ok(value) => (value, None),
-            Err(err) => (Value::String(text), Some(err.to_string())),
-        },
-        other => (other, None),
-    }
-}
-
 pub async fn complete(model: &Model, request: ProviderRequest) -> Result<ProviderResponse> {
     let wire_id = model.id.clone();
 
@@ -230,7 +212,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         temperature: model.temperature,
     };
 
-    let post = model.provider.post("chat/completions").json(&body);
+    let post = model.provider.post("chat/completions").await?.json(&body);
     let text = send_and_read(post, &model.alias).await?;
 
     let parsed: ChatResponse = serde_json::from_str(&text)
@@ -588,41 +570,5 @@ mod tests {
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["max_tokens"], serde_json::json!(4096));
-    }
-
-    #[test]
-    fn decode_tool_arguments_parses_a_json_string() {
-        let (arguments, error) =
-            decode_tool_arguments(Value::String(r#"{"command":"ls"}"#.to_string()));
-        assert_eq!(arguments, json!({"command": "ls"}));
-        assert!(error.is_none());
-    }
-
-    #[test]
-    fn decode_tool_arguments_passes_through_an_object() {
-        let (arguments, error) = decode_tool_arguments(json!({"command": "ls"}));
-        assert_eq!(arguments, json!({"command": "ls"}));
-        assert!(error.is_none());
-    }
-
-    #[test]
-    fn decode_tool_arguments_reports_a_truncated_string() {
-        // The shape actually observed: generation stopped mid-arguments, so
-        // the JSON has no closing quote or brace.
-        let truncated = r#"{"command":"cargo test 2>&1"#;
-        let (arguments, error) = decode_tool_arguments(Value::String(truncated.to_string()));
-        assert_eq!(arguments, Value::String(truncated.to_string()));
-        assert!(error.is_some(), "a truncated call must report an error");
-    }
-
-    #[test]
-    fn decode_tool_arguments_keeps_the_raw_text_when_it_will_not_parse() {
-        // The raw text is what the model actually sent, and it is what the
-        // conversation has to carry back — the API owes a tool call for every
-        // result, and inventing arguments here would misreport the turn.
-        let raw = "not json at all";
-        let (arguments, error) = decode_tool_arguments(Value::String(raw.to_string()));
-        assert_eq!(arguments, Value::String(raw.to_string()));
-        assert!(error.is_some());
     }
 }

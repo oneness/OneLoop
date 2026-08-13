@@ -47,11 +47,18 @@ When stdin is a pipe, its content is prepended to the prompt and the agent runs 
 ### Login
 
 ```bash
-./ol login openrouter
+./ol login openrouter      # paste an API key
+./ol login openai          # sign in to a ChatGPT Plus/Pro subscription
 ```
 
-Stores the API key in `~/.oneloop/auth.json`. Only needed to reach hosted
-models — the default `local` model uses no credentials.
+Credentials are stored in `~/.oneloop/auth.json`. Only needed to reach hosted
+models — the default `qwen` model runs through the credential-free `local`
+provider.
+
+`openai` opens a browser, signs in to ChatGPT, and stores the grant that
+comes back; the `codex` model then runs against the subscription rather than a
+metered API key — the same account and quota the Codex CLI uses. The access
+token is renewed automatically as it expires, so this is a one-time step.
 
 `./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
 
@@ -59,14 +66,15 @@ Two things are reachable but are not tools. `skill` is on-demand prompt engineer
 
 ## Providers and models
 
-A **provider** is a place to send requests — a base URL and, if hosted, the
-environment variable holding its key. A **model** is one thing that place
-will run. OpenRouter is a single provider serving hundreds of models, so the
-URL and key are stated once and the models listed under them.
+A **provider** is a place to send requests — a base URL, protocol, and shared
+credentials when it needs them. A **model** is one thing that place will run.
+OpenRouter is a single provider serving hundreds of models, so its URL and API
+key are stated once and the models listed under them. ChatGPT's Codex backend
+instead shares a renewable OAuth grant across its models.
 
-Each model belongs to its provider and is sent through it: one URL, one key,
-one connection, however many models are listed under it. `/model` shows them
-grouped that way.
+Each model belongs to its provider and is sent through it: one URL, one
+credential, one connection pool, however many models are listed under it.
+`/model` shows them grouped that way.
 
 Every model has a short **alias**, which is the name used everywhere else:
 `/model flash` rather than the wire id it resolves to. Aliases are unique
@@ -86,6 +94,13 @@ shown here with a second OpenRouter model added:
         "glimmer":  { "id": "glimmer" }
       }
     },
+    "openai": {
+      "base_url": "https://chatgpt.com/backend-api",
+      "api": "codex",
+      "models": {
+        "codex": { "id": "gpt-5.5", "reasoning_effort": "medium" }
+      }
+    },
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
@@ -100,10 +115,18 @@ shown here with a second OpenRouter model added:
 ```
 
 Adding a model is a few lines under its provider — no repeated
-URL, no repeated key. Provider keys: `base_url`, `api_key_env` (omit for a
-server that needs none), `web_tools`, `models`. Model keys: `id` (what goes
-on the wire), `max_tokens`, `temperature`, `web_tools`; model settings
-override the provider's.
+URL, no repeated key. Provider keys: `base_url`, `api` (`chat` by default,
+or `codex`), `api_key_env` (omit for a server that needs none), `web_tools`,
+`models`. Model keys: `id` (what goes on the wire), `max_tokens`,
+`temperature`, `web_tools`, `reasoning_effort`; model settings override the
+provider's.
+
+`api` names the protocol the provider speaks, and with it how it is
+authorized. `chat` is OpenAI Chat Completions, which is what everything
+except ChatGPT speaks. `codex` is ChatGPT's Codex backend over the Responses
+API, reached with the subscription grant `./ol login openai` stores —
+so that provider names no `api_key_env`: there is no key to name. Change the
+model `id` there to whichever Codex model your plan offers.
 
 There is no `context_window` to declare. The server is the authority on what
 fits, and it says so by refusing the request — see [When a thread gets too
@@ -114,17 +137,17 @@ hosted provider's own default applies. The bundled `local` model leaves it
 unset too: `nix run .#serve` starts llama-server with `-n 32768`, which is
 the same ceiling in one place instead of two.
 
-`default` names the alias used when nothing else is asked for. It is `local`
-out of the box, which needs no credentials, so an unconfigured checkout
-cannot accidentally bill a hosted model.
+`default` names the alias used when nothing else is asked for. It is `qwen`
+out of the box, served by the credential-free `local` provider, so an
+unconfigured checkout cannot accidentally bill a hosted model.
 
 `/model` switches the active model for the rest of a session and leaves the
 file alone; `default` is what the next run starts on, and changing that stays
 an edit you make on purpose.
 
 **This file holds no secrets.** A provider names the environment variable
-its key lives in; the key itself is written by `oneloop login openrouter`
-into `~/.oneloop/auth.json` (0600). That keeps the config shareable —
+its key lives in; the key itself — or, for a subscription, the OAuth grant —
+is written by `oneloop login` into `~/.oneloop/auth.json` (0600). That keeps the config shareable —
 committable to dotfiles, diffable, pasteable — which it could not be if a
 key were in it.
 
@@ -183,10 +206,17 @@ Tuning (all optional):
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
 
+Provider calls are bounded rather than allowed to stall forever. Every HTTP
+client gets 10 seconds to connect. Chat Completions gets 15 minutes for the
+whole response; Codex streaming has no overall deadline while it is making
+progress, but must begin responding and then produce another chunk within 90
+seconds. ChatGPT sign-in waits up to 5 minutes for the browser callback, and
+token exchange or renewal gets 30 seconds overall.
+
 A provider names the environment variable holding its key (`api_key_env`);
 that variable is read first, then `~/.oneloop/auth.json` — an explicitly set
-env var always wins. The default `local` provider names none, so a default
-run needs no credentials anywhere.
+env var always wins. The default `local` provider names none, so the default
+`qwen` model needs no credentials anywhere.
 
 ## When a thread gets too long
 

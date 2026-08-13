@@ -1,12 +1,36 @@
 //! Providers: the endpoints OneLoop calls.
 //!
-//! What belongs to the place — URL, key, connection pool — lives here; what
-//! varies per model lives on the model.
+//! What belongs to the place — URL, credentials, connection pool — lives
+//! here; what varies per model lives on the model.
+
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::agent::messages::ToolCall;
+use crate::auth::{self, Credential, OauthEntry};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CHAT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// How a provider is let in.
+#[derive(Debug)]
+pub enum Credentials {
+    /// The local server, which needs none.
+    None,
+    ApiKey(String),
+    /// A subscription: a token that expires, renewed here as it does. Behind
+    /// a lock because the models of one provider share it, and two of them
+    /// refreshing at once would spend the same one-use refresh token twice.
+    Oauth(Mutex<OauthEntry>),
+    /// Configured, but nobody has signed in yet. Carries the command that
+    /// fixes it, so the refusal says what to do rather than 401 later.
+    Missing(String),
+}
 
 /// One endpoint: where to send a request and how to be let in.
 #[derive(Debug)]
@@ -14,19 +38,19 @@ pub struct Provider {
     /// Its name in the config file, and in anything shown to the user.
     pub name: String,
     base_url: String,
-    /// `None` is the local server, which needs no credentials.
-    api_key: Option<String>,
+    credentials: Credentials,
     /// One pool per endpoint, not per model: two models from one provider
     /// are two ids sent to the same place.
     client: reqwest::Client,
 }
 
 impl Provider {
-    pub fn new(name: &str, base_url: &str, api_key: Option<String>) -> Result<Self> {
+    pub fn new(name: &str, base_url: &str, credentials: Credentials) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .default_headers(headers)
             .build()
             .with_context(|| format!("failed to build HTTP client for {name}"))?;
@@ -34,21 +58,49 @@ impl Provider {
         Ok(Self {
             name: name.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key,
+            credentials,
             client,
         })
     }
 
-    /// Authorized if this provider needs it.
-    pub fn post(&self, path: &str) -> reqwest::RequestBuilder {
+    /// Authorized if this provider needs it — which for a subscription can
+    /// mean renewing the grant first, hence the `async` and the `Result`.
+    pub async fn post(&self, path: &str) -> Result<reqwest::RequestBuilder> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         let request = self.client.post(url);
-        // A local server needs no credentials, and sending an empty bearer
-        // token makes some servers reject the request outright.
-        match &self.api_key {
-            Some(key) => request.header("Authorization", format!("Bearer {key}")),
-            None => request,
+        Ok(match &self.credentials {
+            // A local server needs no credentials, and sending an empty
+            // bearer token makes some servers reject the request outright.
+            Credentials::None => request,
+            Credentials::ApiKey(key) => request.header("Authorization", format!("Bearer {key}")),
+            Credentials::Oauth(grant) => {
+                let grant = self.fresh_grant(grant).await?;
+                request
+                    .header("Authorization", format!("Bearer {}", grant.access))
+                    .header("chatgpt-account-id", grant.account_id)
+            }
+            Credentials::Missing(fix) => {
+                return Err(NotSignedIn {
+                    provider: self.name.clone(),
+                    fix: fix.clone(),
+                }
+                .into());
+            }
+        })
+    }
+
+    /// The stored grant, renewed and re-stored when it is close to expiring.
+    /// A failed write is a warning rather than an error: the token in hand
+    /// still works, and only the next run pays for having to sign in again.
+    async fn fresh_grant(&self, grant: &Mutex<OauthEntry>) -> Result<OauthEntry> {
+        let mut grant = grant.lock().await;
+        if let Some(renewed) = auth::codex::refreshed(&grant).await? {
+            if let Err(e) = auth::store(&self.name, &Credential::Oauth(renewed.clone())) {
+                crate::output::warn(&format!("could not store the renewed session: {e:#}"));
+            }
+            *grant = renewed;
         }
+        Ok(grant.clone())
     }
 }
 
@@ -64,6 +116,24 @@ pub struct ProviderResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
 }
+
+/// A provider that is configured but that nobody has signed in to. Its own
+/// type so the retry path can tell it apart: no amount of waiting signs
+/// anyone in, and the request never left the machine.
+#[derive(Debug)]
+pub struct NotSignedIn {
+    provider: String,
+    /// The command that fixes it.
+    fix: String,
+}
+
+impl std::fmt::Display for NotSignedIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not signed in to {} — run `{}`", self.provider, self.fix)
+    }
+}
+
+impl std::error::Error for NotSignedIn {}
 
 /// Carries the status so callers can tell a temporary failure from a
 /// request that will never succeed.
@@ -93,6 +163,10 @@ impl std::error::Error for ProviderHttpError {}
 /// local misconfiguration into a bill. Rate limits and timeouts are the
 /// exceptions; anything not a recognised status is assumed transient.
 pub fn is_retryable(error: &anyhow::Error) -> bool {
+    // Nothing was sent, and nothing about waiting signs anyone in.
+    if error.downcast_ref::<NotSignedIn>().is_some() {
+        return false;
+    }
     let Some(error) = error.downcast_ref::<ProviderHttpError>() else {
         return true;
     };
@@ -142,9 +216,36 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
 }
 
 pub mod chat;
+pub mod codex;
+
+/// Keeps the raw text when it will not parse.
+///
+/// A truncated call is not a transport failure: retrying arrives at the same
+/// place a minute later, and the model is the only party that can fix it —
+/// which it can only do if told. The raw text keeps the call intact for the
+/// history the API requires, and the error travels alongside it.
+///
+/// Shared by both protocols: the two wire formats disagree about almost
+/// everything, but a model that stops mid-argument-list stops the same way
+/// on either.
+fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
+    match arguments {
+        Value::String(text) => match serde_json::from_str(&text) {
+            Ok(value) => (value, None),
+            Err(err) => (Value::String(text), Some(err.to_string())),
+        },
+        other => (other, None),
+    }
+}
 
 /// Non-2xx becomes an error carrying the provider's own message.
 async fn send_and_read(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+    tokio::time::timeout(CHAT_TIMEOUT, send_and_read_inner(request, provider))
+        .await
+        .with_context(|| format!("{provider} request timed out after 15 minutes"))?
+}
+
+async fn send_and_read_inner(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
     let response = request
         .send()
         .await
@@ -189,9 +290,12 @@ fn extract_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Provider, ProviderHttpError, extract_error_message, is_context_overflow, is_retryable,
+        Credentials, OauthEntry, Provider, ProviderHttpError, decode_tool_arguments,
+        extract_error_message, is_context_overflow, is_retryable,
     };
     use reqwest::StatusCode;
+    use serde_json::{Value, json};
+    use tokio::sync::Mutex;
 
     fn http_error(status: StatusCode) -> anyhow::Error {
         refusal(status, "boom")
@@ -206,34 +310,111 @@ mod tests {
         .into()
     }
 
-    fn provider(base_url: &str, api_key: Option<&str>) -> Provider {
-        Provider::new("p", base_url, api_key.map(String::from)).expect("client must build")
+    fn provider(base_url: &str, credentials: Credentials) -> Provider {
+        Provider::new("p", base_url, credentials).expect("client must build")
     }
 
-    #[test]
-    fn a_trailing_slash_does_not_double_up() {
-        let request = provider("http://u/v1/", None).post("chat/completions");
+    #[tokio::test]
+    async fn a_trailing_slash_does_not_double_up() {
+        let request = provider("http://u/v1/", Credentials::None)
+            .post("chat/completions")
+            .await
+            .unwrap();
         let request = request.build().unwrap();
         assert_eq!(request.url().as_str(), "http://u/v1/chat/completions");
     }
 
-    #[test]
-    fn a_key_is_sent_as_a_bearer_token() {
-        let request = provider("http://u", Some("secret"))
+    #[tokio::test]
+    async fn a_key_is_sent_as_a_bearer_token() {
+        let request = provider("http://u", Credentials::ApiKey("secret".to_string()))
             .post("chat/completions")
+            .await
+            .unwrap()
             .build()
             .unwrap();
         assert_eq!(request.headers()["Authorization"], "Bearer secret");
     }
 
-    #[test]
-    fn a_provider_without_a_key_sends_no_authorization() {
+    #[tokio::test]
+    async fn a_provider_without_a_key_sends_no_authorization() {
         // An empty bearer token makes some local servers reject outright.
-        let request = provider("http://u", None)
+        let request = provider("http://u", Credentials::None)
             .post("chat/completions")
+            .await
+            .unwrap()
             .build()
             .unwrap();
         assert!(request.headers().get("Authorization").is_none());
+    }
+
+    /// The 401 a request would earn says nothing about how to fix it — and
+    /// waiting to send it again fixes nothing either.
+    #[tokio::test]
+    async fn a_provider_nobody_signed_in_to_says_how_to_sign_in_once() {
+        let provider = provider(
+            "http://u",
+            Credentials::Missing("ol login openai".to_string()),
+        );
+        let err = provider.post("responses").await.unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("not signed in to p"), "got: {message}");
+        assert!(message.contains("ol login openai"), "got: {message}");
+        assert!(!is_retryable(&err));
+    }
+
+    /// A live grant is used as it stands — no network, no refresh.
+    #[tokio::test]
+    async fn a_subscription_sends_its_token_and_its_account() {
+        let grant = OauthEntry {
+            access: "tok".to_string(),
+            refresh: "ref".to_string(),
+            expires: chrono::Utc::now().timestamp() + 3600,
+            account_id: "acct-1".to_string(),
+        };
+        let request = provider("http://u", Credentials::Oauth(Mutex::new(grant)))
+            .post("codex/responses")
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["Authorization"], "Bearer tok");
+        assert_eq!(request.headers()["chatgpt-account-id"], "acct-1");
+    }
+
+    #[test]
+    fn decode_tool_arguments_parses_a_json_string() {
+        let (arguments, error) =
+            decode_tool_arguments(Value::String(r#"{"command":"ls"}"#.to_string()));
+        assert_eq!(arguments, json!({"command": "ls"}));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn decode_tool_arguments_passes_through_an_object() {
+        let (arguments, error) = decode_tool_arguments(json!({"command": "ls"}));
+        assert_eq!(arguments, json!({"command": "ls"}));
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn decode_tool_arguments_reports_a_truncated_string() {
+        // The shape actually observed: generation stopped mid-arguments, so
+        // the JSON has no closing quote or brace.
+        let truncated = r#"{"command":"cargo test 2>&1"#;
+        let (arguments, error) = decode_tool_arguments(Value::String(truncated.to_string()));
+        assert_eq!(arguments, Value::String(truncated.to_string()));
+        assert!(error.is_some(), "a truncated call must report an error");
+    }
+
+    #[test]
+    fn decode_tool_arguments_keeps_the_raw_text_when_it_will_not_parse() {
+        // The raw text is what the model actually sent, and it is what the
+        // conversation has to carry back — the API owes a tool call for every
+        // result, and inventing arguments here would misreport the turn.
+        let raw = "not json at all";
+        let (arguments, error) = decode_tool_arguments(Value::String(raw.to_string()));
+        assert_eq!(arguments, Value::String(raw.to_string()));
+        assert!(error.is_some());
     }
 
     #[test]

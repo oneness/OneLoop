@@ -29,10 +29,28 @@ pub struct ConfigFile {
     pub providers: BTreeMap<String, ProviderEntry>,
 }
 
+/// Which protocol a provider speaks, and with it how it is authorized.
+///
+/// One field rather than two: only the Codex backend speaks `codex`, and
+/// only a ChatGPT subscription gets into it, so naming the protocol has
+/// already named the credentials.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Api {
+    /// OpenAI Chat Completions, which is what everything else speaks.
+    #[default]
+    Chat,
+    /// ChatGPT's Codex backend, over the Responses API.
+    Codex,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderEntry {
     pub base_url: String,
-    /// Absent means no credentials — the local server case.
+    #[serde(default, skip_serializing_if = "is_default_api")]
+    pub api: Api,
+    /// Absent means no credentials — the local server case, and the
+    /// subscription case, where the grant is not a key in a variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
     /// Server-side web_search/web_fetch, metered per use ($0.005/search,
@@ -53,6 +71,15 @@ pub struct ModelEntry {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_tools: Option<bool>,
+    /// How long a reasoning model should think — `low`, `medium`, `high`.
+    /// Only the Codex protocol asks; the value is the server's to validate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
+/// Keeps `"api": "chat"` out of a file nobody wrote it into.
+fn is_default_api(api: &Api) -> bool {
+    *api == Api::default()
 }
 
 // ── What this run will use ────────────────────────────────────────────
@@ -215,7 +242,28 @@ mod tests {
         // `Default` unwraps it, so a mistake would panic on first run.
         let catalog = template();
         assert_eq!(catalog.active, "qwen");
-        assert_eq!(catalog.aliases(), vec!["glimmer", "qwen", "flash"]);
+        assert_eq!(catalog.aliases(), vec!["glimmer", "qwen", "codex", "flash"]);
+    }
+
+    /// The subscription provider is authorized by a stored grant, not by a
+    /// variable holding a key — naming one would be a key that never exists.
+    #[test]
+    fn the_subscription_provider_speaks_the_codex_protocol() {
+        let catalog = template();
+        let codex = catalog.providers.get("openai").unwrap();
+        assert_eq!(codex.api, Api::Codex);
+        assert!(codex.api_key_env.is_none());
+    }
+
+    /// A file written before `api` existed must keep working, and one
+    /// written back out must not grow a field its author never set.
+    #[test]
+    fn a_provider_that_names_no_protocol_speaks_chat() {
+        let entry: ProviderEntry =
+            serde_json::from_str(r#"{"base_url":"u","models":{"a":{"id":"x"}}}"#).unwrap();
+        assert_eq!(entry.api, Api::Chat);
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("api").is_none());
     }
 
     #[test]

@@ -276,7 +276,7 @@
     <div class="label">models</div>
     <h2>Any Model</h2>
     <p class="big">A local model by default — no key, no account, nothing leaving the box.<br>Reach a hosted one only when you ask for it.</p>
-    <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one key, one connection. The models it hosts get short aliases: <code>local</code>, <code>flash</code>. <code>/model</code> switches which one answers for the session.</p>
+    <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one credential, one connection pool. Credentials may be absent, an API key, or a renewable subscription grant. Its models get short aliases: <code>qwen</code>, <code>codex</code>, <code>flash</code>. <code>/model</code> switches which one answers for the session.</p>
   </div>
 </section>
 
@@ -342,6 +342,7 @@
     <h2>Resilience</h2>
     <table>
       <tr><td><strong>Retry with fallback</strong></td><td>Retries 3× on transient failures, then offers another model; a rejected request fails at once</td></tr>
+      <tr><td><strong>Bounded waits</strong></td><td>Connections and finite responses time out; an active stream may run long, but a stalled one cannot</td></tr>
       <tr><td><strong>Parallel tools</strong></td><td>Multiple calls execute concurrently</td></tr>
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
@@ -358,10 +359,10 @@
     <h2>Codebase</h2>
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">21</td><td style="text-align:right;">4,012</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">422</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">674</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">28</td><td style="text-align:right;">5,108</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">23</td><td style="text-align:right;">5,447</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">424</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">769</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">30</td><td style="text-align:right;">6,640</td></tr>
     </table>
   </div>
 </section>
@@ -377,7 +378,8 @@
       <span class="cm"># 2. Interactive REPL</span><br>
       ./ol<br><br>
       <span class="cm"># Reach a hosted model only if you want one</span><br>
-      ./ol login openrouter<br><br>
+      ./ol login openrouter<br>
+      ./ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br><br>
       <span class="cm"># One-shot</span><br>
       ./ol "explain this codebase"<br><br>
       <span class="cm"># Pipe into it</span><br>

@@ -56,25 +56,50 @@ cannot trigger a paid search.
 
 ## Providers and models
 
-There is one protocol: OpenAI Chat Completions. A local llama-server and a
-hosted model differ only by URL, model id, and whether a key is required, so
-`providers/chat.rs` serves both. A second protocol would be a second module
-beside it and a `match` in `Model::complete` — there is no client trait to
-implement, because one protocol does not need a plug-in point.
+There are two protocols. OpenAI Chat Completions is what a local
+llama-server and every hosted provider speak — they differ only by URL,
+model id, and whether a key is required, so `providers/chat.rs` serves all
+of them. `providers/codex.rs` speaks the Responses API to ChatGPT's Codex
+backend, which is the one way into a ChatGPT subscription. A provider's
+`api` field names which, and `Model::complete` is a two-arm `match` on it —
+no client trait, because two protocols do not need a plug-in point either.
 
-A provider is a place: base URL, the environment variable naming its key,
-and one HTTP client. A model is one thing that place will run, carrying a
-short alias used everywhere else. Every `Model` holds an `Arc<Provider>`, so
-two models from the same provider share one connection pool, one key, one
+The second one is not the first renamed: the conversation is a flat list of
+typed items rather than roles with attachments, tools are functions with
+their fields inline, the system prompt is a field, and the endpoint only
+streams. Nothing renders as it streams — the rest of OneLoop expects a
+finished turn — but the stream still has to be read event by event rather
+than swallowed whole, for two reasons the endpoint does not advertise. The
+turn's content arrives as `response.output_item.done`, one event per item;
+the `response.completed` that closes it carries an empty `output`, so a
+client that reads only the closing event gets an empty answer. And the
+connection stays open after that event, so reading the body to its end waits
+for a close that is unrelated to a turn that finished seconds earlier.
+`read_turn` therefore accumulates items, stops on the event that closes the
+turn, and drops the connection there. An endpoint that instead repeats every
+item in the closing event is handled by preferring whatever that event
+carries, so neither spelling doubles up.
+
+Network waits are bounded according to the protocol. Every provider client
+gets 10 seconds to connect. Chat Completions is a finite body and gets a
+15-minute overall deadline. A Codex stream has no overall deadline while it
+is progressing, but must begin responding within 90 seconds and each later
+chunk resets the same 90-second idle deadline. That avoids killing a long,
+active generation while still closing a connection that has stalled.
+
+A provider is a place: base URL, what it is let in with, and one HTTP
+client. A model is one thing that place will run, carrying a short alias
+used everywhere else. Every `Model` holds an `Arc<Provider>`, so two models
+from the same provider share one connection pool, one credential, one
 URL — and a model can always say where it is sent, which is what `/model`
 and the error messages show. Aliases must be unique across providers, or
 naming one would be ambiguous; that is refused at load.
 
 Config is `~/.oneloop/config.json`, written from `src/default-config.json`
 on first run. It holds no secrets — a provider names an environment
-variable, and keys live in `auth.json`. The default model is `local`, which
-needs no credentials, so an unconfigured checkout cannot accidentally bill a
-hosted model.
+variable, and keys live in `auth.json`. The default model is `qwen`, served
+by the credential-free `local` provider, so an unconfigured checkout cannot
+accidentally bill a hosted model.
 
 Which model is active is decided once, in `catalog.rs`: the file's `default`
 unless `ONELOOP_MODEL` names another. The per-run environment overrides then
@@ -145,14 +170,49 @@ containing dangling tool calls, so an unrepaired session would break every later
 
 ## Auth
 
-Credentials are resolved from environment variables first, then `~/.oneloop/auth.json` —
-an explicitly set env var always wins (blank values are ignored). Supported variables:
+`auth.json` is one entry per provider, filed under the name that provider
+has in the config, and each entry says what kind it is:
 
-- `OPENROUTER_API_KEY`
+```json
+{
+  "openrouter":   { "type": "api_key", "key": "..." },
+  "openai":       { "type": "oauth", "access": "...", "refresh": "...",
+                    "expires": 1760000000, "account_id": "..." }
+}
+```
 
-A provider names the variable holding its key via `api_key_env`, or omits it
-for a server that needs none. `auth.json` is written with owner-only (0600)
-permissions and is the only file holding secrets.
+The `type` decides how an entry is read, so a provider that changes how it
+lets callers in is a different entry rather than a different field, and
+nothing in the file's shape is specific to one vendor. API keys are resolved
+from the environment first (`api_key_env`, blank values ignored) and only
+then from here — setting a variable is the caller saying "use this".
+`auth.json` is written with owner-only (0600) permissions and is the only
+file holding secrets.
+
+Entries are held as raw JSON and typed only on the way in and out. This
+version is not the only thing that has ever written the file — an older
+OneLoop wrote entries with no `type` at all — and the file is rewritten
+whenever a token is refreshed, so an entry dropped on a read would be
+deleted on the next write. One it cannot read is one it leaves alone.
+
+A subscription has no key to name. `ol login openai` runs the
+authorization-code flow with PKCE (`auth/codex.rs`): a challenge in the
+authorize URL, a one-request web server on the port the redirect names, and
+an exchange for tokens that expire — the Codex CLI's own client id and
+endpoints, because the grant is issued to that client. The `state` parameter
+is checked on the way back, or any page the browser can reach could hand
+that server a code of its choosing. The callback wait ends after 5 minutes
+(or on Ctrl+C), token exchange and renewal get 30 seconds overall, and their
+HTTP connection gets 10 seconds to establish.
+
+What comes back is stored as an ordinary entry, and renewed a minute before
+it expires by whichever request notices first — behind a lock, because the
+refresh token is single-use and two models sharing the provider would
+otherwise spend it twice. A rotation that cannot be written back is a
+warning, not a failure: the token in hand still works, and only the next run
+pays for it. A provider configured but never signed in to is `Missing`
+rather than an error at startup, so it refuses with the command that fixes
+it instead of a 401 later — and models that need no sign-in still load.
 
 ## Output
 
@@ -185,16 +245,19 @@ src/
     session.rs      Session persistence, rotation, dangling-tool-call repair
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
   app.rs            Interactive REPL (rustyline), /commands, Ctrl+C handling
-  auth.rs           API key resolution (env over ~/.oneloop/auth.json) and storage
+  auth.rs           Credential resolution (env over ~/.oneloop/auth.json) and storage
+  auth/
+    codex.rs        ChatGPT sign-in: PKCE, the callback server, token refresh
   catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
   config.rs         System prompt assembly (tool preamble + AGENTS.md), env_or
   models.rs         Model (alias + settings + its provider), registry, active-model switching
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
-  providers.rs      Provider (endpoint: URL, key, one HTTP client), request/response types
+  providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response types
   providers/
-    chat.rs         The Chat Completions wire format — the one protocol
+    chat.rs         The Chat Completions wire format
+    codex.rs        The Responses wire format, as ChatGPT's Codex backend speaks it
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution

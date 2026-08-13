@@ -1,8 +1,8 @@
 //! The models this run can reach, and which one is active.
 //!
 //! `catalog` says what is configured; this makes it live. Models of one
-//! provider share an `Arc` of it, so they share its connection pool and key.
-//! The list is flat because every lookup here is by alias.
+//! provider share an `Arc` of it, so they share its connection pool and
+//! credentials. The list is flat because every lookup here is by alias.
 
 use std::fmt;
 use std::io::{self, Write as IoWrite};
@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
 
-use crate::auth;
-use crate::catalog::{self, Catalog};
+use crate::auth::{self, Auth};
+use crate::catalog::{self, Api, Catalog, ProviderEntry};
 use crate::output::{self, BOLD, DIM, RESET};
-use crate::providers::{Provider, ProviderRequest, ProviderResponse, chat};
+use crate::providers::{Credentials, Provider, ProviderRequest, ProviderResponse, chat, codex};
 
 mod retry;
 
@@ -26,14 +26,21 @@ pub struct Model {
     /// What goes on the wire.
     pub id: String,
     pub provider: Arc<Provider>,
+    /// The protocol its provider speaks, which is what decides which module
+    /// below gets the request.
+    pub api: Api,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub web_tools: bool,
+    pub reasoning_effort: Option<String>,
 }
 
 impl Model {
     pub async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
-        chat::complete(self, request).await
+        match self.api {
+            Api::Chat => chat::complete(self, request).await,
+            Api::Codex => codex::complete(self, request).await,
+        }
     }
 }
 
@@ -55,24 +62,31 @@ impl ModelRegistry {
     pub fn new() -> Result<Self> {
         let catalog = catalog::load()?;
         let auth = auth::load();
-        Self::build(&catalog, |var| auth.api_key_for(var))
+        Self::build(&catalog, |name, entry| credentials(&auth, name, entry))
     }
 
     /// Split from `new` so tests can build one without a home directory or
     /// a keyring.
-    fn build(catalog: &Catalog, api_key: impl Fn(&str) -> Option<String>) -> Result<Self> {
+    fn build(
+        catalog: &Catalog,
+        credentials: impl Fn(&str, &ProviderEntry) -> Credentials,
+    ) -> Result<Self> {
         let mut models = Vec::new();
         for (name, entry) in &catalog.providers {
-            // Built with or without a key: a local server needs none.
-            let key = entry.api_key_env.as_deref().and_then(&api_key);
-            let provider = Arc::new(Provider::new(name, &entry.base_url, key)?);
+            let provider = Arc::new(Provider::new(
+                name,
+                &entry.base_url,
+                credentials(name, entry),
+            )?);
             models.extend(entry.models.iter().map(|(alias, model)| Model {
                 alias: alias.clone(),
                 id: model.id.clone(),
                 provider: Arc::clone(&provider),
+                api: entry.api,
                 max_tokens: model.max_tokens,
                 temperature: model.temperature,
                 web_tools: model.web_tools.or(entry.web_tools).unwrap_or(false),
+                reasoning_effort: model.reasoning_effort.clone(),
             }));
         }
 
@@ -188,6 +202,26 @@ impl ModelRegistry {
     }
 }
 
+/// What a provider is let in with, decided by the protocol it speaks.
+///
+/// The wiring between the config and the stored credentials lives here
+/// rather than in either: `catalog` reads a file and `auth` holds secrets,
+/// and neither needs to know what the other calls things.
+fn credentials(auth: &Auth, name: &str, entry: &ProviderEntry) -> Credentials {
+    match entry.api {
+        Api::Chat => match auth.api_key(name, entry.api_key_env.as_deref()) {
+            Some(key) => Credentials::ApiKey(key),
+            None => Credentials::None,
+        },
+        // Missing rather than an error: a config naming a provider nobody
+        // has signed in to must not stop the models that need no sign-in.
+        Api::Codex => match auth.grant(auth::codex::PROVIDER_NAME) {
+            Some(grant) => Credentials::Oauth(tokio::sync::Mutex::new(grant)),
+            None => Credentials::Missing(format!("ol login {}", auth::codex::PROVIDER_NAME)),
+        },
+    }
+}
+
 /// Zero-based index of the chosen line.
 async fn read_choice(count: usize) -> Result<usize> {
     // The prompt goes where the menu went, and carries no newline to flush
@@ -233,8 +267,11 @@ mod tests {
     fn registry(json: &str) -> ModelRegistry {
         let file = serde_json::from_str(json).expect("test json must parse");
         let catalog = catalog::resolve(file, None).expect("catalog must resolve");
-        ModelRegistry::build(&catalog, |var| Some(format!("key-for-{var}")))
-            .expect("registry must build")
+        ModelRegistry::build(&catalog, |_, entry| match &entry.api_key_env {
+            Some(var) => Credentials::ApiKey(format!("key-for-{var}")),
+            None => Credentials::None,
+        })
+        .expect("registry must build")
     }
 
     #[test]

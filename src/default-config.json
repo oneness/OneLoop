@@ -12,6 +12,16 @@
         }
       }
     },
+    "openai": {
+      "base_url": "https://chatgpt.com/backend-api",
+      "api": "codex",
+      "models": {
+        "codex": {
+          "id": "gpt-5.5",
+          "reasoning_effort": "medium"
+        }
+      }
+    },
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",

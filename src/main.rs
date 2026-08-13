@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Login { provider }) => login(&provider),
+        Some(Command::Login { provider }) => login(&provider).await,
         None => {
             let stdin = if !io::stdin().is_terminal() {
                 let mut buf = String::new();
@@ -66,22 +66,32 @@ async fn main() -> Result<()> {
     }
 }
 
-fn login(provider: &str) -> Result<()> {
-    let Some(provider) = auth::AuthProvider::from_name(provider) else {
+async fn login(provider: &str) -> Result<()> {
+    // A subscription has no key to type: it is signed in to, in a browser.
+    if provider == auth::codex::PROVIDER_NAME {
+        println!("ChatGPT (Plus/Pro) login for OneLoop");
+        println!();
+        let grant = auth::codex::login().await?;
+        let path = auth::store(provider, &auth::Credential::Oauth(grant))?;
+        println!("Stored ChatGPT credentials at {}", path.display());
+        return Ok(());
+    }
+
+    let Some(login) = auth::api_key_login(provider) else {
         bail!("unsupported provider login: {provider}");
     };
 
-    println!("{} login for OneLoop", provider.display_name());
+    println!("{} login for OneLoop", login.display_name);
     println!();
 
-    let key = rpassword::prompt_password(format!("Enter {}: ", provider.env_var()))?;
+    let key = rpassword::prompt_password(format!("Enter {}: ", login.env_var))?;
     if key.trim().is_empty() {
         bail!("empty API key")
     }
-    let path = auth::store_api_key(provider, key)?;
+    let path = auth::store(login.provider, &auth::Credential::ApiKey { key })?;
     println!(
         "Stored {} credentials at {}",
-        provider.display_name(),
+        login.display_name,
         path.display()
     );
     Ok(())
