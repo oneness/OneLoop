@@ -56,7 +56,7 @@ models — the default `qwen` model runs through the credential-free `local`
 provider.
 
 `openai` opens a browser, signs in to ChatGPT, and stores the grant that
-comes back; the `codex` model then runs against the subscription rather than a
+comes back; the `chatgpt` model then runs against the subscription rather than a
 metered API key — the same account and quota the Codex CLI uses. The access
 token is renewed automatically as it expires, so this is a one-time step.
 
@@ -98,7 +98,7 @@ shown here with a second OpenRouter model added:
       "base_url": "https://chatgpt.com/backend-api",
       "api": "codex",
       "models": {
-        "codex": { "id": "gpt-5.5", "reasoning_effort": "medium" }
+        "chatgpt": { "id": "gpt-5.6-sol", "reasoning_effort": "medium" }
       }
     },
     "openrouter": {
