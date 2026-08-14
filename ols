@@ -1,7 +1,131 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export ONELOOP_ORIGINAL_DIR="$(pwd)"
+ONELOOP_ORIGINAL_DIR="$(pwd)"
+export ONELOOP_ORIGINAL_DIR
 cd "$(dirname "$(readlink -f "$0")")"
 
-exec nix run .#serve
+usage() {
+  echo "usage: ols [qwen|glimmer] [llama-server options...]"
+}
+
+default="qwen"
+default="glimmer"
+model="${1:-$default}"
+if [ $# -gt 0 ]; then
+  shift
+fi
+
+case "$model" in
+  qwen|glimmer) ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "unknown model: $model" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+port="${ONELOOP_LOCAL_PORT:-8080}"
+
+# A bind failure surfaces as an opaque socket error several screens into the
+# startup log. Say it plainly instead.
+if curl -s -m 2 "localhost:$port/health" 2>/dev/null | grep -q ok; then
+  echo "a server is already serving on :$port — just use \`ol\`." >&2
+  exit 1
+fi
+
+case "$model" in
+  qwen)
+    model_file="Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    default_model="$HOME/models/$model_file"
+    model_path="${ONELOOP_LOCAL_MODEL:-$default_model}"
+
+    # An optional leading GGUF path overrides the environment.
+    if [ $# -gt 0 ] && [ "${1##*.}" = "gguf" ]; then
+      model_path="$1"
+      shift
+    fi
+
+    if [ ! -f "$model_path" ]; then
+      # Only offer the pinned default. A caller-selected path is theirs to
+      # provide, and guessing which weights to download would be presumptuous.
+      if [ "$model_path" != "$default_model" ]; then
+        echo "no model at $model_path" >&2
+        exit 1
+      fi
+
+      if [ ! -t 0 ]; then
+        echo "no model at $model_path" >&2
+        echo "run ./download-qwen to fetch it" >&2
+        exit 1
+      fi
+
+      echo "No model at $model_path"
+      printf 'Download Qwen now? [y/N] '
+      read -r reply
+      case "$reply" in
+        [yY]*) ./download-qwen ;;
+        *) echo "aborted — nothing downloaded." >&2; exit 1 ;;
+      esac
+
+      if [ ! -f "$model_path" ]; then
+        echo "download completed without creating $model_path" >&2
+        exit 1
+      fi
+    fi
+
+    # llama.cpp's automatic --fit placement is intentional: a fixed -ngl can
+    # overcommit machines with less GPU-addressable memory. The remaining
+    # values were measured with these pinned Qwen weights.
+    exec nix shell .#llama-server --command llama-server \
+      -m "$model_path" \
+      -t 12 -c 131072 -n 32768 \
+      --jinja --reasoning-preserve --reasoning-budget 600 \
+      --host 127.0.0.1 --port "$port" --alias qwen \
+      "$@"
+    ;;
+  glimmer)
+    glimmer_model="$HOME/models/muse-glimmer-30B-kquant-17gb.gguf"
+    glimmer_draft="$HOME/models/dflash-kquant.gguf"
+
+    if [ ! -f "$glimmer_model" ] || [ ! -f "$glimmer_draft" ]; then
+      if [ ! -t 0 ]; then
+        echo "Muse Glimmer model files are missing from $HOME/models" >&2
+        echo "run ./download-glimmer to fetch them" >&2
+        exit 1
+      fi
+
+      echo "Muse Glimmer model files are missing from $HOME/models"
+      printf 'Download Muse Glimmer now? [y/N] '
+      read -r reply
+      case "$reply" in
+        [yY]*) ./download-glimmer ;;
+        *) echo "aborted — nothing downloaded." >&2; exit 1 ;;
+      esac
+
+      if [ ! -f "$glimmer_model" ] || [ ! -f "$glimmer_draft" ]; then
+        echo "download completed without creating all Muse Glimmer model files" >&2
+        exit 1
+      fi
+    fi
+
+    # Start from Ollama's conservative llama.cpp baseline. In particular, the
+    # published DFlash package drafts three tokens and leaves draft placement
+    # to llama.cpp; forcing 15 tokens and every draft layer onto the GPU can
+    # make graph allocation fail on memory-constrained hardware.
+    exec nix shell .#llama-server --command llama-server \
+      -m "$glimmer_model" \
+      -t 12 -c 131072 -n 32768 -n 32768 --parallel 1 \
+      --jinja --flash-attn auto \
+      --host 127.0.0.1 --port "$port" --alias glimmer \
+      --spec-type draft-dflash \
+      --spec-draft-model "$glimmer_draft" \
+      --spec-draft-n-max 3 \
+      --spec-draft-ngl auto \
+      "$@"
+    ;;
+esac

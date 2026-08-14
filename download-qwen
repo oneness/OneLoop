@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Download the pinned Qwen GGUF used by `ols`. The download is resumable and
+# only becomes the final file after its size and SHA-256 digest are verified.
+
+MODEL_DIR="${MODEL_DIR:-$HOME/models}"
+MODEL_REPO="ggml-org/Qwen3.6-35B-A3B-GGUF"
+MODEL_FILE="Qwen3.6-35B-A3B-Q4_K_M.gguf"
+MODEL_BYTES=20419565568
+MODEL_SHA256="671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7"
+TARGET="$MODEL_DIR/$MODEL_FILE"
+PARTIAL="$TARGET.part"
+URL="https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE"
+
+command -v curl >/dev/null || { echo "error: curl not found" >&2; exit 1; }
+command -v sha256sum >/dev/null || { echo "error: sha256sum not found" >&2; exit 1; }
+
+mkdir -p "$MODEL_DIR"
+
+if [ -f "$TARGET" ]; then
+  actual_bytes=$(stat -c %s "$TARGET")
+  actual_digest=$(sha256sum "$TARGET" | cut -d' ' -f1)
+  if [ "$actual_bytes" = "$MODEL_BYTES" ] && [ "$actual_digest" = "$MODEL_SHA256" ]; then
+    echo "verified existing $TARGET"
+    exit 0
+  fi
+  echo "error: existing file does not match the pinned artifact: $TARGET" >&2
+  exit 1
+fi
+
+echo "downloading $MODEL_FILE"
+curl --fail --location --retry 12 --retry-all-errors --retry-delay 5 \
+  --continue-at - --progress-bar \
+  --output "$PARTIAL" "$URL"
+
+actual_bytes=$(stat -c %s "$PARTIAL")
+if [ "$actual_bytes" != "$MODEL_BYTES" ]; then
+  echo "error: $PARTIAL is $actual_bytes bytes; expected $MODEL_BYTES" >&2
+  echo "re-run this script to resume the download" >&2
+  exit 1
+fi
+
+actual_digest=$(sha256sum "$PARTIAL" | cut -d' ' -f1)
+if [ "$actual_digest" != "$MODEL_SHA256" ]; then
+  echo "error: checksum mismatch for $PARTIAL" >&2
+  exit 1
+fi
+
+mv "$PARTIAL" "$TARGET"
+echo "saved $TARGET"
