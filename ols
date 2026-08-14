@@ -10,7 +10,7 @@ usage() {
 }
 
 default="qwen"
-default="glimmer"
+#default="glimmer"
 model="${1:-$default}"
 if [ $# -gt 0 ]; then
   shift
