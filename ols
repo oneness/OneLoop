@@ -40,7 +40,8 @@ fi
 
 case "$model" in
   qwen)
-    model_file="Qwen3.6-35B-A3B-Q4_K_M.gguf"
+    # model_file="Qwen3.8-27B-Q4_K_M.gguf"
+    model_file="Qwen3.6-35B-A3B-Q4_K_M.gguf"  
     default_model="$HOME/models/$model_file"
     model_path="${ONELOOP_LOCAL_MODEL:-$default_model}"
 

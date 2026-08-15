@@ -42,11 +42,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1786646459,
-        "narHash": "sha256-ANeVUODTOzkuPrt8Sd/IMrMUnT+2baIfgjdQDGGe6UQ=",
+        "lastModified": 1786794078,
+        "narHash": "sha256-rkL7hovoBYDNmGZ+ZZsPA5/O81byFtdbfci8o4Cy7rs=",
         "owner": "ggml-org",
         "repo": "llama.cpp",
-        "rev": "a94d563ed801d1da1b8c2432946de07d0231bb3d",
+        "rev": "adb55e5148dc93bcdca7212a2d1df3ccc422959a",
         "type": "github"
       },
       "original": {

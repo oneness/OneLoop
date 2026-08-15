@@ -1,56 +1,207 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fetch release notes for llama.cpp and the Qwen model so you can decide
-# whether to update either.
+# Compare OneLoop's pinned llama.cpp revision and Qwen artifact with their
+# upstream releases. This script reports actions; it never edits or downloads.
 #
 # Usage: ./check-updates [--help]
 #
 # Requires: curl, jq
 
-MODEL_REPO="${MODEL_REPO:-ggml-org/Qwen3.6-35B-A3B-GGUF}"
-MODEL_FILE="${MODEL_FILE:-Qwen3.6-35B-A3B-Q4_K_M.gguf}"
+usage() {
+  cat <<'EOF'
+usage: ./check-updates
+
+Check whether OneLoop should update its pinned llama.cpp server or evaluate a
+newer Qwen GGUF. The command only reports recommendations.
+EOF
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
 
 for tool in curl jq; do
-  command -v "$tool" &>/dev/null || { echo "error: $tool not found" >&2; exit 1; }
+  command -v "$tool" >/dev/null || {
+    echo "error: $tool not found" >&2
+    exit 1
+  }
 done
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+lock_file="$repo_dir/flake.lock"
+download_script="$repo_dir/download-qwen"
+
+[ -f "$lock_file" ] || { echo "error: $lock_file not found" >&2; exit 1; }
+[ -f "$download_script" ] || { echo "error: $download_script not found" >&2; exit 1; }
+
+api_get() {
+  curl --fail --silent --show-error --location \
+    --header "Accept: application/vnd.github+json" \
+    --header "User-Agent: OneLoop-update-check" \
+    "$1"
+}
+
+read_assignment() {
+  local name=$1
+  local value
+  value=$(sed -n "s/^${name}=\"\(.*\)\"$/\1/p" "$download_script")
+  [ -n "$value" ] || {
+    echo "error: could not read $name from $download_script" >&2
+    exit 1
+  }
+  printf '%s\n' "$value"
+}
+
+short_revision() {
+  printf '%.12s' "$1"
+}
+
+pinned_llama_revision=$(jq -er '.nodes["llama-cpp"].locked.rev' "$lock_file")
+pinned_llama_timestamp=$(jq -er '.nodes["llama-cpp"].locked.lastModified' "$lock_file")
+pinned_llama_date=$(date --utc --date="@$pinned_llama_timestamp" +%F 2>/dev/null || printf 'unknown')
+
+latest_release=$(api_get "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest")
+release_tag=$(jq -er '.tag_name' <<<"$latest_release")
+release_date=$(jq -er '.published_at | split("T")[0]' <<<"$latest_release")
+release_revision=$(jq -er '.target_commitish' <<<"$latest_release")
+release_url=$(jq -er '.html_url' <<<"$latest_release")
+
+comparison=$(api_get "https://api.github.com/repos/ggml-org/llama.cpp/compare/${pinned_llama_revision}...${release_revision}")
+comparison_status=$(jq -er '.status' <<<"$comparison")
+ahead_by=$(jq -er '.ahead_by' <<<"$comparison")
+compare_url=$(jq -er '.html_url' <<<"$comparison")
 
 echo "========================================"
 echo "llama.cpp"
 echo "========================================"
+echo "OneLoop pin:    $(short_revision "$pinned_llama_revision") ($pinned_llama_date)"
+echo "Latest release: $release_tag / $(short_revision "$release_revision") ($release_date)"
+echo "Release:        $release_url"
+echo "Comparison:     $compare_url"
+echo
 
-# Latest release tag
-LATEST=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)
-TAG=$(echo "$LATEST" | jq -r '.tag_name')
-DATE=$(echo "$LATEST" | jq -r '.published_at' | cut -dT -f1)
-URL=$(echo "$LATEST" | jq -r '.html_url')
+llama_update=no
+case "$comparison_status" in
+  identical)
+    echo "Recommendation: no llama.cpp update is needed."
+    ;;
+  ahead)
+    llama_update=yes
+    echo "Recommendation: update llama.cpp; the release is $ahead_by commits ahead of OneLoop."
+    echo "Run: nix flake update llama-cpp"
+    echo "This updates flake.lock. flake.nix does not need an edit because its input already tracks llama.cpp."
+    ;;
+  behind)
+    echo "Recommendation: no update based on the latest release; OneLoop's pin is newer."
+    ;;
+  diverged)
+    llama_update=inspect
+    echo "Recommendation: inspect the diverged llama.cpp histories before updating."
+    ;;
+  *)
+    llama_update=inspect
+    echo "Recommendation: inspect llama.cpp manually; GitHub reported comparison status '$comparison_status'."
+    ;;
+esac
 
-echo "Latest release: $TAG ($DATE)"
-echo "Changelog:      $URL"
-echo ""
-echo "Release notes:"
-echo "$LATEST" | jq -r '.body' | sed -e 's/<[^>]*>//g' \
-  | sed -n '1,/^---/p' \
-  | grep -v '^-\{3,\}$' \
-  | sed '/^\s*$/d' \
-  | sed 's/^/  /'
+if [ "$comparison_status" = ahead ]; then
+  echo
+  echo "Recent upstream changes:"
+  jq -r '.commits[-5:][] | "  " + (.sha[0:8]) + "  " + (.commit.message | split("\n")[0])' <<<"$comparison"
+fi
 
-echo ""
+model_repo=${MODEL_REPO:-$(read_assignment MODEL_REPO)}
+model_file=${MODEL_FILE:-$(read_assignment MODEL_FILE)}
+pinned_model_sha=$(read_assignment MODEL_SHA256)
+
+model_info=$(api_get "https://huggingface.co/api/models/${model_repo}?blobs=true")
+model_updated=$(jq -er '.lastModified' <<<"$model_info")
+model_revision=$(jq -er '.sha' <<<"$model_info")
+remote_model_sha=$(jq -er --arg file "$model_file" \
+  '.siblings[] | select(.rfilename == $file) | .lfs.sha256' <<<"$model_info")
+
+echo
 echo "========================================"
-echo "Qwen model: $MODEL_FILE"
+echo "Qwen"
 echo "========================================"
+echo "OneLoop model:  $model_repo"
+echo "Artifact:       $model_file"
+echo "Repo revision:  $(short_revision "$model_revision") (${model_updated%%T*})"
+echo
 
-# Model repo metadata and recent commit history
-MODEL_INFO=$(curl -s "https://huggingface.co/api/models/$MODEL_REPO")
-echo "Model:     $(echo "$MODEL_INFO" | jq -r '.modelId')"
-echo "Updated:   $(echo "$MODEL_INFO" | jq -r '.lastModified' | cut -dT -f1)"
-echo "Downloads: $(echo "$MODEL_INFO" | jq -r '.downloads')"
-echo ""
-echo "Files:"
-echo "$MODEL_INFO" | jq -r '.siblings[] | select(.rfilename | endswith(".gguf")) | .rfilename' \
-  | sed 's/^/  /'
+artifact_update=no
+if [ "$remote_model_sha" = "$pinned_model_sha" ]; then
+  echo "Pinned artifact: unchanged upstream."
+else
+  artifact_update=yes
+  echo "Pinned artifact: CHANGED upstream."
+  echo "Recommendation: review the repo changes and update download-qwen's size and checksum before downloading."
+fi
 
-echo ""
-echo "Recent changes:"
-curl -s "https://huggingface.co/api/models/$MODEL_REPO/commits/main" \
-  | jq -r '.[:5][] | "  " + (.date | .[0:10]) + "  " + .title'
+qwen_models=$(api_get \
+  "https://huggingface.co/api/models?author=ggml-org&search=Qwen&sort=lastModified&direction=-1&limit=50&full=true")
+
+# A useful replacement must be conversational, newer than the current repo,
+# and published with the same practical Q4_K_M quantization. Exclude specialist
+# audio and base checkpoints that cannot replace the coding assistant.
+candidate_repo=$(jq -r --arg current "$model_repo" --arg updated "$model_updated" '
+  [ .[]
+    | select(.modelId != $current)
+    | select(.lastModified > $updated)
+    | select(.modelId | test("-GGUF$"))
+    | select(.modelId | test("Base|TTS|ASR|Omni") | not)
+    | select((.tags // []) | index("conversational"))
+  ][0].modelId // empty
+' <<<"$qwen_models")
+
+model_download=no
+if [ -z "$candidate_repo" ]; then
+  echo "Newer replacement: none found."
+  if [ "$artifact_update" = no ]; then
+    echo "Recommendation: keep the current Qwen model; no download is needed."
+  fi
+else
+  candidate_info=$(api_get "https://huggingface.co/api/models/${candidate_repo}?blobs=true")
+  candidate_file=$(jq -r '
+    [.siblings[] | select(.rfilename | endswith("Q4_K_M.gguf"))][0].rfilename // empty
+  ' <<<"$candidate_info")
+
+  if [ -z "$candidate_file" ]; then
+    echo "Newer Qwen repo: $candidate_repo, but it has no Q4_K_M artifact."
+    echo "Recommendation: keep the current model unless you choose another quantization."
+  else
+    model_download=yes
+    candidate_updated=$(jq -er '.lastModified | split("T")[0]' <<<"$candidate_info")
+    candidate_bytes=$(jq -er --arg file "$candidate_file" \
+      '.siblings[] | select(.rfilename == $file) | .lfs.size' <<<"$candidate_info")
+    candidate_sha=$(jq -er --arg file "$candidate_file" \
+      '.siblings[] | select(.rfilename == $file) | .lfs.sha256' <<<"$candidate_info")
+    candidate_gib=$(jq -nr --argjson bytes "$candidate_bytes" '$bytes / 1073741824 | . * 100 | round / 100')
+
+    echo "Newer candidate: $candidate_repo ($candidate_updated)"
+    echo "Artifact:        $candidate_file (${candidate_gib} GiB)"
+    echo "SHA-256:        $candidate_sha"
+    echo "Model page:     https://huggingface.co/$candidate_repo"
+    echo
+    echo "Recommendation: download this candidate for evaluation, but do not replace the pinned model solely because it is newer."
+    echo "To adopt it, update download-qwen (repo, file, size, checksum) and ols (model filename), then run ./download-qwen."
+    echo "flake.nix is unrelated to model selection and does not need an edit."
+  fi
+fi
+
+echo
+echo "========================================"
+echo "Summary"
+echo "========================================"
+echo "Update llama.cpp lock: $llama_update"
+echo "Edit flake.nix:         no"
+echo "Download newer Qwen:   $model_download"

@@ -5,10 +5,10 @@ set -euo pipefail
 # only becomes the final file after its size and SHA-256 digest are verified.
 
 MODEL_DIR="${MODEL_DIR:-$HOME/models}"
-MODEL_REPO="ggml-org/Qwen3.6-35B-A3B-GGUF"
-MODEL_FILE="Qwen3.6-35B-A3B-Q4_K_M.gguf"
-MODEL_BYTES=20419565568
-MODEL_SHA256="671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7"
+MODEL_REPO="ggml-org/Qwen3.8-27B-GGUF"
+MODEL_FILE="Qwen3.8-27B-Q4_K_M.gguf"
+MODEL_BYTES=18973870432
+MODEL_SHA256="31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34"
 TARGET="$MODEL_DIR/$MODEL_FILE"
 PARTIAL="$TARGET.part"
 URL="https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE"
