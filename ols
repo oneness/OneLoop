@@ -84,6 +84,7 @@ case "$model" in
     # values were measured with these pinned Qwen weights.
     exec nix shell .#llama-server --command llama-server \
       -m "$model_path" \
+      --mmap \
       -t 12 -c 131072 -n 32768 \
       --jinja --reasoning-preserve --reasoning-budget 600 \
       --host 127.0.0.1 --port "$port" --alias qwen \
