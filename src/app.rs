@@ -1,5 +1,10 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
-use rustyline::error::ReadlineError;
+use rustyline::{
+    Editor, Helper, completion::Completer, error::ReadlineError, highlight::Highlighter,
+    hint::Hinter, history::DefaultHistory, validate::Validator,
+};
 
 use crate::output;
 use crate::{
@@ -11,6 +16,33 @@ use crate::{
 
 pub struct App {
     config: Config,
+}
+
+struct ReplHelper;
+
+impl Completer for ReplHelper {
+    type Candidate = String;
+}
+
+impl Hinter for ReplHelper {
+    type Hint = String;
+}
+
+impl Highlighter for ReplHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        _default: bool,
+    ) -> Cow<'b, str> {
+        Cow::Owned(format!("{}{prompt}{}", output::BOLD, output::RESET))
+    }
+}
+
+impl Validator for ReplHelper {}
+impl Helper for ReplHelper {}
+
+fn interactive_prompt(alias: &str) -> String {
+    format!("({alias})> ")
 }
 
 /// A line the REPL answers itself instead of sending to a model.
@@ -112,10 +144,12 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 
     // Canonical mode silently drops input past the tty's 4096-byte line
     // buffer and locks up the prompt on long pastes.
-    let mut editor = rustyline::DefaultEditor::new()?;
+    let mut editor = Editor::<ReplHelper, DefaultHistory>::new()?;
+    editor.set_helper(Some(ReplHelper));
 
     loop {
-        let line = match editor.readline("> ") {
+        let prompt = interactive_prompt(&agent.models().active().alias);
+        let line = match editor.readline(&prompt) {
             Ok(input) => input.trim().to_string(),
             // Ctrl+C at the prompt discards the current line.
             Err(ReadlineError::Interrupted) => continue,
@@ -167,7 +201,12 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, parse_command};
+    use super::{Command, interactive_prompt, parse_command};
+
+    #[test]
+    fn interactive_prompt_names_the_active_model() {
+        assert_eq!(interactive_prompt("qwen"), "(qwen)> ");
+    }
 
     #[test]
     fn clear_is_a_command() {
