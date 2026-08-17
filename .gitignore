@@ -2,7 +2,10 @@ target/
 result/
 .direnv/
 .env
-.oneloop/
+!.oneloop/
+.oneloop/*
+!.oneloop/skills/
+!.oneloop/skills/*.md
 .claude/
 *.o
 *.d
