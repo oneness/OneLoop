@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Download the pinned Gemma 4 26B-A4B GGUF used by `ols gemma`. The download
+# is resumable and only becomes the final file after its size and SHA-256
+# digest are verified.
+
+MODEL_DIR="${MODEL_DIR:-$HOME/models}"
+MODEL_REPO="unsloth/gemma-4-26B-A4B-it-GGUF"
+MODEL_FILE="gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+MODEL_BYTES=16947541728
+MODEL_SHA256="f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
+TARGET="$MODEL_DIR/$MODEL_FILE"
+PARTIAL="$TARGET.part"
+URL="https://huggingface.co/$MODEL_REPO/resolve/main/$MODEL_FILE"
+
+command -v curl >/dev/null || { echo "error: curl not found" >&2; exit 1; }
+command -v sha256sum >/dev/null || { echo "error: sha256sum not found" >&2; exit 1; }
+
+mkdir -p "$MODEL_DIR"
+
+if [ -f "$TARGET" ]; then
+  actual_bytes=$(stat -c %s "$TARGET")
+  actual_digest=$(sha256sum "$TARGET" | cut -d' ' -f1)
+  if [ "$actual_bytes" = "$MODEL_BYTES" ] && [ "$actual_digest" = "$MODEL_SHA256" ]; then
+    echo "verified existing $TARGET"
+    exit 0
+  fi
+  echo "error: existing file does not match the pinned artifact: $TARGET" >&2
+  exit 1
+fi
+
+echo "downloading $MODEL_FILE"
+curl --fail --location --retry 12 --retry-all-errors --retry-delay 5 \
+  --continue-at - --progress-bar \
+  --output "$PARTIAL" "$URL"
+
+actual_bytes=$(stat -c %s "$PARTIAL")
+if [ "$actual_bytes" != "$MODEL_BYTES" ]; then
+  echo "error: $PARTIAL is $actual_bytes bytes; expected $MODEL_BYTES" >&2
+  echo "re-run this script to resume the download" >&2
+  exit 1
+fi
+
+actual_digest=$(sha256sum "$PARTIAL" | cut -d' ' -f1)
+if [ "$actual_digest" != "$MODEL_SHA256" ]; then
+  echo "error: checksum mismatch for $PARTIAL" >&2
+  exit 1
+fi
+
+mv "$PARTIAL" "$TARGET"
+echo "saved $TARGET"
