@@ -136,7 +136,7 @@ long](#when-a-thread-gets-too-long).
 
 `max_tokens` caps output per response and is omitted unless you set it, so a
 hosted provider's own default applies. The bundled `local` model leaves it
-unset too: `nix run .#serve` starts llama-server with `-n 32768`, which is
+unset too: `./ols` starts llama-server with `-n 32768`, which is
 the same ceiling in one place instead of two.
 
 `default` names the alias used when nothing else is asked for. It is `qwen`
@@ -164,7 +164,7 @@ The `local` provider expects an OpenAI-compatible server on port 8080. This
 flake builds and runs one:
 
 ```bash
-nix run .#serve
+./ols
 ```
 
 With no model present it offers to download one (~20 GB, into `~/models/`)
@@ -173,8 +173,8 @@ and lands as `.part` until complete — an aborted transfer never looks like a
 usable model. To use different weights:
 
 ```bash
-nix run .#serve -- /path/to/other.gguf
-# or: ONELOOP_LOCAL_MODEL=/path/to/other.gguf nix run .#serve
+./ols -- /path/to/other.gguf
+# or: ONELOOP_LOCAL_MODEL=/path/to/other.gguf ./ols
 ```
 
 The offer is only made for the default, and only with a terminal attached:
