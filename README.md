@@ -2,7 +2,7 @@
 
 A local-first coding agent. It runs against a model on your own machine by
 default — no API key, no account, nothing leaving the box — and reaches a
-hosted model only when you ask it to. One loop, four tools, zero config.
+hosted model only when you ask it to. One loop, five tools, zero config.
 
 ## Quick links
 
@@ -60,7 +60,9 @@ comes back; the `chatgpt` model then runs against the subscription rather than a
 metered API key — the same account and quota the Codex CLI uses. The access
 token is renewed automatically as it expires, so this is a one-time step.
 
-`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, or `bash`.
+`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `elisp`.
+
+`elisp` evaluates an Emacs Lisp expression through `emacsclient` in the running Emacs server. It gives the agent access to editor-only state — open and unsaved buffers, windows, cursor positions, diagnostics, and process output — that may differ from files on disk. An Emacs server and `emacsclient` must be available. The bundled `emacs` skill is loaded before use and tells the model to keep expressions bounded, avoid prompts, and leave buffers and windows unchanged unless you explicitly ask otherwise. Its timeout stops only the client; Lisp already running in Emacs may continue.
 
 Two things are reachable but are not tools. `skill` is on-demand prompt engineering — it returns a markdown playbook from `.oneloop/skills/` for the model to follow, and does nothing to the machine; it is registered only when such files exist. Web search and fetching are OpenRouter's, executed server-side and returned inside the assistant message (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 

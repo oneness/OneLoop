@@ -38,6 +38,15 @@ That keeps the core honest without forcing a full plugin runtime too early.
 - write
 - edit
 - bash
+- elisp — evaluates Emacs Lisp through `emacsclient` in the running Emacs server
+
+`elisp` is for editor-only state that the filesystem tools cannot see: open or
+unsaved buffers, visible windows, cursor positions, diagnostics, and process
+output. It requires `emacsclient` and a running Emacs server. The bundled
+`emacs` skill must be loaded before use; it keeps expressions bounded and
+non-interactive and directs ordinary disk access back to `read`, `write`, and
+`edit`. A tool timeout stops `emacsclient`, but cannot stop Lisp already
+executing inside Emacs.
 
 `skill` is registered alongside them when `.oneloop/skills/*.md` files
 exist, but is not a tool in the same sense: it touches nothing and returns a
@@ -261,6 +270,7 @@ src/
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution
+    elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing

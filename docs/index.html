@@ -221,7 +221,15 @@
   }
 
   @media (max-width: 720px) {
-    .box { padding: 36px 28px; }
+    .slide {
+      align-items: flex-start;
+      overflow-y: auto;
+      padding: 16px 16px 92px;
+    }
+    .box {
+      margin: auto 0;
+      padding: 36px 28px;
+    }
     h1 { font-size: 40px; }
     h2 { font-size: 28px; }
     .big { font-size: 18px; }
@@ -229,6 +237,11 @@
     .mono { font-size: 14px; padding: 16px 20px; }
     .tool-grid { grid-template-columns: 1fr; }
     .flow { flex-direction: column; }
+    #controls {
+      bottom: 16px;
+      gap: 12px;
+    }
+    #controls button { padding: 8px 14px; }
   }
 </style>
 </head>
@@ -245,7 +258,7 @@
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="tagline">A local-first coding agent.<br>Runs on your own machine by default. One loop, four tools, zero config.</p>
+    <p class="tagline">A local-first coding agent.<br>Runs on your own machine by default. One loop, five tools, zero config.</p>
   </div>
 </section>
 
@@ -284,14 +297,16 @@
 <section class="slide">
   <div class="box">
     <div class="label">tools</div>
-    <h2>Four tools</h2>
+    <h2>Five tools</h2>
     <div class="tool-grid">
       <div class="tool-item"><code>read</code> <span>File contents</span></div>
       <div class="tool-item"><code>write</code> <span>Create or overwrite</span></div>
       <div class="tool-item"><code>edit</code> <span>Search-and-replace</span></div>
       <div class="tool-item"><code>bash</code> <span>Shell commands</span></div>
+      <div class="tool-item"><code>elisp</code> <span>Live Emacs state</span></div>
     </div>
-    <p class="big" style="font-size: 16px; margin-top: 20px;">Reachable, but not tools: <code>skill</code> returns a playbook for the model to follow — prompt engineering, not an action. <code>web</code> is OpenRouter's, executed server-side.</p>
+    <p class="big" style="font-size: 16px; margin-top: 20px;"><code>elisp</code> evaluates bounded expressions in a running Emacs server, exposing unsaved buffers, windows, diagnostics, and process output. Load the bundled <code>emacs</code> skill before use.</p>
+    <p class="big" style="font-size: 16px; margin-top: 12px;">Reachable, but not tools: <code>skill</code> returns a playbook for the model to follow — prompt engineering, not an action. <code>web</code> is OpenRouter's, executed server-side.</p>
   </div>
 </section>
 
@@ -359,10 +374,10 @@
     <h2>Codebase</h2>
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">23</td><td style="text-align:right;">5,447</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">424</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">6</td><td style="text-align:right;">769</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">30</td><td style="text-align:right;">6,640</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">24</td><td style="text-align:right;">5,645</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">439</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">8</td><td style="text-align:right;">1,022</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">33</td><td style="text-align:right;">7,106</td></tr>
     </table>
   </div>
 </section>
