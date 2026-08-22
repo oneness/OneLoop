@@ -242,7 +242,10 @@ mod tests {
         // `Default` unwraps it, so a mistake would panic on first run.
         let catalog = template();
         assert_eq!(catalog.active, "qwen");
-        assert_eq!(catalog.aliases(), vec!["glimmer", "qwen", "chatgpt", "flash"]);
+        assert_eq!(
+            catalog.aliases(),
+            vec!["glimmer", "qwen", "chatgpt", "flash"]
+        );
     }
 
     /// The subscription provider is authorized by a stored grant, not by a

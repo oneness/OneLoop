@@ -31,10 +31,11 @@ struct ElispInput {
 /// gives us an unambiguous transport while preserving arbitrary buffer text.
 fn transport_expression(expression: &str) -> String {
     format!(
-        "(let ((oneloop-value {expression})) \
+        "(let* ((oneloop-value {expression}) \
+         (oneloop-text (if (stringp oneloop-value) oneloop-value \
+         (prin1-to-string oneloop-value)))) \
          (base64-encode-string \
-         (if (stringp oneloop-value) oneloop-value \
-         (prin1-to-string oneloop-value)) t))"
+         (encode-coding-string oneloop-text 'utf-8) t))"
     )
 }
 
@@ -137,7 +138,13 @@ mod tests {
     #[test]
     fn transport_preserves_plain_lisp_without_shell_quoting() {
         let expression = transport_expression("(buffer-name (window-buffer (selected-window)))");
-        assert!(expression.contains("(let ((oneloop-value (buffer-name"));
+        assert!(expression.contains("(let* ((oneloop-value (buffer-name"));
+    }
+
+    #[test]
+    fn transport_encodes_multibyte_text_as_utf8_bytes() {
+        let expression = transport_expression("\"λ\"");
+        assert!(expression.contains("(encode-coding-string oneloop-text 'utf-8)"));
     }
 
     #[test]
