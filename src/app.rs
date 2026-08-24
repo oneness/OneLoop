@@ -61,26 +61,83 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     };
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
-        "clear" => Some(Command::Clear),
+        "clear" if argument.is_none() => Some(Command::Clear),
         "model" => Some(Command::Model(argument)),
         _ => None,
     }
 }
 
-async fn run_command(agent: &mut Agent, command: Command<'_>) {
+struct ParsedInput<'a> {
+    prompt: Option<&'a str>,
+    command: Option<Command<'a>>,
+}
+
+/// A prefixed command uses `.` as an explicit boundary:
+/// `/clear. explain this` and `/model flash. explain this`.
+fn parse_input(input: &str) -> ParsedInput<'_> {
+    let trimmed = input.trim();
+    if let Some((prompt, command)) = parse_prefixed_command(trimmed) {
+        return ParsedInput {
+            prompt: Some(prompt),
+            command: Some(command),
+        };
+    }
+    if let Some(command) = parse_command(trimmed) {
+        return ParsedInput {
+            prompt: None,
+            command: Some(command),
+        };
+    }
+
+    ParsedInput {
+        prompt: Some(input),
+        command: None,
+    }
+}
+
+fn parse_prefixed_command(input: &str) -> Option<(&str, Command<'_>)> {
+    input
+        .strip_prefix("/clear")
+        .and_then(prompt_after_separator)
+        .map(|prompt| (prompt, Command::Clear))
+        .or_else(|| {
+            let remainder = input.strip_prefix("/model")?;
+            let remainder = remainder.strip_prefix(char::is_whitespace)?.trim_start();
+            let (alias, prompt) = remainder.split_once('.')?;
+            let alias = alias.trim();
+            let prompt = prompt.trim();
+            (!alias.is_empty() && !prompt.is_empty())
+                .then_some((prompt, Command::Model(Some(alias))))
+        })
+}
+
+fn prompt_after_separator(remainder: &str) -> Option<&str> {
+    remainder.strip_prefix('.').and_then(nonempty_trimmed)
+}
+
+fn nonempty_trimmed(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+/// Returns false when the command failed or selection was cancelled, so a
+/// prompt attached to it is never sent with unintended state.
+async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
     match command {
-        Command::Clear => {
-            if let Err(e) = agent.clear_session() {
+        Command::Clear => match agent.clear_session() {
+            Ok(()) => true,
+            Err(e) => {
                 output::fail(&format!("{e:#}"));
+                false
             }
-        }
+        },
         Command::Model(alias) => switch_model(agent, alias).await,
     }
 }
 
 /// Lasts for this session; the config file is not touched, so what the next
 /// run starts on stays something the user wrote.
-async fn switch_model(agent: &Agent, requested: Option<&str>) {
+async fn switch_model(agent: &Agent, requested: Option<&str>) -> bool {
     let alias = match requested {
         Some(alias) => alias.to_string(),
         None => {
@@ -88,7 +145,10 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) {
             match agent.models().pick_any().await {
                 Ok(alias) => alias,
                 // Cancelling is an ordinary outcome, not a failure.
-                Err(e) => return output::note(&format!("{e:#}")),
+                Err(e) => {
+                    output::note(&format!("{e:#}"));
+                    return false;
+                }
             }
         }
     };
@@ -98,8 +158,12 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) {
             output::note(
                 "this session only — set \"default\" in ~/.oneloop/config.json to keep it",
             );
+            true
         }
-        Err(e) => output::fail(&format!("{e:#}")),
+        Err(e) => {
+            output::fail(&format!("{e:#}"));
+            false
+        }
     }
 }
 
@@ -120,10 +184,19 @@ impl App {
 
         match prompt {
             Some(prompt) => {
+                let parsed = parse_input(&prompt);
+                if let Some(command) = parsed.command
+                    && !run_command(&mut agent, command).await
+                {
+                    return Ok(());
+                }
+                let Some(prompt) = parsed.prompt else {
+                    return Ok(());
+                };
                 // A one-shot run must not be silent about which model it is
                 // spending on.
                 output::step(&format!("{}", agent.models().active()));
-                agent.run_once(prompt).await
+                agent.run_once(prompt.to_string()).await
             }
             None => run_interactive(&mut agent).await,
         }
@@ -162,13 +235,19 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         }
         let _ = editor.add_history_entry(&line);
 
-        if let Some(command) = parse_command(&line) {
-            run_command(agent, command).await;
+        let parsed = parse_input(&line);
+        if let Some(command) = parsed.command
+            && !run_command(agent, command).await
+        {
             eprintln!();
             continue;
         }
+        let Some(prompt) = parsed.prompt else {
+            eprintln!();
+            continue;
+        };
 
-        run_interactive_turn(agent, &line).await;
+        run_interactive_turn(agent, prompt).await;
         eprintln!();
     }
 
@@ -201,7 +280,7 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, interactive_prompt, parse_command};
+    use super::{Command, interactive_prompt, parse_command, parse_input};
 
     #[test]
     fn interactive_prompt_names_the_active_model() {
@@ -229,5 +308,88 @@ mod tests {
     fn a_message_starting_with_a_path_is_not_a_command() {
         // Refusing unknown /words would swallow this as a typo.
         assert!(parse_command("/etc/hosts is unreadable, why?").is_none());
+    }
+
+    #[test]
+    fn prefixed_clear_is_extracted() {
+        let parsed = parse_input("/clear. Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("Explain this"), Some(Command::Clear))
+        ));
+    }
+
+    #[test]
+    fn prefixed_model_is_extracted() {
+        let parsed = parse_input("/model flash. Why does this fail?");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (
+                Some("Why does this fail?"),
+                Some(Command::Model(Some("flash")))
+            )
+        ));
+    }
+
+    #[test]
+    fn spoken_clear_stays_in_the_prompt() {
+        let parsed = parse_input("slash clear dot Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("slash clear dot Explain this"), None)
+        ));
+    }
+
+    #[test]
+    fn spoken_model_stays_in_the_prompt() {
+        let parsed = parse_input("slash model flash dot Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("slash model flash dot Explain this"), None)
+        ));
+    }
+
+    #[test]
+    fn typed_command_with_spoken_dot_stays_in_the_prompt() {
+        let parsed = parse_input("/clear dot Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/clear dot Explain this"), None)
+        ));
+    }
+
+    #[test]
+    fn prefix_without_separator_stays_in_the_prompt() {
+        let parsed = parse_input("/clear Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/clear Explain this"), None)
+        ));
+    }
+
+    #[test]
+    fn old_trailing_form_stays_in_the_prompt() {
+        let parsed = parse_input("Explain this. /clear");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("Explain this. /clear"), None)
+        ));
+    }
+
+    #[test]
+    fn unknown_prefixed_slash_word_stays_in_the_prompt() {
+        let parsed = parse_input("/etc/hosts. Read this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/etc/hosts. Read this"), None)
+        ));
     }
 }
