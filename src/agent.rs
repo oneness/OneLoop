@@ -1,8 +1,8 @@
 pub mod messages;
 pub mod metrics;
 pub mod session;
-
 mod spinner;
+mod status;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -21,6 +21,7 @@ use crate::{
 };
 
 use spinner::SpinnerGuard;
+use status::TurnStatus;
 
 #[derive(Debug, Clone)]
 pub struct AgentContext {
@@ -110,6 +111,9 @@ impl Agent {
     }
 
     pub async fn run_once(&mut self, prompt: String) -> Result<()> {
+        // A single busy→idle pulse for the buffer's mode line, held for the
+        // whole turn loop including tools. Drop covers every exit path.
+        let _turn_status = TurnStatus::new();
         self.session.push_user(prompt)?;
 
         let max_iterations: usize = crate::config::env_or(

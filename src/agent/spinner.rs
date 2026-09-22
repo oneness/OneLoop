@@ -3,7 +3,7 @@
 //! Uses `JoinHandle::abort_handle()` — cheaply cloneable — behind an `Arc<Mutex>`
 //! so the `start_callback` can replace it with a fresh handle.
 
-use crate::output::{CLEAR_LINE, DIM, RESET};
+use crate::output::{self, CLEAR_LINE, DIM, RESET};
 use std::io::IsTerminal;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -14,7 +14,12 @@ pub(super) struct SpinnerGuard {
 
 impl SpinnerGuard {
     pub fn new(label: &str) -> Self {
-        if !std::io::stderr().is_terminal() {
+        // In comint the rewrite reaches `comint-output-filter` on Emacs's
+        // one thread — 12.5 redraws a second against a filter chain that
+        // runs even with the buffer hidden. A plain newline would cost the
+        // same per frame and scroll the trace; silence costs nothing, and
+        // the trace lines already mark each event as it lands.
+        if !std::io::stderr().is_terminal() || output::plain() {
             return Self { abort: None };
         }
 
