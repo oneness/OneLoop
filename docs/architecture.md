@@ -244,6 +244,17 @@ stay outside the module by design: the spinner's cursor manipulation, and the
 column-aligned model picker, which no general helper could serve without
 becoming one caller's shape.
 
+Not every terminal can take everything the module emits. `plain()` reports
+terminals that cannot take cursor addressing — comint runs its children with
+`TERM=dumb` and marks them in `INSIDE_EMACS` — and there the spinner stays
+silent: its per-frame rewrites would land in `comint-output-filter` on
+Emacs's single thread, a firehose that grinds even when the buffer is not
+displayed. `comint()` reports comint specifically, the one place with a
+consumer for the OSC 9;4 busy/idle sentinels that `agent/status.rs` emits
+instead: one 10-byte report when a turn starts, one when it ends, lifted by
+an Emacs-side filter into the buffer's mode line (`OneLoop: thinking...` /
+`OneLoop: idle`).
+
 ## Source layout
 
 ```

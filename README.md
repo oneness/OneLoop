@@ -194,7 +194,7 @@ a script or CI run gets the `curl` command printed instead of a surprise
 20 GB transfer.
 
 It wraps llama.cpp's Vulkan build with flags measured against
-Qwen3.6-35B-A3B — see the comments in `flake.nix` for what each one is worth.
+Qwen3.6-35B-A3B — see the comments in `ols` for what each one is worth.
 `ONELOOP_LOCAL_PORT` moves it off 8080.
 
 llama.cpp is tracked at upstream master, which ships several builds a day and
