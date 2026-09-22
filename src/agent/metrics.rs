@@ -33,6 +33,20 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
     (system_prompt_chars + message_chars) / CHARS_PER_TOKEN
 }
 
+/// Roughly how much of a declared context window is still free, as a
+/// percentage 0–100. The same inputs as `estimate_tokens`, against the
+/// window the model declares in the config. A window that fits the request
+/// many times over saturates at 100 rather than overflowing.
+pub fn remaining_context(
+    messages: &[Message],
+    system_prompt_chars: usize,
+    context_window: u64,
+) -> u8 {
+    let window = context_window.max(1) as usize;
+    let fraction = 1.0 - (estimate_tokens(messages, system_prompt_chars) as f64 / window as f64);
+    ((fraction * 100.0).round() as i64).clamp(0, 100) as u8
+}
+
 /// Append-only metrics log, one JSON line per event.
 /// File lives at `.oneloop/metrics/<session-filename>.jsonl`,
 /// mirroring the session file naming for easy correlation.
@@ -124,5 +138,31 @@ mod tests {
     #[test]
     fn an_empty_session_estimates_the_prompt_alone() {
         assert_eq!(estimate_tokens(&[], 400), 100);
+    }
+
+    fn user_of(len: usize) -> Vec<Message> {
+        vec![Message::User(UserMessage {
+            content: "a".repeat(len),
+        })]
+    }
+
+    #[test]
+    fn a_light_session_reads_near_full() {
+        assert_eq!(remaining_context(&user_of(4_000), 0, 100_000), 99);
+    }
+
+    #[test]
+    fn a_heavy_session_reads_near_empty() {
+        assert_eq!(remaining_context(&user_of(384_000), 0, 100_000), 4);
+    }
+
+    #[test]
+    fn an_overfull_session_saturates_at_zero() {
+        assert_eq!(remaining_context(&user_of(800_000), 0, 100_000), 0);
+    }
+
+    #[test]
+    fn a_session_fitting_many_times_over_saturates_at_one_hundred() {
+        assert_eq!(remaining_context(&user_of(400), 400, 100_000), 100);
     }
 }

@@ -41,8 +41,11 @@ impl Highlighter for ReplHelper {
 impl Validator for ReplHelper {}
 impl Helper for ReplHelper {}
 
-fn interactive_prompt(alias: &str) -> String {
-    format!("({alias})> ")
+fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
+    match remaining_context {
+        Some(remaining) => format!("({alias} ~ {remaining}%)> "),
+        None => format!("({alias})> "),
+    }
 }
 
 /// A line the REPL answers itself instead of sending to a model.
@@ -221,7 +224,10 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     editor.set_helper(Some(ReplHelper));
 
     loop {
-        let prompt = interactive_prompt(&agent.models().active().alias);
+        // Re-read per turn: `/clear` empties the session and `/model`
+        // switches windows, so the gauge is fresh every time it is shown.
+        let gauge = agent.remaining_context();
+        let prompt = interactive_prompt(&agent.models().active().alias, gauge);
         let line = match editor.readline(&prompt) {
             Ok(input) => input.trim().to_string(),
             // Ctrl+C at the prompt discards the current line.
@@ -284,7 +290,12 @@ mod tests {
 
     #[test]
     fn interactive_prompt_names_the_active_model() {
-        assert_eq!(interactive_prompt("qwen"), "(qwen)> ");
+        assert_eq!(interactive_prompt("qwen", None), "(qwen)> ");
+    }
+
+    #[test]
+    fn interactive_prompt_shows_the_context_left() {
+        assert_eq!(interactive_prompt("qwen", Some(80)), "(qwen ~ 80%)> ");
     }
 
     #[test]

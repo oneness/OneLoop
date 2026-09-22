@@ -27,6 +27,11 @@ Commands:
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
 
+The prompt shows the model and, when the model declares a `context_window`
+in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The
+percentage is an estimate; the server still refuses the request when the
+conversation truly no longer fits.
+
 ### One-shot mode
 
 ```bash
@@ -120,8 +125,8 @@ Adding a model is a few lines under its provider — no repeated
 URL, no repeated key. Provider keys: `base_url`, `api` (`chat` by default,
 or `codex`), `api_key_env` (omit for a server that needs none), `web_tools`,
 `models`. Model keys: `id` (what goes on the wire), `max_tokens`,
-`temperature`, `web_tools`, `reasoning_effort`; model settings override the
-provider's.
+`temperature`, `web_tools`, `reasoning_effort`, `context_window`; model
+settings override the provider's.
 
 `api` names the protocol the provider speaks, and with it how it is
 authorized. `chat` is OpenAI Chat Completions, which is what everything
@@ -130,9 +135,16 @@ API, reached with the subscription grant `./ol login openai` stores —
 so that provider names no `api_key_env`: there is no key to name. Change the
 model `id` there to whichever Codex model your plan offers.
 
-There is no `context_window` to declare. The server is the authority on what
-fits, and it says so by refusing the request — see [When a thread gets too
-long](#when-a-thread-gets-too-long).
+There is no required `context_window` to declare. The server is the authority
+on what fits, and it says so by refusing the request — see [When a thread gets
+too long](#when-a-thread-gets-too-long).
+
+A model *may* declare one — `"context_window": 131072` beside its `id` — and
+the interactive prompt then shows how much of it is still free:
+`(qwen ~ 80%)> `. The percentage is estimated the same way the
+`tokens_estimated` metric is and is a gauge, not a gate: nothing reads it
+before sending, and the server still has the final say. Omit it and the prompt
+stays `(qwen)> `.
 
 `max_tokens` caps output per response and is omitted unless you set it, so a
 hosted provider's own default applies. The bundled `local` model leaves it
@@ -222,16 +234,21 @@ env var always wins. The default `local` provider names none, so the default
 
 ## When a thread gets too long
 
-Nothing is summarized, nothing is dropped, and no context window is
-configured anywhere. When a conversation no longer fits, the server refuses
-the request and OneLoop tells you so, naming the fix: `/clear` to start a
-fresh session, or a model with a larger window.
+Nothing is summarized, nothing is dropped. When a conversation no longer
+fits, the server refuses the request and OneLoop tells you so, naming the
+fix: `/clear` to start a fresh session, or a model with a larger window.
 
 The server is the only thing that reliably knows what fits: a llama-server
 started with `-c 8192` and a hosted model with a 200k window are the same
-code path, because both say so in the same place. A declared window is a
-number that goes stale, guesses wrong for local servers, and has to be
-maintained per model.
+code path, because both say so in the same place. No threshold branches on
+the token estimate — an undersized declared window never drops a message,
+and an oversized one is only ever a gauge that reads too high. The prompt
+shows roughly how much context is left when the model declares a window, so
+you can reach for `/clear` on your own schedule instead of waiting for the
+refusal. The estimate is deliberately the same rough one the metrics log
+uses — a rough gauge shown honestly beats a precise number maintained in two
+places, and the server, which counts the same conversation every time,
+remains the authority on what actually fits.
 
 Summarizing a thread to keep it alive trades accuracy for length, silently
 and on your behalf. `/clear` is the honest version of the same move: it is

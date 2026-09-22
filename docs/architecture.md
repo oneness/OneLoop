@@ -149,11 +149,13 @@ every server words differently ("context length", "prompt is too long",
 question about the same error. It decides what the message says, not what
 the loop does: an overflow ends the turn like any other refusal.
 
-No per-model `context_window` is declared, no threshold percentage is tuned,
-and no character-per-token estimate appears in a branch. The server already
-knows what fits and says so. `estimate_tokens` survives only to size the
-`tokens_estimated` metric, where being approximate is harmless, which is why
-it lives in `metrics.rs`.
+A model *may* declare a `context_window` in the config; the interactive
+prompt then shows roughly how much of it is still free, estimated by the
+same `estimate_tokens` that sizes the `tokens_estimated` metric. Nothing
+branches on it: an undersized declaration never drops a message, and an
+oversized one is only ever a gauge that reads too high. The server already
+knows what fits and says so. `estimate_tokens` therefore lives in
+`metrics.rs`, beside the one use of it that has always existed.
 
 Summarizing a thread to keep it alive trades accuracy for length without
 being asked. `/clear` is the same move made deliberately: it costs one

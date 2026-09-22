@@ -201,6 +201,18 @@ impl Agent {
             .unwrap_or(0)
     }
 
+    /// What the prompt's gauge shows: how much of the context is still free,
+    /// estimated the same way the metrics are. `None` when the active model
+    /// declares no window — the number would be fiction without one.
+    pub fn remaining_context(&self) -> Option<u8> {
+        let window = self.models.active().context_window?;
+        Some(metrics::remaining_context(
+            self.session.messages(),
+            self.system_prompt_chars(),
+            window,
+        ))
+    }
+
     fn log_api_call(&self, model: &str, started: Instant, tokens_estimated: usize, success: bool) {
         self.metrics.log(
             "api_call",

@@ -75,6 +75,12 @@ pub struct ModelEntry {
     /// Only the Codex protocol asks; the value is the server's to validate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Approximate capacity, for showing how full the context is. Nothing
+    /// sends fewer tokens or branches on it: the server remains the
+    /// authority on what fits and refuses when it does not. Unset means the
+    /// prompt shows no percentage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 /// Keeps `"api": "chat"` out of a file nobody wrote it into.
@@ -267,6 +273,23 @@ mod tests {
         assert_eq!(entry.api, Api::Chat);
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("api").is_none());
+    }
+
+    /// The default template predates `context_window` and must stay valid
+    /// without it — and must not grow the field on a round trip.
+    #[test]
+    fn a_model_that_names_no_window_stays_windowless() {
+        let entry: ModelEntry = serde_json::from_str(r#"{"id":"x"}"#).unwrap();
+        assert!(entry.context_window.is_none());
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("context_window").is_none());
+    }
+
+    #[test]
+    fn a_declared_window_survives_the_round_trip() {
+        let entry: ModelEntry =
+            serde_json::from_str(r#"{"id":"x","context_window":131072}"#).unwrap();
+        assert_eq!(entry.context_window, Some(131_072));
     }
 
     #[test]

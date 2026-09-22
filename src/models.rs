@@ -33,6 +33,10 @@ pub struct Model {
     pub temperature: Option<f64>,
     pub web_tools: bool,
     pub reasoning_effort: Option<String>,
+    /// Approximate capacity, for the context gauge in the interactive
+    /// prompt. Nothing branches on it — the server is the authority on what
+    /// fits and refuses when it does not.
+    pub context_window: Option<u64>,
 }
 
 impl Model {
@@ -87,6 +91,7 @@ impl ModelRegistry {
                 temperature: model.temperature,
                 web_tools: model.web_tools.or(entry.web_tools).unwrap_or(false),
                 reasoning_effort: model.reasoning_effort.clone(),
+                context_window: model.context_window,
             }));
         }
 
