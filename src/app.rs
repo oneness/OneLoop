@@ -51,6 +51,7 @@ fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
     Clear,
+    Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
 }
@@ -65,6 +66,7 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
         "clear" if argument.is_none() => Some(Command::Clear),
+        "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
         _ => None,
     }
@@ -131,6 +133,18 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
             Ok(()) => true,
             Err(e) => {
                 output::fail(&format!("{e:#}"));
+                false
+            }
+        },
+        Command::Reload => match agent.reload_models() {
+            Ok(()) => {
+                output::ok("configuration reloaded");
+                output::step(&format!("model: {}", agent.models().active()));
+                true
+            }
+            Err(e) => {
+                output::fail(&format!("configuration reload failed: {e:#}"));
+                output::note(&format!("continuing with {}", agent.models().active()));
                 false
             }
         },
@@ -214,7 +228,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     eprintln!("{}", agent.summary());
     eprintln!();
     eprintln!(
-        "interactive mode — type your message, /model to switch model, /clear to reset context, Ctrl+C to stop"
+        "interactive mode — type your message, /model to switch model, /reload to reload config, /clear to reset context, Ctrl+C to stop"
     );
     eprintln!();
 
@@ -301,6 +315,12 @@ mod tests {
     #[test]
     fn clear_is_a_command() {
         assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
+    }
+
+    #[test]
+    fn reload_is_a_command_without_arguments() {
+        assert!(matches!(parse_command("/reload"), Some(Command::Reload)));
+        assert!(parse_command("/reload now").is_none());
     }
 
     #[test]

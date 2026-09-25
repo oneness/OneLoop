@@ -89,6 +89,22 @@ impl Agent {
         &self.models
     }
 
+    /// Rebuilds the model registry from disk without disturbing the session.
+    /// The replacement happens only after the complete configuration is valid.
+    pub fn reload_models(&mut self) -> Result<()> {
+        let active = self.models.active().alias.clone();
+        let models = ModelRegistry::new()?;
+
+        // Keep the user's session choice when it still exists. Otherwise the
+        // freshly loaded config's default is already active.
+        if models.get(&active).is_ok() {
+            models.set_active(&active)?;
+        }
+
+        self.models = Arc::new(models);
+        Ok(())
+    }
+
     /// A cancelled run leaves calls without results, which the provider
     /// rejects on the next request.
     pub fn repair_dangling_tool_calls(&mut self) -> Result<()> {

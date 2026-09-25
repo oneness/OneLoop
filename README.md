@@ -23,6 +23,7 @@ Starts an interactive REPL. Type your message and press Enter.
 Commands:
 - `/model` — list the configured models and switch to one
 - `/model <alias>` — switch straight to that model
+- `/reload` — reload `~/.oneloop/config.json` without restarting
 - `/clear` — wipe context and start a fresh session
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
@@ -157,7 +158,12 @@ unconfigured checkout cannot accidentally bill a hosted model.
 
 `/model` switches the active model for the rest of a session and leaves the
 file alone; `default` is what the next run starts on, and changing that stays
-an edit you make on purpose.
+an edit you make on purpose. After editing the file, `/reload` applies the new
+providers and models without restarting or clearing the conversation. It keeps
+the active alias when that alias still exists, so changing `default` alone does
+not switch the current model. If the active alias is removed, model selection
+falls back to `ONELOOP_MODEL` when set, otherwise the file's `default`. If reloading
+fails, the working configuration stays untouched.
 
 **This file holds no secrets.** A provider names the environment variable
 its key lives in; the key itself — or, for a subscription, the OAuth grant —
