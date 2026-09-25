@@ -21,7 +21,7 @@ use crate::{
 };
 
 use spinner::SpinnerGuard;
-use status::TurnStatus;
+pub(crate) use status::TurnStatus;
 
 #[derive(Debug, Clone)]
 pub struct AgentContext {
@@ -83,6 +83,21 @@ impl Agent {
             session,
             metrics,
         })
+    }
+
+    /// Visible history can be shared with an explicitly requested reviewer.
+    pub fn messages(&self) -> &[messages::Message] {
+        self.session.messages()
+    }
+
+    /// Working directory shared by tools and external reviewers.
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.config.cwd
+    }
+
+    /// Record external reference material without starting a model turn.
+    pub fn record_reference(&mut self, reference: String) -> Result<()> {
+        self.session.push_user(reference)
     }
 
     pub fn models(&self) -> &ModelRegistry {

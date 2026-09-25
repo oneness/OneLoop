@@ -2,6 +2,7 @@ mod agent;
 mod app;
 mod auth;
 mod catalog;
+mod claude;
 mod config;
 mod models;
 mod output;

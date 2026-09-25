@@ -15,7 +15,7 @@ const IDLE: &str = "\x1b]9;4;0;0\x07";
 /// comint, where the spinner already shows the state. `Drop` runs on every
 /// exit path — return, break, `?`, or unwind — so a turn can never leave
 /// the status line stuck on thinking.
-pub(super) struct TurnStatus;
+pub(crate) struct TurnStatus;
 
 impl TurnStatus {
     pub fn new() -> Self {

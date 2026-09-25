@@ -25,6 +25,8 @@ Commands:
 - `/model <alias>` — switch straight to that model
 - `/reload` — reload `~/.oneloop/config.json` without restarting
 - `/clear` — wipe context and start a fresh session
+- `/claude` — get a second opinion on the discussion
+- `/claude <prompt>` — send only that prompt; save the answer as reference
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
 
@@ -32,6 +34,55 @@ The prompt shows the model and, when the model declares a `context_window`
 in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The
 percentage is an estimate; the server still refuses the request when the
 conversation truly no longer fits.
+
+### Claude second opinion
+
+After brainstorming with your current model, ask Claude to review the discussion:
+
+```text
+/claude
+/claude Explain the tradeoffs between SQLite and PostgreSQL.
+```
+
+Requires a recent `claude` CLI supporting `--safe-mode`, already logged in with
+your Claude subscription. OneLoop delegates authentication to that CLI; API-key
+or cloud-provider overrides in its environment can change the billing path.
+
+With no prompt, `/claude` sends the current session's user and assistant text,
+including earlier reviews, plus recorded tool calls and results in order. Tool
+names, arguments, call IDs, and error status accompany the output so Claude can
+review diffs, file contents, and test results already gathered by OneLoop.
+OneLoop's system prompt is excluded. Tool output is shared as stored, including
+any sensitive content or existing truncation; it may not reflect the current
+repository state.
+
+With a prompt, `/claude <prompt>` sends **only that prompt**, with no discussion
+history. This also works in an empty session. In both modes, the completed
+answer becomes reference material for the ongoing OneLoop conversation.
+In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle when it finishes,
+fails, or is cancelled.
+
+Claude can use its own built-in Bash tool in OneLoop's working directory:
+`--tools Bash --allowedTools Bash`. MCP tools remain disabled; no MCP server
+is needed. A prompt such as `/claude Review the diff` can now inspect the
+repository directly. Prompt-only still means no conversation history is sent,
+not that Claude lacks file access.
+
+**Bash is preapproved, not read-only or sandboxed by OneLoop.** Commands can
+read sensitive files, modify or delete files, and access the network with your
+account's permissions, subject to Claude Code's applicable policies. Unhandled
+permission requests are denied. Cancellation does not undo command side effects.
+Claude's intermediate Bash trace is not imported into OneLoop's history; only
+the completed answer is saved. Each invocation starts fresh, with customizations
+disabled and no Claude session persistence.
+
+The completed review is displayed and saved in OneLoop as attributed reference
+material. Your selected model stays unchanged and does not run automatically.
+You can then ask it to reconcile the review or implement your chosen plan.
+Failed, empty, or cancelled reviews are not added to the conversation. Ctrl+C
+stops a review; there is also a five-minute timeout. Inputs over 256 KiB are
+rejected rather than silently truncated (this is a byte limit, not a guarantee
+that every model context window will fit).
 
 ### One-shot mode
 

@@ -51,6 +51,7 @@ fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
     Clear,
+    Claude(Option<&'a str>),
     Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
@@ -68,6 +69,7 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
         "clear" if argument.is_none() => Some(Command::Clear),
         "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
+        "claude" => Some(Command::Claude(argument)),
         _ => None,
     }
 }
@@ -149,6 +151,37 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
             }
         },
         Command::Model(alias) => switch_model(agent, alias).await,
+        Command::Claude(instruction) => {
+            output::step(if instruction.is_some() {
+                "asking Claude (sending your prompt only)..."
+            } else {
+                "asking Claude for a second opinion (sharing discussion and recorded tool calls/results)..."
+            });
+            match crate::claude::review(agent.messages(), instruction, agent.cwd()).await {
+                Ok(review) => {
+                    output::head(if instruction.is_some() {
+                        "Claude response"
+                    } else {
+                        "Claude second opinion"
+                    });
+                    println!("{}", review.text);
+                    if let Err(error) = agent.record_reference(review.reference) {
+                        output::fail(&format!(
+                            "Claude response displayed but could not be saved: {error:#}"
+                        ));
+                        return false;
+                    }
+                    output::note(
+                        "Claude response saved as reference — tell the current model how to proceed",
+                    );
+                    true
+                }
+                Err(error) => {
+                    output::fail(&format!("{error:#}"));
+                    false
+                }
+            }
+        }
     }
 }
 
@@ -228,7 +261,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     eprintln!("{}", agent.summary());
     eprintln!();
     eprintln!(
-        "interactive mode — type your message, /model to switch model, /reload to reload config, /clear to reset context, Ctrl+C to stop"
+        "interactive mode — type your message, /model to switch model, /reload to reload config, /claude [instruction] for a second opinion, /clear to reset context, Ctrl+C to stop"
     );
     eprintln!();
 
@@ -310,6 +343,28 @@ mod tests {
     #[test]
     fn interactive_prompt_shows_the_context_left() {
         assert_eq!(interactive_prompt("qwen", Some(80)), "(qwen ~ 80%)> ");
+    }
+
+    #[test]
+    fn claude_without_arguments_uses_default_review() {
+        assert!(matches!(
+            parse_input("/claude").command,
+            Some(Command::Claude(None))
+        ));
+    }
+
+    #[test]
+    fn claude_consumes_the_whole_instruction_without_a_model_turn() {
+        let parsed = parse_input("/claude Review this. Suggest simpler options.");
+        assert!(matches!(
+            (parsed.command, parsed.prompt),
+            (
+                Some(Command::Claude(Some(
+                    "Review this. Suggest simpler options."
+                ))),
+                None
+            )
+        ));
     }
 
     #[test]

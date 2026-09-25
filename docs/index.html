@@ -298,6 +298,22 @@
   </div>
 </section>
 
+<!-- ═══ Claude side command ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">second opinion</div>
+    <h2>Ask Claude, keep your model</h2>
+    <table>
+      <tr><th>Command</th><th>What Claude receives</th></tr>
+      <tr><td><code>/claude</code></td><td>The current discussion, earlier reviews, and recorded tool calls/results in order. No OneLoop system prompt.</td></tr>
+      <tr><td><code>/claude &lt;prompt&gt;</code></td><td>Only your prompt — no discussion history. Works in an empty session too.</td></tr>
+    </table>
+    <p class="big" style="font-size:16px; margin-top:20px;">A fresh <code>claude -p --tools Bash --allowedTools Bash</code> call, using your existing Claude CLI login. No Claude session persistence. Requires a recent CLI with <code>--safe-mode</code>; API-key or provider overrides can change the billing path.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;">The completed answer is saved as <strong>attributed reference</strong> in OneLoop. Your model stays selected; you decide whether to reconcile, reject, or implement. No automatic follow-up turn.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;"><strong>Bash only, no MCP:</strong> Claude can inspect the repository directly, including with <code>/claude Review the diff</code>. Bash is preapproved, not read-only: it can modify files or access the network with your account’s permissions. Cancellation does not undo side effects. Only the final answer is saved, not Claude’s Bash trace. In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle afterward. Ctrl+C cancels; failed or cancelled answers are not saved.</p>
+  </div>
+</section>
+
 <!-- ═══ 4. Tools ═══ -->
 <section class="slide">
   <div class="box">
