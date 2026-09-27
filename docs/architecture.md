@@ -117,8 +117,9 @@ rather than flattening it — providers, each with the models it hosts — and
 `models.rs` makes that live, then flattens only the lookup: everything
 downstream asks for a model by alias. It owns the one thing that moves:
 which model a request goes to when nothing names another. That index is
-atomic because the registry is shared with the retry path, which can fall
-back to another model, while `/model` can change it.
+atomic because both `/model` and the retry path can change it. Choosing a
+fallback immediately makes it active for the rest of the session, even if
+that request fails; the config file is untouched.
 
 Setting a model, narrowest scope first: `/model` switches the session;
 `ONELOOP_MODEL` sets a run; `default` in the config sets every run. Only the
@@ -263,6 +264,7 @@ src/
   agent.rs          Agent struct, run_once, execute_tool_calls, session repair
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
+    status.rs       TurnStatus busy/idle reports for Emacs/comint
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
@@ -271,6 +273,10 @@ src/
   auth/
     codex.rs        ChatGPT sign-in: PKCE, the callback server, token refresh
   catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
+  claude/
+    mod.rs          Public entry points for Claude requests and menu selection
+    client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
+    menu.rs         Review / Brainstorm / Ask / Cancel; Enter defaults to Review
   config.rs         System prompt assembly (tool preamble + AGENTS.md), env_or
   models.rs         Model (alias + settings + its provider), registry, active-model switching
   models/

@@ -25,7 +25,7 @@ Commands:
 - `/model <alias>` — switch straight to that model
 - `/reload` — reload `~/.oneloop/config.json` without restarting
 - `/clear` — wipe context and start a fresh session
-- `/claude` — get a second opinion on the discussion
+- `/claude` — open Review / Brainstorm / Ask / Cancel for the discussion (Enter defaults to Review)
 - `/claude <prompt>` — send only that prompt; save the answer as reference
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
@@ -35,9 +35,10 @@ in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The
 percentage is an estimate; the server still refuses the request when the
 conversation truly no longer fits.
 
-### Claude second opinion
+### Ask Claude about the discussion
 
-After brainstorming with your current model, ask Claude to review the discussion:
+Ask Claude to review, brainstorm, or answer a custom question about the discussion,
+without switching your current model:
 
 ```text
 /claude
@@ -48,7 +49,13 @@ Requires a recent `claude` CLI supporting `--safe-mode`, already logged in with
 your Claude subscription. OneLoop delegates authentication to that CLI; API-key
 or cloud-provider overrides in its environment can change the billing path.
 
-With no prompt, `/claude` sends the current session's user and assistant text,
+With no prompt, `/claude` opens a menu: **R — Review** (default),
+**B — Brainstorm**, **A — Ask** a custom question, or **C — Cancel**.
+Press Enter to review, or type a letter and press Enter to select an option
+(uppercase and lowercase both work). Cancel sends nothing. An empty custom
+question also sends nothing. The menu requires terminal input.
+
+All three choices send the current session's user and assistant text,
 including earlier reviews, plus recorded tool calls and results in order. Tool
 names, arguments, call IDs, and error status accompany the output so Claude can
 review diffs, file contents, and test results already gathered by OneLoop.

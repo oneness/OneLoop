@@ -87,6 +87,9 @@ impl ModelRegistry {
         output::note(&format!("{label} is not responding. Pick another:"));
         let fallback = self.get(&self.pick(&alternatives).await?)?;
 
+        // Adopt it now, or the next turn would start by asking the model
+        // that just failed, and the menu would reappear.
+        self.set_active(&fallback.alias)?;
         output::ok(&format!("switching to {fallback}"));
         if let Some(start) = start_spinner {
             start();

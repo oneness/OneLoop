@@ -152,18 +152,31 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
         },
         Command::Model(alias) => switch_model(agent, alias).await,
         Command::Claude(instruction) => {
+            let selected;
+            let request = if let Some(instruction) = instruction {
+                crate::claude::Request::Direct(instruction)
+            } else {
+                selected = match crate::claude::select().await {
+                    Ok(Some(instruction)) => instruction,
+                    Ok(None) => {
+                        output::note("Claude request cancelled; nothing was sent");
+                        return false;
+                    }
+                    Err(error) => {
+                        output::fail(&format!("{error:#}"));
+                        return false;
+                    }
+                };
+                crate::claude::Request::Discussion(&selected)
+            };
             output::step(if instruction.is_some() {
                 "asking Claude (sending your prompt only)..."
             } else {
-                "asking Claude for a second opinion (sharing discussion and recorded tool calls/results)..."
+                "asking Claude (sharing discussion and recorded tool calls/results)..."
             });
-            match crate::claude::review(agent.messages(), instruction, agent.cwd()).await {
+            match crate::claude::review(agent.messages(), request, agent.cwd()).await {
                 Ok(review) => {
-                    output::head(if instruction.is_some() {
-                        "Claude response"
-                    } else {
-                        "Claude second opinion"
-                    });
+                    output::head("Claude response");
                     println!("{}", review.text);
                     if let Err(error) = agent.record_reference(review.reference) {
                         output::fail(&format!(
@@ -261,7 +274,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     eprintln!("{}", agent.summary());
     eprintln!();
     eprintln!(
-        "interactive mode — type your message, /model to switch model, /reload to reload config, /claude [instruction] for a second opinion, /clear to reset context, Ctrl+C to stop"
+        "interactive mode — type your message, /model to switch model, /reload to reload config, /claude for discussion options, /claude <prompt> for a standalone question, /clear to reset context, Ctrl+C to stop"
     );
     eprintln!();
 
@@ -346,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_without_arguments_uses_default_review() {
+    fn claude_without_arguments_requests_the_menu() {
         assert!(matches!(
             parse_input("/claude").command,
             Some(Command::Claude(None))
