@@ -164,6 +164,22 @@ keystroke, it happens when the user decides, and what is lost is what they
 chose to lose. An unrecognised refusal phrasing costs nothing extra — it
 stays an ordinary reported error.
 
+## Interactive help
+
+The startup banner shows the session summary and a short `/help` hint rather
+than a full command list. `/help` is handled locally without a model request:
+it displays the current summary (model, available models, tools, session path
+and message count, and loaded instruction sources), then commands and keyboard
+shortcuts. The summary is generated when requested, so it reflects session
+resets and model switches.
+
+The context line reports startup instruction sources, currently `AGENTS.md`
+when successfully loaded. It is not an inventory of files read through tools;
+`MEMORY.md` and other Markdown files are not automatically loaded. `/reload`
+reloads model configuration, not instruction files. Ctrl+C stops a running
+request or discards the draft at the terminal prompt. Editor frontends may
+intercept keys before they reach OneLoop.
+
 ## Sessions
 
 Sessions are linear append-only JSONL files stored at:

@@ -68,6 +68,7 @@ impl ClaudeMode {
 
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
+    Help,
     Clear,
     Claude {
         mode: ClaudeMode,
@@ -88,6 +89,7 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     };
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
+        "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
         "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
@@ -160,10 +162,36 @@ fn nonempty_trimmed(input: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+fn print_help(agent: &Agent) {
+    output::head("Current session");
+    eprintln!("{}\n", agent.summary());
+    output::head("Commands");
+    eprintln!(
+        "  /help               Show this help
+  /model [alias]      Choose a model or switch directly to an alias
+  /reload             Reload configuration
+  /clear              Reset context and start a fresh session
+  /cc [focus]         Ask Claude to critique the discussion
+  /ca <question>      Ask Claude about the discussion (or request implementation)
+  /cn <prompt>        Ask Claude without discussion history
+
+  /clear. <prompt>          Reset context, then send a prompt
+  /model <alias>. <prompt>  Switch model, then send a prompt
+
+  Ctrl+C              Stop a running request or discard the current input
+
+Unknown slash commands are sent as ordinary prompts to the current model."
+    );
+}
+
 /// Returns false when the command failed or selection was cancelled, so a
 /// prompt attached to it is never sent with unintended state.
 async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
     match command {
+        Command::Help => {
+            print_help(agent);
+            true
+        }
         Command::Clear => match agent.clear_session() {
             Ok(()) => true,
             Err(e) => {
@@ -302,16 +330,14 @@ impl App {
     }
 }
 
-/// The interactive REPL: read a line, run it, repeat until Ctrl+D.
+/// The interactive REPL: read a line, run it, repeat until input closes.
 async fn run_interactive(agent: &mut Agent) -> Result<()> {
     // The banner is OneLoop talking about itself, so it goes where the rest
     // of that goes — stdout stays the model's.
     eprintln!("OneLoop");
     eprintln!("{}", agent.summary());
     eprintln!();
-    eprintln!(
-        "interactive mode — type your message, /model to switch model, /reload to reload config, /cc to critique the discussion, /ca <question> to ask about it, /cn <prompt> for a standalone question, /clear to reset context, Ctrl+C to stop"
-    );
+    eprintln!("Type /help for commands.");
     eprintln!();
 
     // Canonical mode silently drops input past the tty's 4096-byte line
@@ -326,9 +352,9 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         let prompt = interactive_prompt(&agent.models().active().alias, gauge);
         let line = match editor.readline(&prompt) {
             Ok(input) => input.trim().to_string(),
-            // Ctrl+C at the prompt discards the current line.
+            // Ctrl+C at the prompt discards the current draft.
             Err(ReadlineError::Interrupted) => continue,
-            // Ctrl+D exits.
+            // A closed input stream still exits; do not spin on EOF.
             Err(ReadlineError::Eof) => break,
             Err(e) => return Err(e.into()),
         };
@@ -470,6 +496,25 @@ mod tests {
                 None
             )
         ));
+    }
+
+    #[test]
+    fn help_is_handled_without_a_model_prompt() {
+        let parsed = parse_input(" /help ");
+        assert!(matches!(
+            (parsed.command, parsed.prompt),
+            (Some(Command::Help), None)
+        ));
+    }
+
+    #[test]
+    fn nonexact_help_commands_remain_prompts() {
+        for input in ["/helpful", "/help now", "/help.", "//help"] {
+            let parsed = parse_input(input);
+            assert!(
+                matches!((parsed.command, parsed.prompt), (None, Some(prompt)) if prompt == input)
+            );
+        }
     }
 
     #[test]

@@ -18,9 +18,15 @@ hosted model only when you ask it to. One loop, five tools, zero config.
 ./ol
 ```
 
-Starts an interactive REPL. Type your message and press Enter.
+Starts an interactive REPL. Type your message and press Enter. The startup
+banner shows a short `/help` hint instead of the full command list.
+`/help` shows the current model, available models, tools, session file and
+message count, and loaded instruction sources, followed by commands and
+keyboard shortcuts. The context line currently lists `AGENTS.md` when loaded;
+it does not list every file read during the conversation.
 
-Commands:
+Commands (also available with `/help`):
+- `/help` — show current session information, commands, and keyboard shortcuts
 - `/model` — list the configured models and switch to one
 - `/model <alias>` — switch straight to that model
 - `/reload` — reload `~/.oneloop/config.json` without restarting
@@ -28,8 +34,7 @@ Commands:
 - `/cc [focus]` — critique the discussion, optionally focusing on an aspect
 - `/ca <question>` — ask about the discussion, including brainstorming
 - `/cn <prompt>` — send only that prompt, with no discussion history
-- `Ctrl+C` — stop a running request
-- `Ctrl+D` — exit
+- `Ctrl+C` — stop a running request, or discard the draft at the terminal prompt
 
 The prompt shows the model and, when the model declares a `context_window`
 in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The
@@ -38,7 +43,7 @@ conversation truly no longer fits.
 
 ### Ask Claude about the discussion
 
-Ask Claude to review, brainstorm, or answer a custom question about the discussion,
+Ask Claude to review, brainstorm, answer questions, or implement changes,
 without switching your current model:
 
 ```text
@@ -62,7 +67,7 @@ Only exact command names match. Unknown commands, including the retired
 `/claude`, are sent as ordinary prompts to the current model.
 
 Both `/cc` and `/ca` send the current session's user and assistant text,
-including earlier reviews, plus recorded tool calls and results in order. Tool
+including earlier Claude responses, plus recorded tool calls and results in order. Tool
 names, arguments, call IDs, and error status accompany the output so Claude can
 review diffs, file contents, and test results already gathered by OneLoop.
 OneLoop's system prompt is excluded. Tool output is shared as stored, including
@@ -94,11 +99,12 @@ Claude's intermediate Bash trace is not imported into OneLoop's history; only
 the completed answer is saved. Each invocation starts fresh, with customizations
 disabled and no Claude session persistence.
 
-The completed review is displayed and saved in OneLoop as attributed reference
+The completed answer is displayed and saved in OneLoop as attributed reference
 material. Your selected model stays unchanged and does not run automatically.
-You can then ask it to reconcile the review or implement your chosen plan.
-Failed, empty, or cancelled reviews are not added to the conversation. Ctrl+C
-stops a review; there is also a five-minute timeout. Inputs over 256 KiB are
+You decide how the current model should follow up. If Claude changed files,
+re-read them before making further edits.
+Failed, empty, or cancelled responses are not added to the conversation. Ctrl+C
+stops a request; there is also a five-minute timeout. Inputs over 256 KiB are
 rejected rather than silently truncated (this is a byte limit, not a guarantee
 that every model context window will fit).
 

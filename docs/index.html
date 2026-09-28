@@ -314,9 +314,9 @@
     current discussion, earlier responses, and recorded tool
     calls/results in order, but not the OneLoop system prompt. No
     menu. Missing text for <code>/ca</code> or <code>/cn</code> shows
-    usage and sends nothing. Unknown commands, go to the current model as ordinary prompts.</p>
+    usage and sends nothing. Unknown commands go to the current model as ordinary prompts.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">A fresh <code>claude -p --tools Bash --allowedTools Bash</code> call, using your existing Claude CLI login. No Claude session persistence. Requires a recent CLI with <code>--safe-mode</code>; API-key or provider overrides can change the billing path.</p>
-    <p class="big" style="font-size:16px; margin-top:16px;">The completed answer is saved as <strong>attributed reference</strong> in OneLoop. Your model stays selected; you decide whether to reconcile, reject, or implement. No automatic follow-up turn.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;">The completed answer is saved as <strong>attributed reference</strong> in OneLoop. Your model stays selected; you decide how it should follow up. Claude can implement changes when requested through <code>/ca</code> or <code>/cn</code> and is asked to list every changed path in its answer. Re-read changed files before further edits. No automatic follow-up turn.</p>
     <p class="big" style="font-size:16px; margin-top:16px;"><strong>Bash only, no MCP:</strong> Claude can inspect the repository directly, including with <code>/cn Review the diff</code>. Bash is preapproved, not read-only: it can modify files or access the network with your account’s permissions. Cancellation does not undo side effects. Only the final answer is saved, not Claude’s Bash trace. In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle afterward. Ctrl+C stops a running Claude request; failed, empty, or cancelled answers are not saved.</p>
   </div>
 </section>
@@ -403,10 +403,10 @@
     <!-- Snapshot: existing git-tracked .rs/.html/.md files; physical lines including blanks and tests. -->
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">28</td><td style="text-align:right;">6,679</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">462</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">1,019</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">36</td><td style="text-align:right;">8,160</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">27</td><td style="text-align:right;">6,765</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">469</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">1,051</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">35</td><td style="text-align:right;">8,285</td></tr>
     </table>
   </div>
 </section>
@@ -416,6 +416,7 @@
   <div class="box">
     <div class="label">get started</div>
     <h2>Quick start</h2>
+    <p class="big" style="font-size:16px;">Startup shows a short <code>/help</code> hint. Use <code>/help</code> for commands, shortcuts, and current session information: model, available models, tools, session file, message count, and loaded instruction sources (currently <code>AGENTS.md</code>, not every file read). Ctrl+C stops a running request or discards the draft at the terminal prompt; editor keybindings may differ.</p>
     <div class="mono" style="text-align: left;">
       <span class="cm"># 1. Start the local model (no key, nothing leaves the box)</span><br>
       ./ols<br><br>
