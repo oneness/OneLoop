@@ -274,9 +274,8 @@ src/
     codex.rs        ChatGPT sign-in: PKCE, the callback server, token refresh
   catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
   claude/
-    mod.rs          Public entry points for Claude requests and menu selection
+    mod.rs          Public entry points for Claude requests
     client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
-    menu.rs         Review / Brainstorm / Ask / Cancel; Enter defaults to Review
   config.rs         System prompt assembly (tool preamble + AGENTS.md), env_or
   models.rs         Model (alias + settings + its provider), registry, active-model switching
   models/

@@ -305,13 +305,14 @@
     <h2>Ask Claude, keep your model</h2>
     <table>
       <tr><th>Command</th><th>What Claude receives</th></tr>
-      <tr><td><code>/claude</code></td><td>Opens a menu. Review, Brainstorm, and Ask send the current discussion, earlier responses, and recorded tool calls/results in order. No OneLoop system prompt.</td></tr>
-      <tr><td><code>/claude &lt;prompt&gt;</code></td><td>Only your prompt — no discussion history. Works in an empty session too.</td></tr>
+      <tr><td><code>/cc [focus]</code></td><td>Critique the discussion, optionally focusing on one aspect.</td></tr>
+      <tr><td><code>/ca &lt;question&gt;</code></td><td>Ask about the discussion, including brainstorming specific aspects.</td></tr>
+      <tr><td><code>/cn &lt;prompt&gt;</code></td><td>Only your prompt — no discussion history. Works in an empty session too.</td></tr>
     </table>
-    <p class="big" style="font-size:16px; margin-top:16px;"><strong>R</strong> — Review, <strong>B</strong> — Brainstorm, <strong>A</strong> — Ask a custom question, <strong>C</strong> — Cancel. Type a letter and press Enter (either case); Enter alone reviews. Cancel or an empty custom question sends nothing. The menu requires terminal input.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;"><code>/cc</code> and <code>/ca</code> share the current discussion, earlier responses, and recorded tool calls/results in order, but not the OneLoop system prompt. No menu. Missing text for <code>/ca</code> or <code>/cn</code> shows usage and sends nothing. Unknown commands, including retired <code>/claude</code>, go to the current model as ordinary prompts.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">A fresh <code>claude -p --tools Bash --allowedTools Bash</code> call, using your existing Claude CLI login. No Claude session persistence. Requires a recent CLI with <code>--safe-mode</code>; API-key or provider overrides can change the billing path.</p>
     <p class="big" style="font-size:16px; margin-top:16px;">The completed answer is saved as <strong>attributed reference</strong> in OneLoop. Your model stays selected; you decide whether to reconcile, reject, or implement. No automatic follow-up turn.</p>
-    <p class="big" style="font-size:16px; margin-top:16px;"><strong>Bash only, no MCP:</strong> Claude can inspect the repository directly, including with <code>/claude Review the diff</code>. Bash is preapproved, not read-only: it can modify files or access the network with your account’s permissions. Cancellation does not undo side effects. Only the final answer is saved, not Claude’s Bash trace. In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle afterward. Ctrl+C stops a running Claude request; failed, empty, or cancelled answers are not saved.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;"><strong>Bash only, no MCP:</strong> Claude can inspect the repository directly, including with <code>/cn Review the diff</code>. Bash is preapproved, not read-only: it can modify files or access the network with your account’s permissions. Cancellation does not undo side effects. Only the final answer is saved, not Claude’s Bash trace. In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle afterward. Ctrl+C stops a running Claude request; failed, empty, or cancelled answers are not saved.</p>
   </div>
 </section>
 

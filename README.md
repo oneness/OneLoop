@@ -25,8 +25,9 @@ Commands:
 - `/model <alias>` — switch straight to that model
 - `/reload` — reload `~/.oneloop/config.json` without restarting
 - `/clear` — wipe context and start a fresh session
-- `/claude` — open Review / Brainstorm / Ask / Cancel for the discussion (Enter defaults to Review)
-- `/claude <prompt>` — send only that prompt; save the answer as reference
+- `/cc [focus]` — critique the discussion, optionally focusing on an aspect
+- `/ca <question>` — ask about the discussion, including brainstorming
+- `/cn <prompt>` — send only that prompt, with no discussion history
 - `Ctrl+C` — stop a running request
 - `Ctrl+D` — exit
 
@@ -41,21 +42,26 @@ Ask Claude to review, brainstorm, or answer a custom question about the discussi
 without switching your current model:
 
 ```text
-/claude
-/claude Explain the tradeoffs between SQLite and PostgreSQL.
+/cc
+/cc the retry logic
+/ca Brainstorm simpler alternatives to the retry logic.
+/cn Explain the tradeoffs between SQLite and PostgreSQL.
 ```
 
 Requires a recent `claude` CLI supporting `--safe-mode`, already logged in with
 your Claude subscription. OneLoop delegates authentication to that CLI; API-key
 or cloud-provider overrides in its environment can change the billing path.
 
-With no prompt, `/claude` opens a menu: **R — Review** (default),
-**B — Brainstorm**, **A — Ask** a custom question, or **C — Cancel**.
-Press Enter to review, or type a letter and press Enter to select an option
-(uppercase and lowercase both work). Cancel sends nothing. An empty custom
-question also sends nothing. The menu requires terminal input.
+`/cc` immediately critiques the discussion for weaknesses, gaps, and simpler
+alternatives. Optional focus text narrows the critique: `/cc the retry logic`.
+`/ca <question>` asks your own question about the discussion, including requests
+to brainstorm specific aspects. `/ca` and `/cn` require nonempty text; otherwise
+a usage error is shown and nothing is sent. No menu or terminal input is required.
 
-All three choices send the current session's user and assistant text,
+Only exact command names match. Unknown commands, including the retired
+`/claude`, are sent as ordinary prompts to the current model.
+
+Both `/cc` and `/ca` send the current session's user and assistant text,
 including earlier reviews, plus recorded tool calls and results in order. Tool
 names, arguments, call IDs, and error status accompany the output so Claude can
 review diffs, file contents, and test results already gathered by OneLoop.
@@ -63,15 +69,20 @@ OneLoop's system prompt is excluded. Tool output is shared as stored, including
 any sensitive content or existing truncation; it may not reflect the current
 repository state.
 
-With a prompt, `/claude <prompt>` sends **only that prompt**, with no discussion
-history. This also works in an empty session. In both modes, the completed
+`/cn <prompt>` sends **only that prompt**, with no discussion
+history. This also works in an empty session. For all three commands, the completed
 answer becomes reference material for the ongoing OneLoop conversation.
 In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle when it finishes,
 fails, or is cancelled.
 
+Claude can review or implement changes when requested through `/ca` or `/cn`.
+`/cc` asks for a critique by default, not implementation.
+If Claude modifies files, it is asked to list every changed path at the end of
+its answer, so the saved reference tells the current model what to re-read.
+
 Claude can use its own built-in Bash tool in OneLoop's working directory:
 `--tools Bash --allowedTools Bash`. MCP tools remain disabled; no MCP server
-is needed. A prompt such as `/claude Review the diff` can now inspect the
+is needed. A prompt such as `/cn Review the diff` can now inspect the
 repository directly. Prompt-only still means no conversation history is sent,
 not that Claude lacks file access.
 

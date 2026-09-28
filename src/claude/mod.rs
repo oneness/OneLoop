@@ -1,7 +1,5 @@
-//! Stateless Claude Code requests and discussion selection.
+//! Stateless Claude Code requests.
 
 mod client;
-mod menu;
 
-pub use client::{Request, review};
-pub(crate) use menu::select;
+pub use client::{DEFAULT_INSTRUCTION, Request, review};

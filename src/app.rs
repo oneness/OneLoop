@@ -48,10 +48,31 @@ fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
     }
 }
 
+/// How `/cc`, `/ca`, and `/cn` ask Claude.
+#[derive(Debug, PartialEq, Eq)]
+enum ClaudeMode {
+    Critique,
+    Ask,
+    Standalone,
+}
+
+impl ClaudeMode {
+    fn as_command(&self) -> &'static str {
+        match self {
+            ClaudeMode::Critique => "/cc",
+            ClaudeMode::Ask => "/ca",
+            ClaudeMode::Standalone => "/cn",
+        }
+    }
+}
+
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
     Clear,
-    Claude(Option<&'a str>),
+    Claude {
+        mode: ClaudeMode,
+        text: Option<&'a str>,
+    },
     Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
@@ -60,16 +81,28 @@ enum Command<'a> {
 /// An unknown `/word` is a prompt, not an error: a message can legitimately
 /// start with a path.
 fn parse_command(line: &str) -> Option<Command<'_>> {
-    let (name, argument) = match line.strip_prefix('/')?.split_once(char::is_whitespace) {
+    let remainder = line.strip_prefix('/')?;
+    let (name, argument) = match remainder.split_once(char::is_whitespace) {
         Some((name, argument)) => (name, argument.trim()),
-        None => (line.trim_start_matches('/'), ""),
+        None => (remainder, ""),
     };
     let argument = (!argument.is_empty()).then_some(argument);
     match name {
         "clear" if argument.is_none() => Some(Command::Clear),
         "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
-        "claude" => Some(Command::Claude(argument)),
+        "cc" => Some(Command::Claude {
+            mode: ClaudeMode::Critique,
+            text: argument,
+        }),
+        "ca" => Some(Command::Claude {
+            mode: ClaudeMode::Ask,
+            text: argument,
+        }),
+        "cn" => Some(Command::Claude {
+            mode: ClaudeMode::Standalone,
+            text: argument,
+        }),
         _ => None,
     }
 }
@@ -151,29 +184,32 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
             }
         },
         Command::Model(alias) => switch_model(agent, alias).await,
-        Command::Claude(instruction) => {
-            let selected;
-            let request = if let Some(instruction) = instruction {
-                crate::claude::Request::Direct(instruction)
-            } else {
-                selected = match crate::claude::select().await {
-                    Ok(Some(instruction)) => instruction,
-                    Ok(None) => {
-                        output::note("Claude request cancelled; nothing was sent");
-                        return false;
-                    }
-                    Err(error) => {
-                        output::fail(&format!("{error:#}"));
-                        return false;
-                    }
-                };
-                crate::claude::Request::Discussion(&selected)
+        Command::Claude { mode, text } => {
+            use crate::claude::{DEFAULT_INSTRUCTION, Request};
+
+            let focused;
+            let request = match (mode, text) {
+                (ClaudeMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
+                (ClaudeMode::Critique, Some(focus)) => {
+                    focused = format!("{DEFAULT_INSTRUCTION} Focus on: {focus}");
+                    Request::Discussion(&focused)
+                }
+                (ClaudeMode::Ask, Some(question)) => Request::Discussion(question),
+                (ClaudeMode::Standalone, Some(prompt)) => Request::Direct(prompt),
+                (mode, None) => {
+                    output::fail(&format!(
+                        "usage: {} <question or prompt>",
+                        mode.as_command()
+                    ));
+                    return false;
+                }
             };
-            output::step(if instruction.is_some() {
+            output::step(if matches!(request, Request::Direct(_)) {
                 "asking Claude (sending your prompt only)..."
             } else {
                 "asking Claude (sharing discussion and recorded tool calls/results)..."
             });
+
             match crate::claude::review(agent.messages(), request, agent.cwd()).await {
                 Ok(review) => {
                     output::head("Claude response");
@@ -274,7 +310,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     eprintln!("{}", agent.summary());
     eprintln!();
     eprintln!(
-        "interactive mode — type your message, /model to switch model, /reload to reload config, /claude for discussion options, /claude <prompt> for a standalone question, /clear to reset context, Ctrl+C to stop"
+        "interactive mode — type your message, /model to switch model, /reload to reload config, /cc to critique the discussion, /ca <question> to ask about it, /cn <prompt> for a standalone question, /clear to reset context, Ctrl+C to stop"
     );
     eprintln!();
 
@@ -346,7 +382,7 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, interactive_prompt, parse_command, parse_input};
+    use super::{ClaudeMode, Command, interactive_prompt, parse_command, parse_input};
 
     #[test]
     fn interactive_prompt_names_the_active_model() {
@@ -359,22 +395,78 @@ mod tests {
     }
 
     #[test]
-    fn claude_without_arguments_requests_the_menu() {
+    fn cc_without_arguments_is_critique() {
         assert!(matches!(
-            parse_input("/claude").command,
-            Some(Command::Claude(None))
+            parse_input("/cc").command,
+            Some(Command::Claude {
+                mode: ClaudeMode::Critique,
+                text: None
+            })
         ));
     }
 
     #[test]
-    fn claude_consumes_the_whole_instruction_without_a_model_turn() {
-        let parsed = parse_input("/claude Review this. Suggest simpler options.");
+    fn cc_with_focus_text_is_critique_with_focus() {
+        let parsed = parse_input("/cc the retry logic");
         assert!(matches!(
             (parsed.command, parsed.prompt),
             (
-                Some(Command::Claude(Some(
-                    "Review this. Suggest simpler options."
-                ))),
+                Some(Command::Claude {
+                    mode: ClaudeMode::Critique,
+                    text: Some("the retry logic")
+                }),
+                None
+            )
+        ));
+    }
+
+    #[test]
+    fn ca_requires_a_question() {
+        assert!(matches!(
+            parse_input("/ca").command,
+            Some(Command::Claude {
+                mode: ClaudeMode::Ask,
+                text: None
+            })
+        ));
+    }
+
+    #[test]
+    fn ca_with_question_is_ask_with_discussion() {
+        let parsed = parse_input("/ca What about the retry logic?");
+        assert!(matches!(
+            (parsed.command, parsed.prompt),
+            (
+                Some(Command::Claude {
+                    mode: ClaudeMode::Ask,
+                    text: Some("What about the retry logic?")
+                }),
+                None
+            )
+        ));
+    }
+
+    #[test]
+    fn cn_requires_a_prompt() {
+        assert!(matches!(
+            parse_input("/cn").command,
+            Some(Command::Claude {
+                mode: ClaudeMode::Standalone,
+                text: None
+            })
+        ));
+    }
+
+    #[test]
+    fn cn_with_prompt_is_standalone() {
+        let parsed = parse_input("/cn Hello world");
+        assert!(matches!(
+            (parsed.command, parsed.prompt),
+            (
+                Some(Command::Claude {
+                    mode: ClaudeMode::Standalone,
+                    text: Some("Hello world")
+                }),
                 None
             )
         ));
@@ -489,6 +581,63 @@ mod tests {
         assert!(matches!(
             (parsed.prompt, parsed.command),
             (Some("/etc/hosts. Read this"), None)
+        ));
+    }
+
+    #[test]
+    fn retired_claude_command_passes_through_as_prompt() {
+        let parsed = parse_input("/claude");
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/claude"), None)
+        ));
+    }
+
+    #[test]
+    fn retired_claude_with_text_passes_through_as_prompt() {
+        let parsed = parse_input("/claude hello");
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/claude hello"), None)
+        ));
+    }
+
+    #[test]
+    fn typo_cc_command_passes_through_as_prompt() {
+        let parsed = parse_input("/cx hello");
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/cx hello"), None)
+        ));
+    }
+
+    #[test]
+    fn only_exact_claude_command_names_are_recognized() {
+        for input in ["//cc", "/CC", "/cca focus", "/ca. foo", "/cn."] {
+            let parsed = parse_input(input);
+            assert!(
+                matches!((parsed.prompt, parsed.command), (Some(prompt), None) if prompt == input)
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_only_claude_arguments_are_missing() {
+        for input in ["/ca   ", "/cn\t"] {
+            let parsed = parse_input(input);
+            assert!(matches!(
+                (parsed.command, parsed.prompt),
+                (Some(Command::Claude { text: None, .. }), None)
+            ));
+        }
+    }
+
+    #[test]
+    fn cc_dot_passes_through_as_prompt() {
+        let parsed = parse_input("/cc.");
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/cc."), None)
         ));
     }
 }
