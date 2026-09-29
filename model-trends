@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# List the models OpenRouter currently surfaces as Trending and Most Popular,
+# with the per-token input and output price and the context window.
+#
+# The two rankings come from different places, because the OpenRouter UI shows
+# them in different places too:
+#
+#   Trending     is a usage ranking from the rankings page, ordered by token
+#                volume over a day, week or month window.
+#   Most Popular is the ordering of the model catalogue, which the models page
+#                shows by default. It is also token based: measured against the
+#                usage figures OpenRouter embeds alongside the catalogue, the
+#                token ordering reproduces the catalogue ordering closely,
+#                while request count and spend do not. Ranking by spend would
+#                surface expensive models, which is not what the UI shows.
+#
+# Both endpoints are public and need no API key.
+#
+# The rankings return dated permaslugs such as
+# `openai/gpt-6-luna-20260922`, while the price catalogue keys on the bare
+# model id, so this strips the date suffix before joining.
+#
+# Usage: ./model-trends [--help] [--limit N] [--view day|week|month]
+#
+# Requires: curl, jq
+
+usage() {
+  cat <<'EOF'
+usage: ./model-trends [--limit N] [--view day|week|month]
+
+Show the trending and the most popular models on OpenRouter, each with its
+input price, output price and context window. Prices are US dollars per
+million tokens.
+
+  --limit N              how many models to show per list (default 15)
+  --view day|week|month  window for the trending list (default week)
+EOF
+}
+
+limit=15
+view=week
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --limit)
+      shift
+      [ $# -gt 0 ] || { echo "error: --limit needs a value" >&2; exit 2; }
+      limit=$1
+      shift
+      ;;
+    --limit=*)
+      limit=${1#--limit=}
+      shift
+      ;;
+    --view)
+      shift
+      [ $# -gt 0 ] || { echo "error: --view needs a value" >&2; exit 2; }
+      view=$1
+      shift
+      ;;
+    --view=*)
+      view=${1#--view=}
+      shift
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$limit" in
+  ''|*[!0-9]*)
+    echo "error: --limit must be a positive number" >&2
+    exit 2
+    ;;
+esac
+[ "$limit" -gt 0 ] || { echo "error: --limit must be greater than zero" >&2; exit 2; }
+
+case "$view" in
+  day|week|month) ;;
+  *)
+    echo "error: --view must be day, week or month" >&2
+    exit 2
+    ;;
+esac
+
+for tool in curl jq; do
+  command -v "$tool" >/dev/null || {
+    echo "error: $tool not found" >&2
+    exit 1
+  }
+done
+
+api_get() {
+  curl --fail --silent --show-error --location \
+    --header "Accept: application/json" \
+    --header "User-Agent: OneLoop-model-trends" \
+    "$@"
+}
+
+# Trending ranks the usage figures from the rankings page by token volume.
+# The parameter is `metric`, not `sort`; an unknown value is ignored and
+# silently returns a default ordering.
+fetch_trending() {
+  api_get --get \
+    --data-urlencode "view=$view" \
+    --data-urlencode "metric=tokens_excl_byok" \
+    "https://openrouter.ai/api/frontend/v1/rankings/models"
+}
+
+# Most Popular is the catalogue's own ordering. The parameter is `order`; this
+# endpoint accepts a `sort` parameter and ignores it, which silently returns the
+# default ordering instead.
+fetch_most_popular() {
+  api_get --get \
+    --data-urlencode "order=most-popular" \
+    "https://openrouter.ai/api/frontend/v1/models/find"
+}
+
+fetch_catalogue() {
+  api_get "https://openrouter.ai/api/v1/models"
+}
+
+# Trending: join the usage ranking against the price catalogue and emit one
+# record per model. The documents arrive as files because the catalogue is too
+# large to pass as a command line argument.
+#
+# A ranked model missing from the catalogue keeps its position and reports
+# "n/a" rather than disappearing, so the ranking stays faithful.
+build_trending_rows() {
+  local ranking=$1
+  local catalogue=$2
+
+  jq -nr --argjson limit "$limit" \
+    --slurpfile ranking "$ranking" \
+    --slurpfile catalogue "$catalogue" '
+      # Drop the trailing -YYYYMMDD date so the permaslug matches a catalogue
+      # id. Models without a date pass through unchanged.
+      def bare_id: sub("-[0-9]{8}$"; "");
+
+      ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
+      | $ranking[0].data[0:$limit]
+      | .[]
+      | . as $ranked
+      | ($ranked.model_permaslug | bare_id) as $id
+      | ($catalogue[$id] // null) as $entry
+      | [
+          $id,
+          (($entry.context_length // 0) | tostring),
+          (($entry.pricing.prompt // null) | tostring),
+          (($entry.pricing.completion // null) | tostring),
+          (($ranked.total_prompt_tokens // 0) | tostring),
+          ($entry.name // $id)
+        ]
+      | @tsv
+    '
+}
+
+# Most Popular: that response already carries the ranking and the model
+# records together. Its per-model records use `slug` rather than `id` and hold
+# no pricing, so the public catalogue supplies the prices. The usage figures it
+# embeds are keyed by permaslug and variant, so they are summed per model to
+# report a comparable token volume.
+build_most_popular_rows() {
+  local popular=$1
+  local catalogue=$2
+
+  jq -nr --argjson limit "$limit" \
+    --slurpfile popular "$popular" \
+    --slurpfile catalogue "$catalogue" '
+      def bare_id: sub("-[0-9]{8}$"; "");
+
+      ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
+      | # One model can appear as several dated variants, and some carry a
+        # separate :batch variant. Sum them so each model reports one row.
+        ($popular[0].data.analytics
+          | to_entries
+          | map(.value)
+          | group_by(.model_permaslug | bare_id)
+          | map({
+              id: (.[0].model_permaslug | bare_id),
+              tokens: (map(.total_prompt_tokens // 0) | add)
+            })
+          | map({ key: .id, value: .tokens })
+          | from_entries) as $tokens
+
+      | $popular[0].data.models[0:$limit]
+      | .[]
+      | . as $ranked
+      | ($ranked.slug // "") as $id
+      | ($catalogue[$id] // null) as $entry
+      | [
+          $id,
+          (($entry.context_length // $ranked.context_length // 0) | tostring),
+          (($entry.pricing.prompt // null) | tostring),
+          (($entry.pricing.completion // null) | tostring),
+          (($tokens[$id] // 0) | tostring),
+          ($ranked.name // $entry.name // $id)
+        ]
+      | @tsv
+    '
+}
+
+# Prices are quoted per token, which is awkward to read. Convert to US dollars
+# per million tokens, keeping enough decimals that a tenth-of-a-cent rate does
+# not round down to a misleading zero.
+format_price() {
+  local value=$1
+
+  case "$value" in
+    ''|null)
+      printf 'n/a'
+      return
+      ;;
+  esac
+
+  # OpenRouter reports a negative price for its own routing models, whose cost
+  # depends on the provider chosen at request time. That is not a price.
+  if [ "$(printf '%s' "$value" | awk '{print ($1 < 0)}')" = 1 ]; then
+    printf 'varies'
+    return
+  fi
+
+  if [ "$(printf '%s' "$value" | awk '{print ($1 == 0)}')" = 1 ]; then
+    printf 'free'
+    return
+  fi
+
+  jq -nr --arg value "$value" '
+    ($value | tonumber) * 1000000 as $per_million
+    | if $per_million >= 1
+      then ($per_million * 100 | round / 100)
+      else ($per_million * 10000 | round / 10000)
+      end
+    | tostring
+    | if . == "0" then "<0.0001" else . end
+    | . + " $/M"
+  '
+}
+
+format_context() {
+  local value=$1
+
+  case "$value" in
+    ''|null|0)
+      printf 'n/a'
+      return
+      ;;
+  esac
+
+  if [ "$value" -ge 1000 ] 2>/dev/null; then
+    jq -nr --argjson value "$value" '($value / 1000 * 10 | round / 10 | tostring) + "k"'
+  else
+    printf '%s' "$value"
+  fi
+}
+
+# Compact token counts, e.g. 1234567 -> 1.23M.
+format_tokens() {
+  local value=$1
+
+  case "$value" in
+    ''|null|0)
+      printf 'n/a'
+      return
+      ;;
+  esac
+
+  jq -nr --argjson value "$value" '
+    if   $value >= 1000000000 then ($value / 1000000000 * 100 | round / 100 | tostring) + "B"
+    elif $value >= 1000000    then ($value / 1000000    * 100 | round / 100 | tostring) + "M"
+    elif $value >= 1000       then ($value / 1000       * 100 | round / 100 | tostring) + "k"
+    else $value | tostring
+    end
+  '
+}
+
+print_table() {
+  local title=$1
+  local rows=$2
+  local width=0
+
+  echo "========================================"
+  echo "$title"
+  echo "========================================"
+
+  if [ -z "$rows" ]; then
+    echo "no models returned"
+    echo
+    return
+  fi
+
+  local slug context prompt completion tokens name
+
+  while IFS=$'\t' read -r slug context prompt completion tokens name; do
+    [ "${#slug}" -gt "$width" ] && width=${#slug}
+  done <<<"$rows"
+
+  printf '%-*s  %11s  %11s  %8s  %9s  %s\n' \
+    "$width" "MODEL ID" "IN" "OUT" "CONTEXT" "TOKENS" "NAME"
+  printf '%s\n' "$(printf '%*s' $((width + 58)) '' | tr ' ' '-')"
+
+  while IFS=$'\t' read -r slug context prompt completion tokens name; do
+    printf '%-*s  %11s  %11s  %8s  %9s  %s\n' \
+      "$width" "$slug" \
+      "$(format_price "$prompt")" \
+      "$(format_price "$completion")" \
+      "$(format_context "$context")" \
+      "$(format_tokens "$tokens")" \
+      "$name"
+  done <<<"$rows"
+
+  echo
+}
+
+catalogue=$(mktemp)
+ranking=$(mktemp)
+trap 'rm -f "$catalogue" "$ranking"' EXIT
+
+fetch_catalogue >"$catalogue"
+
+fetch_trending >"$ranking"
+print_table "Trending by tokens ($view)" "$(build_trending_rows "$ranking" "$catalogue")"
+
+fetch_most_popular >"$ranking"
+print_table "Most Popular" "$(build_most_popular_rows "$ranking" "$catalogue")"
+
+echo "Prices are US dollars per million tokens, as reported by OpenRouter."
+echo "TOKENS is prompt tokens served, for scale only; the two lists cover"
+echo "different windows, so the columns are not directly comparable."
+echo "A model marked 'varies' is priced per provider at request time."
+echo "Sources: https://openrouter.ai/rankings and https://openrouter.ai/models"
