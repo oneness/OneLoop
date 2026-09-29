@@ -16,4 +16,6 @@ if [[ -x "$binary" ]] \
   exec "$binary" "$@"
 fi
 
-exec nix --quiet develop -c cargo run --quiet -- "$@"
+export ONELOOP_QUIET="true"
+
+exec nix develop -c cargo run --quiet -- "$@"
