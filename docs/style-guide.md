@@ -121,12 +121,24 @@ ONELOOP_WEB_TOOLS          OpenRouter server-side web search/fetch (default: tru
 Run before every commit:
 
 ```sh
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 The project's `[lints.clippy]` config in `Cargo.toml` enforces key lints.
 Fix warnings, don't silence them. If you must suppress, use
 `#[expect(clippy::lint_name)]` with a comment explaining why.
+
+`unwrap_used` is a restriction lint, so it fires in tests too unless told
+otherwise. `clippy.toml` sets `allow-unwrap-in-tests = true`, and that file is
+the only place it can go — a `config` table beside the lint in `Cargo.toml` is
+an unused manifest key, silently ignored. Tests unwrap freely: a helper that
+hits an unexpected error should abort rather than pass an `Err` along and
+report a misleading failure. Production code returns a `Result`; `expect()` is
+denied by the same lint. Delete `clippy.toml` and the test suite goes back to
+failing lint, so it belongs with the code.
+
+`--all-targets` is not optional. Without it clippy never compiles the test
+modules, so the tests holding the suite together go unchecked.
 
 ## Testing
 

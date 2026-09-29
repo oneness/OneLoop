@@ -101,18 +101,22 @@ pub struct Catalog {
 
 /// A missing file is written from the template. A malformed one is an error
 /// rather than a silent fallback: a typo should not quietly send work
-/// somewhere other than where it says.
+/// somewhere other than where it says. So is a template this build ships
+/// broken — that is a bug here, not a reason to fall back.
 pub fn load() -> Result<Catalog> {
     let file = match read_file()? {
         Some(file) => file,
         None => {
+            // Parsed before the write, so a broken template is never copied to
+            // disk just to fail again on the next run.
+            let file = default_config_file()?;
             match write_default_file() {
                 Ok(path) => output::step(&format!("wrote starter config: {}", path.display())),
                 Err(e) => output::step(&format!(
                     "could not write config ({e:#}); using built-in defaults"
                 )),
             }
-            ConfigFile::default()
+            file
         }
     };
     // Names the model for this run, by alias; the config's `default` when unset.
@@ -193,11 +197,13 @@ fn apply_env_overrides(catalog: &mut Catalog) {
     }
 }
 
-impl Default for ConfigFile {
-    fn default() -> Self {
-        // Covered by a test, so a parse failure is a build-time mistake.
-        serde_json::from_str(DEFAULT_CONFIG_JSON).expect("built-in default-config.json must parse")
-    }
+/// The starter config, compiled in. Fallible rather than a `Default` impl:
+/// `Default` cannot report the parse failure that a mistake in the shipped
+/// `default-config.json` would cause, and it would do so by panicking before
+/// `main` ever runs.
+fn default_config_file() -> Result<ConfigFile> {
+    serde_json::from_str(DEFAULT_CONFIG_JSON)
+        .with_context(|| "built-in default-config.json does not parse")
 }
 
 fn config_file_path() -> Result<PathBuf> {
@@ -240,12 +246,14 @@ mod tests {
     }
 
     fn template() -> Catalog {
-        resolve(ConfigFile::default(), None).expect("template must resolve")
+        resolve(default_config_file().expect("template must parse"), None)
+            .expect("template must resolve")
     }
 
     #[test]
     fn the_shipped_template_resolves() {
-        // `Default` unwraps it, so a mistake would panic on first run.
+        // The template is compiled in, so a mistake here is a build-time bug
+        // that would fail the first run — not something a user can cause.
         let catalog = template();
         assert_eq!(catalog.active, "qwen");
         assert_eq!(

@@ -32,6 +32,8 @@ nix develop --command bash -c 'cargo clippy -- -D warnings'
 
 Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use `#[expect(clippy::lint_name)]` with a comment.
 
+`unwrap_used` is a restriction lint, so it would otherwise fire in test modules as well. `clippy.toml` sets `allow-unwrap-in-tests = true`, and that file is the only place it can go — a `config` table beside the lint in `Cargo.toml` is silently ignored. Unwrapping in a test is fine: a helper that hit an unexpected error should abort, not pass an `Err` through and report a confusing failure. Outside tests it stays denied, and `expect()` is denied by the same lint, so production code returns a `Result`.
+
 ## Module Organization
 
 - One concern per module. Split when files exceed ~300 lines.

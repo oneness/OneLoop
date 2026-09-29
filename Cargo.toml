@@ -17,6 +17,8 @@ redundant_closure = "deny"
 redundant_closure_for_method_calls = "deny"
 single_match = "deny"
 uninlined_format_args = "deny"
+# `allow-unwrap-in-tests` is set in clippy.toml; a `config` table here would be
+# an unused manifest key. Without it this lint also fires in test modules.
 unwrap_used = "deny"
 
 [dependencies]

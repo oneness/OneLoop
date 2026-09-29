@@ -1,0 +1,9 @@
+# Clippy reads this from the crate root. Delete it and the 78 unwraps in the
+# test modules start failing lint again.
+#
+# `unwrap_used` is a restriction lint, so without this it fires in tests as
+# well — the opposite of the rule we want: a test helper that hits an
+# unexpected error should abort loudly, production code should never panic.
+# This cannot be set in Cargo.toml: a `config` table beside the lint there is
+# an unused manifest key. See docs/style-guide.md.
+allow-unwrap-in-tests = true
