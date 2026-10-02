@@ -138,25 +138,34 @@ fetch_catalogue() {
 build_trending_rows() {
   local ranking=$1
   local catalogue=$2
+  local popular=$3
 
   jq -nr --argjson limit "$limit" \
     --slurpfile ranking "$ranking" \
-    --slurpfile catalogue "$catalogue" '
+    --slurpfile catalogue "$catalogue" \
+    --slurpfile popular "$popular" '
       # Drop the trailing -YYYYMMDD date so the permaslug matches a catalogue
       # id. Models without a date pass through unchanged.
       def bare_id: sub("-[0-9]{8}$"; "");
 
       ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
+      | # The rankings include models available through frontend endpoints but
+        # missing from /api/v1/models. Their endpoint pricing is still usable.
+        ($popular[0].data.models
+          | map(select(.endpoint.pricing != null)
+              | {key: .slug, value: .endpoint})
+          | from_entries) as $endpoints
       | $ranking[0].data[0:$limit]
       | .[]
       | . as $ranked
       | ($ranked.model_permaslug | bare_id) as $id
       | ($catalogue[$id] // null) as $entry
+      | ($endpoints[$id] // null) as $endpoint
       | [
           $id,
-          (($entry.context_length // 0) | tostring),
-          (($entry.pricing.prompt // null) | tostring),
-          (($entry.pricing.completion // null) | tostring),
+          (($entry.context_length // $endpoint.context_length // 0) | tostring),
+          (($entry.pricing.prompt // $endpoint.pricing.prompt // null) | tostring),
+          (($entry.pricing.completion // $endpoint.pricing.completion // null) | tostring),
           (($ranked.total_prompt_tokens // 0) | tostring),
           ($entry.name // $id)
         ]
@@ -323,15 +332,16 @@ print_table() {
 
 catalogue=$(mktemp)
 ranking=$(mktemp)
-trap 'rm -f "$catalogue" "$ranking"' EXIT
+popular=$(mktemp)
+trap 'rm -f "$catalogue" "$ranking" "$popular"' EXIT
 
 fetch_catalogue >"$catalogue"
 
 fetch_trending >"$ranking"
-print_table "Trending by tokens ($view)" "$(build_trending_rows "$ranking" "$catalogue")"
+fetch_most_popular >"$popular"
+print_table "Trending by tokens ($view)" "$(build_trending_rows "$ranking" "$catalogue" "$popular")"
 
-fetch_most_popular >"$ranking"
-print_table "Most Popular" "$(build_most_popular_rows "$ranking" "$catalogue")"
+print_table "Most Popular" "$(build_most_popular_rows "$popular" "$catalogue")"
 
 echo "Prices are US dollars per million tokens, as reported by OpenRouter."
 echo "TOKENS is prompt tokens served, for scale only; the two lists cover"
