@@ -144,11 +144,13 @@ build_trending_rows() {
     --slurpfile ranking "$ranking" \
     --slurpfile catalogue "$catalogue" \
     --slurpfile popular "$popular" '
-      # Drop the trailing -YYYYMMDD date so the permaslug matches a catalogue
-      # id. Models without a date pass through unchanged.
+      # Rankings identify catalogue models by canonical_slug, while the
+      # displayed OpenRouter id may include a variant such as :free or :batch.
       def bare_id: sub("-[0-9]{8}$"; "");
 
-      ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
+      ($catalogue[0].data | map(select(.canonical_slug != null)
+          | { key: .canonical_slug, value: . }) | from_entries) as $by_canonical
+      | ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
       | # The rankings include models available through frontend endpoints but
         # missing from /api/v1/models. Their endpoint pricing is still usable.
         ($popular[0].data.models
@@ -158,18 +160,17 @@ build_trending_rows() {
       | $ranking[0].data[0:$limit]
       | .[]
       | . as $ranked
-      | ($ranked.model_permaslug | bare_id) as $id
-      | ($catalogue[$id] // null) as $entry
-      | ($endpoints[$id] // null) as $endpoint
-      | [
-          $id,
-          (($entry.context_length // $endpoint.context_length // 0) | tostring),
-          (($entry.pricing.prompt // $endpoint.pricing.prompt // null) | tostring),
-          (($entry.pricing.completion // $endpoint.pricing.completion // null) | tostring),
-          (($ranked.total_prompt_tokens // 0) | tostring),
-          ($entry.name // $id)
-        ]
-      | @tsv
+      | (($by_canonical[$ranked.model_permaslug] // null) as $entry
+          | ($entry.id // ($ranked.model_permaslug | bare_id)) as $id
+          | ($endpoints[$id] // $endpoints[($ranked.model_permaslug | bare_id)] // null) as $endpoint
+          | [
+              $id,
+              (($entry.context_length // $endpoint.context_length // 0) | tostring),
+              (($entry.pricing.prompt // $endpoint.pricing.prompt // null) | tostring),
+              (($entry.pricing.completion // $endpoint.pricing.completion // null) | tostring),
+              (($ranked.total_prompt_tokens // 0) | tostring)
+            ]
+          | @tsv)
     '
 }
 
@@ -187,7 +188,8 @@ build_most_popular_rows() {
     --slurpfile catalogue "$catalogue" '
       def bare_id: sub("-[0-9]{8}$"; "");
 
-      ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
+      ($catalogue[0].data | map(select(.canonical_slug != null)
+          | { key: .canonical_slug, value: . }) | from_entries) as $by_canonical
       | # One model can appear as several dated variants, and some carry a
         # separate :batch variant. Sum them so each model reports one row.
         ($popular[0].data.analytics
@@ -204,17 +206,16 @@ build_most_popular_rows() {
       | $popular[0].data.models[0:$limit]
       | .[]
       | . as $ranked
-      | ($ranked.slug // "") as $id
-      | ($catalogue[$id] // null) as $entry
-      | [
-          $id,
-          (($entry.context_length // $ranked.context_length // 0) | tostring),
-          (($entry.pricing.prompt // null) | tostring),
-          (($entry.pricing.completion // null) | tostring),
-          (($tokens[$id] // 0) | tostring),
-          ($ranked.name // $entry.name // $id)
-        ]
-      | @tsv
+      | (($by_canonical[$ranked.permaslug] // null) as $entry
+          | ($entry.id // ($ranked.slug // "")) as $id
+          | [
+              $id,
+              (($entry.context_length // $ranked.context_length // 0) | tostring),
+              (($entry.pricing.prompt // null) | tostring),
+              (($entry.pricing.completion // null) | tostring),
+              (($tokens[($ranked.permaslug | bare_id)] // 0) | tostring)
+            ]
+          | @tsv)
     '
 }
 
@@ -251,7 +252,6 @@ format_price() {
       end
     | tostring
     | if . == "0" then "<0.0001" else . end
-    | . + " $/M"
   '
 }
 
@@ -265,11 +265,7 @@ format_context() {
       ;;
   esac
 
-  if [ "$value" -ge 1000 ] 2>/dev/null; then
-    jq -nr --argjson value "$value" '($value / 1000 * 10 | round / 10 | tostring) + "k"'
-  else
-    printf '%s' "$value"
-  fi
+  jq -nr --argjson value "$value" '($value / 1000 * 10 | round / 10 | tostring)'
 }
 
 # Compact token counts, e.g. 1234567 -> 1.23M.
@@ -284,9 +280,9 @@ format_tokens() {
   esac
 
   jq -nr --argjson value "$value" '
-    if   $value >= 1000000000 then ($value / 1000000000 * 100 | round / 100 | tostring) + "B"
-    elif $value >= 1000000    then ($value / 1000000    * 100 | round / 100 | tostring) + "M"
-    elif $value >= 1000       then ($value / 1000       * 100 | round / 100 | tostring) + "k"
+    if   $value >= 1000000000 then ($value / 1000000000 * 100 | round / 100 | tostring)
+    elif $value >= 1000000    then ($value / 1000000    * 100 | round / 100 | tostring)
+    elif $value >= 1000       then ($value / 1000       * 100 | round / 100 | tostring)
     else $value | tostring
     end
   '
@@ -307,24 +303,23 @@ print_table() {
     return
   fi
 
-  local slug context prompt completion tokens name
+  local slug context prompt completion tokens
 
-  while IFS=$'\t' read -r slug context prompt completion tokens name; do
+  while IFS=$'\t' read -r slug context prompt completion tokens; do
     [ "${#slug}" -gt "$width" ] && width=${#slug}
   done <<<"$rows"
 
-  printf '%-*s  %11s  %11s  %8s  %9s  %s\n' \
-    "$width" "MODEL ID" "IN" "OUT" "CONTEXT" "TOKENS" "NAME"
-  printf '%s\n' "$(printf '%*s' $((width + 58)) '' | tr ' ' '-')"
+  printf '%-*s  %9s  %9s  %8s  %9s\n' \
+    "$width" "MODEL ID" "IN ($/M)" "OUT ($/M)" "CTX (k)" "TOKENS (B)"
+  printf '%s\n' "$(printf '%*s' $((width + 44)) '' | tr ' ' '-')"
 
-  while IFS=$'\t' read -r slug context prompt completion tokens name; do
-    printf '%-*s  %11s  %11s  %8s  %9s  %s\n' \
+  while IFS=$'\t' read -r slug context prompt completion tokens; do
+    printf '%-*s  %9s  %9s  %8s  %9s\n' \
       "$width" "$slug" \
       "$(format_price "$prompt")" \
       "$(format_price "$completion")" \
       "$(format_context "$context")" \
-      "$(format_tokens "$tokens")" \
-      "$name"
+      "$(format_tokens "$tokens")"
   done <<<"$rows"
 
   echo
@@ -339,12 +334,7 @@ fetch_catalogue >"$catalogue"
 
 fetch_trending >"$ranking"
 fetch_most_popular >"$popular"
+print_table "Most Popular" "$(build_most_popular_rows "$popular" "$catalogue")"
 print_table "Trending by tokens ($view)" "$(build_trending_rows "$ranking" "$catalogue" "$popular")"
 
-print_table "Most Popular" "$(build_most_popular_rows "$popular" "$catalogue")"
-
-echo "Prices are US dollars per million tokens, as reported by OpenRouter."
-echo "TOKENS is prompt tokens served, for scale only; the two lists cover"
-echo "different windows, so the columns are not directly comparable."
-echo "A model marked 'varies' is priced per provider at request time."
 echo "Sources: https://openrouter.ai/rankings and https://openrouter.ai/models"
