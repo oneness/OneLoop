@@ -142,6 +142,15 @@ impl Agent {
     }
 
     pub async fn run_once(&mut self, prompt: String) -> Result<()> {
+        self.run_once_with_model(prompt, None).await
+    }
+
+    /// Runs one turn against an explicit model, making it active only after
+    /// that model successfully answers.
+    pub async fn run_once_with_model(&mut self, prompt: String, model: Option<&str>) -> Result<()> {
+        if let Some(alias) = model {
+            self.models.get(alias)?;
+        }
         // A single busy→idle pulse for the buffer's mode line, held for the
         // whole turn loop including tools. Drop covers every exit path.
         let _turn_status = TurnStatus::new();
@@ -154,7 +163,7 @@ impl Agent {
 
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
-        let mut active_model: Option<String> = None;
+        let mut active_model: Option<String> = model.map(str::to_string);
 
         for _iteration in 1..=max_iterations {
             let spinner = SpinnerGuard::new("thinking...");
@@ -183,6 +192,9 @@ impl Agent {
                 .await
             {
                 Ok((used_model, response)) => {
+                    if model.is_some() {
+                        self.models.set_active(&used_model)?;
+                    }
                     active_model = Some(used_model);
                     response
                 }

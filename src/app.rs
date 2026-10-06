@@ -114,6 +114,16 @@ struct ParsedInput<'a> {
     command: Option<Command<'a>>,
 }
 
+fn model_prompt<'a>(
+    command: Option<&Command<'a>>,
+    prompt: Option<&'a str>,
+) -> Option<(&'a str, &'a str)> {
+    match (command, prompt) {
+        (Some(Command::Model(Some(alias))), Some(prompt)) => Some((alias, prompt)),
+        _ => None,
+    }
+}
+
 /// A prefixed command uses `.` as an explicit boundary:
 /// `/clear. explain this` and `/model flash. explain this`.
 fn parse_input(input: &str) -> ParsedInput<'_> {
@@ -311,19 +321,26 @@ impl App {
 
         match prompt {
             Some(prompt) => {
-                let parsed = parse_input(&prompt);
-                if let Some(command) = parsed.command
-                    && !run_command(&mut agent, command).await
-                {
-                    return Ok(());
+                let ParsedInput { prompt, command } = parse_input(&prompt);
+                if let Some((alias, prompt)) = model_prompt(command.as_ref(), prompt) {
+                    output::step(&format!("{}", agent.models().get(alias)?));
+                    agent
+                        .run_once_with_model(prompt.to_string(), Some(alias))
+                        .await
+                } else {
+                    if let Some(command) = command
+                        && !run_command(&mut agent, command).await
+                    {
+                        return Ok(());
+                    }
+                    let Some(prompt) = prompt else {
+                        return Ok(());
+                    };
+                    // A one-shot run must not be silent about which model it is
+                    // spending on.
+                    output::step(&format!("{}", agent.models().active()));
+                    agent.run_once(prompt.to_string()).await
                 }
-                let Some(prompt) = parsed.prompt else {
-                    return Ok(());
-                };
-                // A one-shot run must not be silent about which model it is
-                // spending on.
-                output::step(&format!("{}", agent.models().active()));
-                agent.run_once(prompt.to_string()).await
             }
             None => run_interactive(&mut agent).await,
         }
@@ -363,19 +380,24 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         }
         let _ = editor.add_history_entry(&line);
 
-        let parsed = parse_input(&line);
-        if let Some(command) = parsed.command
+        let ParsedInput { prompt, command } = parse_input(&line);
+        if let Some((alias, prompt)) = model_prompt(command.as_ref(), prompt) {
+            run_interactive_turn(agent, prompt, Some(alias)).await;
+            eprintln!();
+            continue;
+        }
+        if let Some(command) = command
             && !run_command(agent, command).await
         {
             eprintln!();
             continue;
         }
-        let Some(prompt) = parsed.prompt else {
+        let Some(prompt) = prompt else {
             eprintln!();
             continue;
         };
 
-        run_interactive_turn(agent, prompt).await;
+        run_interactive_turn(agent, prompt, None).await;
         eprintln!();
     }
 
@@ -384,11 +406,11 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 
 /// Errors are reported, never propagated — a failed turn must not end the
 /// REPL.
-async fn run_interactive_turn(agent: &mut Agent, line: &str) {
+async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>) {
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
     tokio::select! {
-        result = agent.run_once(line.to_string()) => {
+        result = agent.run_once_with_model(line.to_string(), model) => {
             if let Err(e) = result {
                 output::fail(&format!("{e:#}"));
             }
