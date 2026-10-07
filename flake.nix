@@ -30,6 +30,8 @@
           inherit system overlays;
         };
 
+        lib = pkgs.lib;
+
         # The single source of truth for the Rust version.
         rustChannel =
           (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
@@ -42,10 +44,10 @@
           extensions = [ "rust-src" ];
         };
 
-        # The flake supplies the pinned executable. Model selection and all
-        # llama-server policy belong in `ols`, where they are easy to inspect
-        # and change without rebuilding a generated shell application.
-        llamaServer = llama-cpp.packages.${system}.vulkan;
+        # Provide both backends; ols picks at runtime via ONELOOP_BACKEND
+        llamaServerVulkan = llama-cpp.packages.${system}.vulkan;
+        llamaServerRocm = lib.optionalAttrs (system == "x86_64-linux")
+          llama-cpp.packages.${system}.rocm;
       in
       {
         devShells.default = pkgs.mkShell {
@@ -65,7 +67,7 @@
             export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
             export CARGO_TARGET_DIR="target"
 
-            if [ -z "''${ONELOOP_QUIET:-}" ]; then
+            if [ -z "$${ONELOOP_QUIET:-}" ]; then
               echo "oneloop development environment"
               echo "=============================="
               echo "Rust: $(rustc --version)"
@@ -76,6 +78,10 @@
               echo "  cargo test"
               echo "  cargo run"
               echo ""
+              echo "Backends:"
+              echo "  ols qwen-coder-7b         # Vulkan (default)"
+              echo "  ONELOOP_BACKEND=rocm ols qwen-coder-7b  # ROCm for AMD GPU"
+              echo ""
             fi
           '';
         };
@@ -83,7 +89,8 @@
         # OneLoop talks to inference over HTTP, so building llama.cpp must not
         # gate the ordinary Rust development shell.
         packages = {
-          llama-server = llamaServer;
+          llama-server-vulkan = llamaServerVulkan;
+          llama-server-rocm = llamaServerRocm;
         };
       }
     );
