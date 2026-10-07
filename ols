@@ -9,7 +9,8 @@ usage() {
   echo "usage: ols [qwen|qwen-coder-7b] [llama-server options...]"
 }
 
-default="qwen-coder-7b"
+#default="qwen-coder-7b"
+default="qwen"
 model="${1:-$default}"
 if [ $# -gt 0 ]; then
   shift
