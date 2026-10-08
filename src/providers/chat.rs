@@ -179,6 +179,32 @@ struct ChatChoiceMessage {
     tool_calls: Option<Vec<ChatToolCall>>,
 }
 
+/// Error envelope returned by some providers (e.g., OpenRouter) with HTTP 200
+/// instead of the expected `choices` response.
+#[derive(Debug, Deserialize)]
+struct ProviderErrorResponse {
+    error: ProviderErrorDetail,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderErrorDetail {
+    message: String,
+    #[expect(dead_code)]
+    #[serde(default)]
+    code: Option<u16>,
+    #[expect(dead_code)]
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+/// Extracts a provider error message from a response body that carries an
+/// `error` object instead of `choices`. Returns `None` if the body is not
+/// an error envelope.
+fn extract_provider_error(body: &str) -> Option<String> {
+    let val: ProviderErrorResponse = serde_json::from_str(body).ok()?;
+    Some(val.error.message)
+}
+
 /// Text to show for an assistant turn.
 ///
 /// A turn with tool calls is expected to have no content — the call is the
@@ -245,6 +271,17 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 
     let post = model.provider.post("chat/completions").await?.json(&body);
     let (status, text) = send_and_read(post, &model.alias).await?;
+
+    // Some providers (e.g., OpenRouter) wrap upstream errors in HTTP 200
+    // with an `error` object instead of `choices`. Detect that first so we
+    // surface the real message instead of "missing field choices".
+    if let Some(provider_msg) = extract_provider_error(&text) {
+        return Err(anyhow::anyhow!(
+            "{} upstream error: {}",
+            model.alias,
+            provider_msg
+        ));
+    }
 
     let parsed: ChatResponse = match serde_json::from_str(&text) {
         Ok(parsed) => parsed,
