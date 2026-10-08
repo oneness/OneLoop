@@ -192,9 +192,9 @@ impl Agent {
                 .await
             {
                 Ok((used_model, response)) => {
-                    if model.is_some() {
-                        self.models.set_active(&used_model)?;
-                    }
+                    // Commit only after a successful response, whether it came
+                    // from the requested model or a fallback.
+                    self.models.set_active(&used_model)?;
                     active_model = Some(used_model);
                     response
                 }
