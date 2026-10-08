@@ -3,7 +3,12 @@
 //! A local llama-server and a hosted provider differ only by URL, model id,
 //! and whether a key is required, so one module serves both.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -11,6 +16,32 @@ use crate::agent::messages::{Message, ToolCall};
 use crate::models::Model;
 
 use super::{ProviderRequest, ProviderResponse, decode_tool_arguments, send_and_read};
+
+fn log_invalid_response(
+    alias: &str,
+    model_id: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<()> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let path = PathBuf::from(home).join(".oneloop").join("oneloop.log");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(
+        file,
+        "{{\"ts\":{},\"event\":\"invalid_provider_response\",\"model\":{},\"model_id\":{},\"status\":{},\"body\":{}}}",
+        serde_json::to_string(&Local::now().to_rfc3339())?,
+        serde_json::to_string(alias)?,
+        serde_json::to_string(model_id)?,
+        serde_json::to_string(&status.as_u16())?,
+        serde_json::to_string(body)?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
 
 // ── Request types (Chat Completions) ──────────────────────────────────
 
@@ -213,10 +244,17 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     };
 
     let post = model.provider.post("chat/completions").await?.json(&body);
-    let text = send_and_read(post, &model.alias).await?;
+    let (status, text) = send_and_read(post, &model.alias).await?;
 
-    let parsed: ChatResponse = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse {} response JSON", model.alias))?;
+    let parsed: ChatResponse = match serde_json::from_str(&text) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            if let Err(log_error) = log_invalid_response(&model.alias, &model.id, status, &text) {
+                crate::output::warn(&format!("could not write provider response to ~/.oneloop/oneloop.log: {log_error:#}"));
+            }
+            return Err(error).with_context(|| format!("failed to parse {} response JSON", model.alias));
+        }
+    };
 
     let Some(choice) = parsed.choices.into_iter().next() else {
         bail!("{} response contained no choices", model.alias);

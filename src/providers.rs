@@ -239,13 +239,19 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 }
 
 /// Non-2xx becomes an error carrying the provider's own message.
-async fn send_and_read(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+async fn send_and_read(
+    request: reqwest::RequestBuilder,
+    provider: &str,
+) -> Result<(reqwest::StatusCode, String)> {
     tokio::time::timeout(CHAT_TIMEOUT, send_and_read_inner(request, provider))
         .await
         .with_context(|| format!("{provider} request timed out after 15 minutes"))?
 }
 
-async fn send_and_read_inner(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+async fn send_and_read_inner(
+    request: reqwest::RequestBuilder,
+    provider: &str,
+) -> Result<(reqwest::StatusCode, String)> {
     let response = request
         .send()
         .await
@@ -263,7 +269,7 @@ async fn send_and_read_inner(request: reqwest::RequestBuilder, provider: &str) -
         }
         .into());
     }
-    Ok(text)
+    Ok((status, text))
 }
 
 /// Falls back to truncating the raw text at 200 characters.
