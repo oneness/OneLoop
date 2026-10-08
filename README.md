@@ -2,7 +2,7 @@
 
 A local-first coding agent. It runs against a model on your own machine by
 default — no API key, no account, nothing leaving the box — and reaches a
-hosted model only when you ask it to. One loop, five tools, zero config.
+hosted model only when you ask it to. One loop, few tools, zero config.
 
 ## Quick links
 
@@ -53,61 +53,6 @@ without switching your current model:
 /cn Explain the tradeoffs between SQLite and PostgreSQL.
 ```
 
-Requires a recent `claude` CLI supporting `--safe-mode`, already logged in with
-your Claude subscription. OneLoop delegates authentication to that CLI; API-key
-or cloud-provider overrides in its environment can change the billing path.
-
-`/cc` immediately critiques the discussion for weaknesses, gaps, and simpler
-alternatives. Optional focus text narrows the critique: `/cc the retry logic`.
-`/ca <question>` asks your own question about the discussion, including requests
-to brainstorm specific aspects. `/ca` and `/cn` require nonempty text; otherwise
-a usage error is shown and nothing is sent. No menu or terminal input is required.
-
-Only exact command names match. Unknown commands, including the retired
-`/claude`, are sent as ordinary prompts to the current model.
-
-Both `/cc` and `/ca` send the current session's user and assistant text,
-including earlier Claude responses, plus recorded tool calls and results in order. Tool
-names, arguments, call IDs, and error status accompany the output so Claude can
-review diffs, file contents, and test results already gathered by OneLoop.
-OneLoop's system prompt is excluded. Tool output is shared as stored, including
-any sensitive content or existing truncation; it may not reflect the current
-repository state.
-
-`/cn <prompt>` sends **only that prompt**, with no discussion
-history. This also works in an empty session. For all three commands, the completed
-answer becomes reference material for the ongoing OneLoop conversation.
-In Emacs/comint, OneLoop shows thinking while Claude runs and returns to idle when it finishes,
-fails, or is cancelled.
-
-Claude can review or implement changes when requested through `/ca` or `/cn`.
-`/cc` asks for a critique by default, not implementation.
-If Claude modifies files, it is asked to list every changed path at the end of
-its answer, so the saved reference tells the current model what to re-read.
-
-Claude can use its own built-in Bash tool in OneLoop's working directory:
-`--tools Bash --allowedTools Bash`. MCP tools remain disabled; no MCP server
-is needed. A prompt such as `/cn Review the diff` can now inspect the
-repository directly. Prompt-only still means no conversation history is sent,
-not that Claude lacks file access.
-
-**Bash is preapproved, not read-only or sandboxed by OneLoop.** Commands can
-read sensitive files, modify or delete files, and access the network with your
-account's permissions, subject to Claude Code's applicable policies. Unhandled
-permission requests are denied. Cancellation does not undo command side effects.
-Claude's intermediate Bash trace is not imported into OneLoop's history; only
-the completed answer is saved. Each invocation starts fresh, with customizations
-disabled and no Claude session persistence.
-
-The completed answer is displayed and saved in OneLoop as attributed reference
-material. Your selected model stays unchanged and does not run automatically.
-You decide how the current model should follow up. If Claude changed files,
-re-read them before making further edits.
-Failed, empty, or cancelled responses are not added to the conversation. Ctrl+C
-stops a request; there is also a five-minute timeout. Inputs over 256 KiB are
-rejected rather than silently truncated (this is a byte limit, not a guarantee
-that every model context window will fit).
-
 ### One-shot mode
 
 ```bash
@@ -140,12 +85,6 @@ provider.
 comes back; the `chatgpt` model then runs against the subscription rather than a
 metered API key — the same account and quota the Codex CLI uses. The access
 token is renewed automatically as it expires, so this is a one-time step.
-
-`./ol` is a thin wrapper that runs OneLoop via `nix develop`. The agent is purely model-driven: you talk to it in natural language, and the model decides whether to use `read`, `write`, `edit`, `bash`, or `elisp`.
-
-`elisp` evaluates an Emacs Lisp expression through `emacsclient` in the running Emacs server. It gives the agent access to editor-only state — open and unsaved buffers, windows, cursor positions, diagnostics, and process output — that may differ from files on disk. An Emacs server and `emacsclient` must be available. The bundled `emacs` skill is loaded before use and tells the model to keep expressions bounded, avoid prompts, and leave buffers and windows unchanged unless you explicitly ask otherwise. Its timeout stops only the client; Lisp already running in Emacs may continue.
-
-Two things are reachable but are not tools. `skill` is on-demand prompt engineering — it returns a markdown playbook from `.oneloop/skills/` for the model to follow, and does nothing to the machine; it is registered only when such files exist. Web search and fetching are OpenRouter's, executed server-side and returned inside the assistant message (metered per use; disable with `ONELOOP_WEB_TOOLS=false`).
 
 ## Providers and models
 
@@ -197,60 +136,6 @@ shown here with a second OpenRouter model added:
 }
 ```
 
-Adding a model is a few lines under its provider — no repeated
-URL, no repeated key. Provider keys: `base_url`, `api` (`chat` by default,
-or `codex`), `api_key_env` (omit for a server that needs none), `web_tools`,
-`models`. Model keys: `id` (what goes on the wire), `max_tokens`,
-`temperature`, `web_tools`, `reasoning_effort`, `context_window`; model
-settings override the provider's.
-
-`api` names the protocol the provider speaks, and with it how it is
-authorized. `chat` is OpenAI Chat Completions, which is what everything
-except ChatGPT speaks. `codex` is ChatGPT's Codex backend over the Responses
-API, reached with the subscription grant `./ol login openai` stores —
-so that provider names no `api_key_env`: there is no key to name. Change the
-model `id` there to whichever Codex model your plan offers.
-
-There is no required `context_window` to declare. The server is the authority
-on what fits, and it says so by refusing the request — see [When a thread gets
-too long](#when-a-thread-gets-too-long).
-
-A model *may* declare one — `"context_window": 131072` beside its `id` — and
-the interactive prompt then shows how much of it is still free:
-`(qwen ~ 80%)> `. The percentage is estimated the same way the
-`tokens_estimated` metric is and is a gauge, not a gate: nothing reads it
-before sending, and the server still has the final say. Omit it and the prompt
-stays `(qwen)> `.
-
-`max_tokens` caps output per response and is omitted unless you set it, so a
-hosted provider's own default applies. The bundled `local` model leaves it
-unset too: `./ols` starts llama-server with `-n 32768`, which is
-the same ceiling in one place instead of two.
-
-`default` names the alias used when nothing else is asked for. It is `qwen`
-out of the box, served by the credential-free `local` provider, so an
-unconfigured checkout cannot accidentally bill a hosted model.
-
-`/model` switches the active model for the rest of a session and leaves the
-file alone; `default` is what the next run starts on, and changing that stays
-an edit you make on purpose. After editing the file, `/reload` applies the new
-providers and models without restarting or clearing the conversation. It keeps
-the active alias when that alias still exists, so changing `default` alone does
-not switch the current model. If the active alias is removed, model selection
-falls back to `ONELOOP_MODEL` when set, otherwise the file's `default`. If reloading
-fails, the working configuration stays untouched.
-
-**This file holds no secrets.** A provider names the environment variable
-its key lives in; the key itself — or, for a subscription, the OAuth grant —
-is written by `oneloop login` into `~/.oneloop/auth.json` (0600). That keeps the config shareable —
-committable to dotfiles, diffable, pasteable — which it could not be if a
-key were in it.
-
-Override for a single run:
-
-- `ONELOOP_MODEL=<alias>` — use a different model
-- `ONELOOP_WEB_TOOLS` — server-side web search/fetch on the active model
-
 ### Running the local server
 
 The `local` provider expects an OpenAI-compatible server on port 8080. This
@@ -278,63 +163,12 @@ It wraps llama.cpp's Vulkan build with flags measured against
 Qwen3.6-35B-A3B — see the comments in `ols` for what each one is worth.
 `ONELOOP_LOCAL_PORT` moves it off 8080.
 
-llama.cpp is tracked at upstream master, which ships several builds a day and
-where fixes that matter here land quickly — the Qwen3 chat parser
-([PR #26252](https://github.com/ggml-org/llama.cpp/pull/26252)) is the
-difference between the agent working and silently doing nothing. To take
-today's build:
-
-```bash
-nix flake update llama-cpp     # ~5 min cold, ~3 min after
-```
-
-`flake.lock` pins the revision, so a bad upstream day is
-`git checkout HEAD~1 -- flake.lock`. Pin deliberately by changing the input
-to a tag (`github:ggml-org/llama.cpp/b10229`).
-
-Building an inference engine has no business gating `cargo check`, so this is
-a separate output rather than part of the dev shell — `nix develop` does not
-pull it in.
 
 Tuning (all optional):
 
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
 
-Provider calls are bounded rather than allowed to stall forever. Every HTTP
-client gets 10 seconds to connect. Chat Completions gets 15 minutes for the
-whole response; Codex streaming has no overall deadline while it is making
-progress, but must begin responding and then produce another chunk within 90
-seconds. ChatGPT sign-in waits up to 5 minutes for the browser callback, and
-token exchange or renewal gets 30 seconds overall.
-
-A provider names the environment variable holding its key (`api_key_env`);
-that variable is read first, then `~/.oneloop/auth.json` — an explicitly set
-env var always wins. The default `local` provider names none, so the default
-`qwen` model needs no credentials anywhere.
-
-## When a thread gets too long
-
-Nothing is summarized, nothing is dropped. When a conversation no longer
-fits, the server refuses the request and OneLoop tells you so, naming the
-fix: `/clear` to start a fresh session, or a model with a larger window.
-
-The server is the only thing that reliably knows what fits: a llama-server
-started with `-c 8192` and a hosted model with a 200k window are the same
-code path, because both say so in the same place. No threshold branches on
-the token estimate — an undersized declared window never drops a message,
-and an oversized one is only ever a gauge that reads too high. The prompt
-shows roughly how much context is left when the model declares a window, so
-you can reach for `/clear` on your own schedule instead of waiting for the
-refusal. The estimate is deliberately the same rough one the metrics log
-uses — a rough gauge shown honestly beats a precise number maintained in two
-places, and the server, which counts the same conversation every time,
-remains the authority on what actually fits.
-
-Summarizing a thread to keep it alive trades accuracy for length, silently
-and on your behalf. `/clear` is the honest version of the same move: it is
-one keystroke, it happens when you decide it should, and what you lose is
-what you chose to lose.
 
 ## Development
 
