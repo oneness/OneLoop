@@ -267,10 +267,10 @@ terminals that cannot take cursor addressing — comint runs its children with
 silent: its per-frame rewrites would land in `comint-output-filter` on
 Emacs's single thread, a firehose that grinds even when the buffer is not
 displayed. `comint()` reports comint specifically, the one place with a
-consumer for the OSC 9;4 busy/idle sentinels that `agent/status.rs` emits
-instead: one 10-byte report when a turn starts, one when it ends, lifted by
-an Emacs-side filter into the buffer's mode line (`OneLoop: thinking...` /
-`OneLoop: idle`).
+consumer for the **OSC 7501** (Program Status Protocol) reports that
+`crate::status` emits instead: one report when a turn starts (`state=working`),
+one when it ends (`state=idle`), carrying the model alias in a base64 `title`
+field.
 
 ## Source layout
 
@@ -309,6 +309,7 @@ src/
     write.rs        File writing
     edit.rs         Find-and-replace file editing
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
+  status.rs         Turn state & model title reports via OSC 7501 (Program Status Protocol)
 docs/
   architecture.md   This file
   index.html        Executive presentation (GitHub Pages, space-bar nav)

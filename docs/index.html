@@ -395,7 +395,34 @@
   </div>
 </section>
 
-<!-- ═══ 9. Codebase ═══ -->
+<!-- ═══ 9. OSC 7501 Status ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">integration</div>
+    <h2>Agent Status via OSC 7501</h2>
+    <p class="big">OneLoop emits the active model and turn state as OSC 7501<br>when running under Emacs <code>comint</code>.</p>
+    <div class="mono" style="margin-top: 20px; font-size: 14px; line-height: 1.6;">
+      <span class="cm">ESC ] 7501 ; state=working|idle : app=oneloop : title=<base64 model> ESC \</span>
+    </div>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">
+      <code>state</code> — <code>working</code> during a turn, <code>idle</code> between turns,<br>
+      <code>clear</code> on reset.
+    </p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">
+      <code>title</code> — model alias (base64 UTF-8), so the client always knows<br>
+      the current model even in idle.
+    </p>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">
+      Bundled <code>oneloop.el</filter reads these and updates the mode line:<br>
+      <code>model: thinking...</code> / <code>model: idle</code>.
+    </p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">
+      Any terminal, editor, or tooling can consume it — no prompt scraping needed.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ 11. Codebase ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">stats</div>
@@ -403,10 +430,10 @@
     <!-- Snapshot: existing git-tracked .rs/.html/.md files; physical lines including blanks and tests. -->
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">27</td><td style="text-align:right;">6,765</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">469</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">1,051</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">35</td><td style="text-align:right;">8,285</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">27</td><td style="text-align:right;">7,252</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">496</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">909</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">35</td><td style="text-align:right;">8,657</td></tr>
     </table>
   </div>
 </section>

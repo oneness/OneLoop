@@ -169,6 +169,19 @@ Tuning (all optional):
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
 
+## Agent status (OSC 7501)
+
+OneLoop reports the active model and turn state via **OSC 7501** (Program Status Protocol) when running under Emacs `comint` (or any terminal that sets `INSIDE_EMACS=...,comint`). This lets any client — editor, terminal, tooling — read the current model and whether a turn is running, without scraping the prompt.
+
+The sequence is:
+
+```
+ESC ] 7501 ; state=working|idle|done|blocked|error|clear : app=oneloop : title=<base64 model> ESC \
+```
+
+- `state` — `working` while a turn runs, `idle` between turns, `clear` on reset
+- `title` — the model alias (base64-encoded UTF-8), so the client always knows the current model even in idle
+
 
 ## Development
 
