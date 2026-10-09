@@ -7,6 +7,7 @@ mod config;
 mod models;
 mod output;
 mod providers;
+mod status;
 mod tools;
 
 use std::io::{self, IsTerminal, Read};

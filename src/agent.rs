@@ -2,7 +2,6 @@ pub mod messages;
 pub mod metrics;
 pub mod session;
 mod spinner;
-mod status;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -13,6 +12,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::output;
+use crate::status::TurnStatus;
 use crate::{
     config::Config,
     models::ModelRegistry,
@@ -21,7 +21,6 @@ use crate::{
 };
 
 use spinner::SpinnerGuard;
-pub(crate) use status::TurnStatus;
 
 #[derive(Debug, Clone)]
 pub struct AgentContext {

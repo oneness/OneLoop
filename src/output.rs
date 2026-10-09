@@ -49,8 +49,8 @@ fn plain_terminal(inside_emacs: Option<&str>, term: Option<&str>) -> bool {
     inside_emacs_has(inside_emacs, "comint") || term.is_some_and(|term| term == "dumb")
 }
 
-/// True only under comint — the one consumer of the OSC 9;4 sentinels that
-/// [`agent::status`] emits. A dumb terminal outside Emacs has no consumer,
+/// True only under comint — the one consumer of the OSC 7501 reports that
+/// [`crate::status`] emits. A dumb terminal outside Emacs has no consumer,
 /// and there the spinner suppression is all the state a user gets.
 pub fn comint() -> bool {
     static COMINT: OnceLock<bool> = OnceLock::new();

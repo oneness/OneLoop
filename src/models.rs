@@ -15,6 +15,7 @@ use crate::auth::{self, Auth};
 use crate::catalog::{self, Api, Catalog, ProviderEntry};
 use crate::output::{self, BOLD, DIM, RESET};
 use crate::providers::{Credentials, Provider, ProviderRequest, ProviderResponse, chat, codex};
+use crate::status;
 
 mod retry;
 
@@ -102,10 +103,14 @@ impl ModelRegistry {
             .position(|m| m.alias == catalog.active)
             .with_context(|| format!("catalog named an unknown model: {}", catalog.active))?;
 
-        Ok(Self {
+        // The registry is the only writer of the status title, so the
+        // starting model is named from here like every later change.
+        let registry = Self {
             models,
             active: AtomicUsize::new(active),
-        })
+        };
+        status::model_changed(&registry.active().alias);
+        Ok(registry)
     }
 
     /// The model requests use when none names another.
@@ -122,6 +127,10 @@ impl ModelRegistry {
             .position(|m| m.alias == alias)
             .with_context(|| self.unknown_alias(alias))?;
         self.active.store(index, Ordering::Relaxed);
+        // Announced here rather than at each call site: a caller that moves
+        // the active model and forgets to say so would leave the mode line
+        // naming the old one.
+        status::model_changed(alias);
         Ok(())
     }
 

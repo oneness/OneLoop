@@ -8,7 +8,8 @@ use tokio::{
     process::Command,
 };
 
-use crate::agent::{TurnStatus, messages::Message};
+use crate::agent::messages::Message;
+use crate::status::TurnStatus;
 
 const MAX_PROMPT_BYTES: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -46,7 +47,10 @@ pub struct Review {
 /// Ask Claude without resuming or persisting a Claude session.
 /// Errors and cancellation never produce a reference message.
 pub async fn review(messages: &[Message], request: Request<'_>, cwd: &Path) -> Result<Review> {
-    let _status = TurnStatus::new();
+    // This path shells out to Claude Code, which the registry does not model,
+    // so the turn borrows the title `claude` and the guard returns the
+    // registry's own on drop.
+    let _status = TurnStatus::named("claude");
     let prompt = build_prompt(messages, &request)?;
     let (system_prompt, instruction) = match request {
         Request::Direct(instruction) => (DIRECT_SYSTEM_PROMPT, instruction),
