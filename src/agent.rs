@@ -177,6 +177,7 @@ impl Agent {
                 .unwrap_or_else(|| self.models.active().alias.clone());
             let request = ProviderRequest {
                 system_prompt: self.config.system_prompt.clone(),
+                session_id: self.session.id(),
                 messages: self.session.messages().to_vec(),
                 tools: self.tool_registry.definitions(),
             };

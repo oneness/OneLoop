@@ -17,6 +17,11 @@ use crate::models::Model;
 
 use super::{ProviderRequest, ProviderResponse, decode_tool_arguments, send_and_read};
 
+/// OpenCode Go asks each client for a stable per-conversation id so it can
+/// optimize routing and prompt caching. Only that provider reads it.
+const OPENCODE_GO: &str = "opencode-go";
+const SESSION_HEADER: &str = "x-opencode-session";
+
 fn log_invalid_response(
     alias: &str,
     model_id: &str,
@@ -269,7 +274,13 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         temperature: model.temperature,
     };
 
-    let post = model.provider.post("chat/completions").await?.json(&body);
+    let post = model.provider.post("chat/completions").await?;
+    let post = if model.provider.name == OPENCODE_GO {
+        post.header(SESSION_HEADER, &request.session_id)
+    } else {
+        post
+    }
+    .json(&body);
     let (status, text) = send_and_read(post, &model.alias).await?;
 
     // Some providers (e.g., OpenRouter) wrap upstream errors in HTTP 200
@@ -287,9 +298,12 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         Ok(parsed) => parsed,
         Err(error) => {
             if let Err(log_error) = log_invalid_response(&model.alias, &model.id, status, &text) {
-                crate::output::warn(&format!("could not write provider response to ~/.oneloop/oneloop.log: {log_error:#}"));
+                crate::output::warn(&format!(
+                    "could not write provider response to ~/.oneloop/oneloop.log: {log_error:#}"
+                ));
             }
-            return Err(error).with_context(|| format!("failed to parse {} response JSON", model.alias));
+            return Err(error)
+                .with_context(|| format!("failed to parse {} response JSON", model.alias));
         }
     };
 

@@ -258,7 +258,32 @@ mod tests {
         assert_eq!(catalog.active, "qwen");
         assert_eq!(
             catalog.aliases(),
-            vec!["glimmer", "qwen", "chatgpt", "flash"]
+            vec![
+                "glimmer",
+                "qwen",
+                "chatgpt",
+                "deepseek-v4-flash",
+                "deepseek-v4-flash-vision-exp",
+                "deepseek-v4-pro",
+                "deepseek-v4.1-flash",
+                "glm-5.2",
+                "glm-5.3",
+                "glm-5.3-flash",
+                "hy3",
+                "hy4-preview",
+                "kimi-k2.6",
+                "kimi-k2.7-code",
+                "kimi-k3",
+                "longcat-2.0",
+                "longcat-2.5-preview-free",
+                "mimo-v2.5",
+                "mimo-v2.5-pro",
+                "mimo-v2.6-flash",
+                "mimo-v2.6-pro",
+                "space-bunny",
+                "step-5-preview-free",
+                "flash",
+            ]
         );
     }
 

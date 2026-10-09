@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -67,7 +67,12 @@ impl Provider {
     /// mean renewing the grant first, hence the `async` and the `Result`.
     pub async fn post(&self, path: &str) -> Result<reqwest::RequestBuilder> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
-        let request = self.client.post(url);
+        // Identify as OneLoop rather than letting reqwest's default library
+        // name through — OpenCode Go asks clients to name themselves.
+        let request = self.client.post(url).header(
+            USER_AGENT,
+            concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")),
+        );
         Ok(match &self.credentials {
             // A local server needs no credentials, and sending an empty
             // bearer token makes some servers reject the request outright.
@@ -107,6 +112,8 @@ impl Provider {
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
     pub system_prompt: Option<String>,
+    /// Stable identity for provider-side conversation routing.
+    pub session_id: String,
     pub messages: Vec<crate::agent::messages::Message>,
     pub tools: Vec<crate::tools::ToolDefinition>,
 }
@@ -328,6 +335,20 @@ mod tests {
             .unwrap();
         let request = request.build().unwrap();
         assert_eq!(request.url().as_str(), "http://u/v1/chat/completions");
+    }
+
+    /// OpenCode Go asks clients to identify themselves rather than send a
+    /// generic SDK or HTTP-library name, so every provider carries OneLoop's.
+    #[tokio::test]
+    async fn every_provider_identifies_itself() {
+        let request = provider("http://u", Credentials::None)
+            .post("chat/completions")
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        let agent = request.headers()["user-agent"].to_str().unwrap();
+        assert_eq!(agent, concat!("oneloop/", env!("CARGO_PKG_VERSION")));
     }
 
     #[tokio::test]

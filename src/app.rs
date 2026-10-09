@@ -124,8 +124,8 @@ fn model_prompt<'a>(
     }
 }
 
-/// A prefixed command uses `.` as an explicit boundary:
-/// `/clear. explain this` and `/model flash. explain this`.
+/// A prefixed command uses `;` as an explicit boundary:
+/// `/clear; explain this` and `/model flash; explain this`.
 fn parse_input(input: &str) -> ParsedInput<'_> {
     let trimmed = input.trim();
     if let Some((prompt, command)) = parse_prefixed_command(trimmed) {
@@ -155,7 +155,7 @@ fn parse_prefixed_command(input: &str) -> Option<(&str, Command<'_>)> {
         .or_else(|| {
             let remainder = input.strip_prefix("/model")?;
             let remainder = remainder.strip_prefix(char::is_whitespace)?.trim_start();
-            let (alias, prompt) = remainder.split_once('.')?;
+            let (alias, prompt) = remainder.split_once(';')?;
             let alias = alias.trim();
             let prompt = prompt.trim();
             (!alias.is_empty() && !prompt.is_empty())
@@ -164,7 +164,7 @@ fn parse_prefixed_command(input: &str) -> Option<(&str, Command<'_>)> {
 }
 
 fn prompt_after_separator(remainder: &str) -> Option<&str> {
-    remainder.strip_prefix('.').and_then(nonempty_trimmed)
+    remainder.strip_prefix(';').and_then(nonempty_trimmed)
 }
 
 fn nonempty_trimmed(input: &str) -> Option<&str> {
@@ -185,8 +185,8 @@ fn print_help(agent: &Agent) {
   /ca <question>      Ask Claude about the discussion (or request implementation)
   /cn <prompt>        Ask Claude without discussion history
 
-  /clear. <prompt>          Reset context, then send a prompt
-  /model <alias>. <prompt>  Switch model, then send a prompt
+  /clear; <prompt>          Reset context, then send a prompt
+  /model <alias>; <prompt>  Switch model, then send a prompt
 
   Ctrl+C              Stop a running request or discard the current input
 
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn prefixed_clear_is_extracted() {
-        let parsed = parse_input("/clear. Explain this");
+        let parsed = parse_input("/clear; Explain this");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn prefixed_model_is_extracted() {
-        let parsed = parse_input("/model flash. Why does this fail?");
+        let parsed = parse_input("/model flash; Why does this fail?");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
@@ -591,33 +591,48 @@ mod tests {
         ));
     }
 
+    /// An alias may carry a dot of its own, so the separator cannot be one.
+    /// Splitting on `.` cut `deepseek-v4.1-flash` down to `deepseek-v4`.
     #[test]
-    fn spoken_clear_stays_in_the_prompt() {
-        let parsed = parse_input("slash clear dot Explain this");
+    fn a_dotted_alias_survives_the_separator() {
+        let parsed = parse_input("/model deepseek-v4.1-flash; explain this");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
-            (Some("slash clear dot Explain this"), None)
+            (
+                Some("explain this"),
+                Some(Command::Model(Some("deepseek-v4.1-flash")))
+            )
+        ));
+    }
+
+    #[test]
+    fn spoken_clear_stays_in_the_prompt() {
+        let parsed = parse_input("slash clear semicolon Explain this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("slash clear semicolon Explain this"), None)
         ));
     }
 
     #[test]
     fn spoken_model_stays_in_the_prompt() {
-        let parsed = parse_input("slash model flash dot Explain this");
+        let parsed = parse_input("slash model flash semicolon Explain this");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
-            (Some("slash model flash dot Explain this"), None)
+            (Some("slash model flash semicolon Explain this"), None)
         ));
     }
 
     #[test]
-    fn typed_command_with_spoken_dot_stays_in_the_prompt() {
-        let parsed = parse_input("/clear dot Explain this");
+    fn typed_command_with_spoken_separator_stays_in_the_prompt() {
+        let parsed = parse_input("/clear semicolon Explain this");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
-            (Some("/clear dot Explain this"), None)
+            (Some("/clear semicolon Explain this"), None)
         ));
     }
 
@@ -642,12 +657,24 @@ mod tests {
     }
 
     #[test]
-    fn unknown_prefixed_slash_word_stays_in_the_prompt() {
-        let parsed = parse_input("/etc/hosts. Read this");
+    fn a_dot_is_no_longer_a_separator() {
+        // The form the old separator produced: nothing before the dot was a
+        // command, so this is an ordinary prompt.
+        let parsed = parse_input("/clear. Explain this");
 
         assert!(matches!(
             (parsed.prompt, parsed.command),
-            (Some("/etc/hosts. Read this"), None)
+            (Some("/clear. Explain this"), None)
+        ));
+    }
+
+    #[test]
+    fn unknown_prefixed_slash_word_stays_in_the_prompt() {
+        let parsed = parse_input("/etc/hosts; Read this");
+
+        assert!(matches!(
+            (parsed.prompt, parsed.command),
+            (Some("/etc/hosts; Read this"), None)
         ));
     }
 

@@ -20,6 +20,10 @@ struct SessionEntry {
 pub struct Session {
     messages: Vec<Message>,
     path: PathBuf,
+    /// The project this conversation belongs to, from the working directory's
+    /// name. Prefixed to the id sent to providers so two projects worked on
+    /// the same day do not look like one conversation.
+    project: String,
 }
 
 impl Session {
@@ -41,7 +45,11 @@ impl Session {
             Vec::new()
         };
 
-        Ok(Self { messages, path })
+        Ok(Self {
+            messages,
+            path,
+            project: project_name(cwd),
+        })
     }
 
     pub fn push_user(&mut self, content: String) -> Result<()> {
@@ -88,6 +96,18 @@ impl Session {
         &self.path
     }
 
+    /// Stable identifier for the conversation, shared across requests in this
+    /// session: the project name and the session file's stem. Never empty, so
+    /// it is always a valid header value.
+    pub fn id(&self) -> String {
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("session");
+        format!("{}-{stem}", self.project)
+    }
+
     /// The old file stays on disk. Suffixes derive from the base date:
     /// 2026-04-20.jsonl, 2026-04-20-001.jsonl, 2026-04-20-002.jsonl.
     pub fn rotate(&self) -> Result<Self> {
@@ -114,6 +134,7 @@ impl Session {
         Ok(Self {
             messages: Vec::new(),
             path: new_path,
+            project: self.project.clone(),
         })
     }
 
@@ -151,6 +172,32 @@ impl Session {
         append_message(&self.path, &message)?;
         self.messages.push(message);
         Ok(())
+    }
+}
+
+/// The working directory's name, lowercased and reduced to characters a header
+/// may carry: `oneloop` for this repo, `foo` for a checkout of foo. The id
+/// keeps it as a prefix, so two projects on the same day are not one id.
+fn project_name(cwd: &Path) -> String {
+    let name = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "oneloop".to_string()
+    } else {
+        cleaned
     }
 }
 
@@ -228,6 +275,7 @@ mod tests {
         Session {
             messages: Vec::new(),
             path,
+            project: "oneloop".to_string(),
         }
     }
 
@@ -255,6 +303,34 @@ mod tests {
             other => panic!("expected a tool result, got {other:?}"),
         }
         let _ = fs::remove_file(session.path());
+    }
+
+    /// The id a provider sees is the project and the session's own name, so
+    /// two projects worked on the same day are not mistaken for one session.
+    #[test]
+    fn the_id_prefixes_the_project() {
+        let session = temp_session("id");
+        let id = session.id();
+        assert!(id.starts_with("oneloop-"), "got: {id}");
+        assert!(id.len() > "oneloop-".len());
+
+        let same_day_other_project = Session {
+            messages: Vec::new(),
+            path: session.path().to_path_buf(),
+            project: "foo".to_string(),
+        };
+        assert_ne!(same_day_other_project.id(), id);
+    }
+
+    /// A directory can be named anything, and the id travels in a header: a
+    /// header value must be plain ASCII with no spaces or control characters.
+    #[test]
+    fn a_project_name_is_safe_for_a_header() {
+        assert_eq!(project_name(Path::new("/home/x/oneloop")), "oneloop");
+        assert_eq!(project_name(Path::new("/home/x/Foo Bar")), "foo-bar");
+        assert_eq!(project_name(Path::new("/home/x/café")), "caf-");
+        // A path with no usable last component falls back to the client name.
+        assert_eq!(project_name(Path::new("/")), "oneloop");
     }
 
     #[test]

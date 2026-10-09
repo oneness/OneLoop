@@ -27,6 +27,11 @@ pub fn api_key_login(name: &str) -> Option<ApiKeyLogin> {
             display_name: "OpenRouter",
             env_var: "OPENROUTER_API_KEY",
         }),
+        "opencode-go" => Some(ApiKeyLogin {
+            provider: "opencode-go",
+            display_name: "OpenCode Go",
+            env_var: "OPENCODE_GO_API_KEY",
+        }),
         _ => None,
     }
 }
