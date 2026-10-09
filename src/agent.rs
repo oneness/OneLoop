@@ -221,9 +221,14 @@ impl Agent {
             let used_model = active_model.clone().unwrap_or(requested_model);
             self.log_api_call(&used_model, api_start, tokens_estimated, true);
 
-            if !response.content.trim().is_empty() {
-                self.session.push_assistant(response.content.clone())?;
-                println!("{}", response.content);
+            if !response.content.trim().is_empty() || response.reasoning_content.is_some() {
+                self.session.push_assistant_with_reasoning(
+                    response.content.clone(),
+                    response.reasoning_content.clone(),
+                )?;
+                if !response.content.trim().is_empty() {
+                    println!("{}", response.content);
+                }
             } else if response.tool_calls.is_empty() {
                 let msg = "I wasn't able to generate a response. Please try again or rephrase.";
                 self.session.push_assistant(msg.to_string())?;

@@ -210,6 +210,7 @@ mod tests {
             }),
             Message::Assistant(AssistantMessage {
                 content: "Keep it small.".into(),
+                reasoning_content: None,
             }),
         ]
     }

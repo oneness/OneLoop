@@ -103,6 +103,8 @@ struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<ChatToolCall>>,
@@ -237,6 +239,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: Some(system),
+            reasoning_content: None,
             tool_call_id: None,
             tool_calls: None,
         });
@@ -329,10 +332,11 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 
     Ok(ProviderResponse {
         content: assistant_content(
-            choice.message.content,
-            choice.message.reasoning_content,
+            choice.message.content.clone(),
+            choice.message.reasoning_content.clone(),
             !tool_calls.is_empty(),
         ),
+        reasoning_content: choice.message.reasoning_content,
         tool_calls,
     })
 }
@@ -345,12 +349,16 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
             Message::User(user) => result.push(ChatMessage {
                 role: "user".to_string(),
                 content: Some(user.content),
+                reasoning_content: None,
                 tool_call_id: None,
                 tool_calls: None,
             }),
             Message::Assistant(assistant) => result.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: Some(assistant.content),
+                // Preserve even an empty string: in thinking mode the provider
+                // may require the field's presence on every assistant turn.
+                reasoning_content: assistant.reasoning_content,
                 tool_call_id: None,
                 tool_calls: None,
             }),
@@ -378,6 +386,7 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
                     result.push(ChatMessage {
                         role: "assistant".to_string(),
                         content: None,
+                        reasoning_content: None,
                         tool_call_id: None,
                         tool_calls: Some(vec![tc]),
                     });
@@ -386,6 +395,7 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
             Message::ToolResult(tool_result) => result.push(ChatMessage {
                 role: "tool".to_string(),
                 content: Some(tool_result.content),
+                reasoning_content: None,
                 tool_call_id: Some(tool_result.tool_call_id),
                 tool_calls: None,
             }),
@@ -410,6 +420,7 @@ mod tests {
     fn assistant(text: &str) -> Message {
         Message::Assistant(AssistantMessage {
             content: text.into(),
+            reasoning_content: None,
         })
     }
 
@@ -429,6 +440,34 @@ mod tests {
             content: "ok".into(),
             is_error: false,
         })
+    }
+
+    #[test]
+    fn reasoning_content_is_replayed_on_the_assistant_message() {
+        let result = to_chat_messages(vec![Message::Assistant(AssistantMessage {
+            content: "answer".into(),
+            reasoning_content: Some("thinking trace".into()),
+        })]);
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["content"], "answer");
+        assert_eq!(json["reasoning_content"], "thinking trace");
+    }
+
+    #[test]
+    fn empty_reasoning_content_is_replayed_when_present() {
+        let result = to_chat_messages(vec![Message::Assistant(AssistantMessage {
+            content: String::new(),
+            reasoning_content: Some(String::new()),
+        })]);
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["reasoning_content"], "");
+    }
+
+    #[test]
+    fn assistant_message_without_reasoning_omits_the_wire_field() {
+        let result = to_chat_messages(vec![assistant("answer")]);
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert!(json.get("reasoning_content").is_none());
     }
 
     #[test]

@@ -17,6 +17,11 @@ pub struct UserMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
     pub content: String,
+    /// Reasoning/thinking output from reasoning-capable models (e.g. DeepSeek).
+    /// Reasoning models expect this to be passed back on subsequent turns, so
+    /// it is stored and re-emitted even when `content` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

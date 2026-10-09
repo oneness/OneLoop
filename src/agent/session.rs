@@ -58,7 +58,18 @@ impl Session {
     }
 
     pub fn push_assistant(&mut self, content: String) -> Result<()> {
-        let message = Message::Assistant(AssistantMessage { content });
+        self.push_assistant_with_reasoning(content, None)
+    }
+
+    pub fn push_assistant_with_reasoning(
+        &mut self,
+        content: String,
+        reasoning_content: Option<String>,
+    ) -> Result<()> {
+        let message = Message::Assistant(AssistantMessage {
+            content,
+            reasoning_content,
+        });
         self.append(message)
     }
 

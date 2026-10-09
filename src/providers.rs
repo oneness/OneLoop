@@ -122,6 +122,7 @@ pub struct ProviderRequest {
 pub struct ProviderResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub reasoning_content: Option<String>,
 }
 
 /// A provider that is configured but that nobody has signed in to. Its own

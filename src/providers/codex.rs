@@ -253,6 +253,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     Ok(ProviderResponse {
         content,
         tool_calls,
+        reasoning_content: None,
     })
 }
 
@@ -438,6 +439,7 @@ mod tests {
             }),
             Message::Assistant(AssistantMessage {
                 content: "on it".into(),
+                reasoning_content: None,
             }),
             call(json!({"command": "ls"})),
             Message::ToolResult(ToolResultMessage {
@@ -468,6 +470,7 @@ mod tests {
         let json = items(vec![
             Message::Assistant(AssistantMessage {
                 content: "  ".into(),
+                reasoning_content: None,
             }),
             call(json!({})),
         ]);
