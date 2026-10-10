@@ -111,8 +111,8 @@ All env-based config follows the `ONELOOP_` prefix convention:
 
 ```
 ONELOOP_MODEL              model alias for this run
-ONELOOP_MAX_ITERATIONS     agent loop cap (default: 50)
-ONELOOP_MAX_RETRIES        retry cap (default: 3)
+ONELOOP_MAX_ITERATIONS     agent loop cap (default: 72)
+ONELOOP_MAX_RETRIES        retry cap (default: 5)
 ONELOOP_WEB_TOOLS          OpenRouter server-side web search/fetch (default: true)
 ```
 

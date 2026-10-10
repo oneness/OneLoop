@@ -166,8 +166,8 @@ Qwen3.6-35B-A3B — see the comments in `ols` for what each one is worth.
 
 Tuning (all optional):
 
-- `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `50`)
-- `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `3`)
+- `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `72`)
+- `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `5`)
 
 ## Agent status (OSC 7501)
 
