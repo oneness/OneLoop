@@ -18,6 +18,17 @@ set -euo pipefail
 #
 # Both endpoints are public and need no API key.
 #
+# The OpenCode leaderboard is a third source, reporting on a different
+# population: the models used by OpenCode's own users rather than OpenRouter's
+# traffic. It lives at https://opencode.ai/data/, which hydrates from plain
+# JSON documents and is undocumented -- the documented OpenCode API covers its
+# local server, not these statistics. Its index carries the ranking and the
+# token volume for the chosen window but nothing else, so each row costs one
+# more request for the model document. That document supplies the cost, summed
+# over the last entries of its daily series for the same window, and also the
+# context window and the canonical model id. OpenCode has no month window, so a
+# month view reads its week.
+#
 # The rankings return dated permaslugs such as
 # `openai/gpt-6-luna-20260922`, while the price catalogue keys on the bare
 # model id, so this strips the date suffix before joining.
@@ -31,11 +42,16 @@ usage() {
 usage: ./model-trends [--limit N] [--view day|week|month]
 
 Show the trending and the most popular models on OpenRouter, each with its
-input price, output price and context window. Prices are US dollars per
-million tokens.
+input price, output price and context window, then the OpenCode usage
+leaderboard. Prices and costs are US dollars.
 
   --limit N              how many models to show per list (default 15)
-  --view day|week|month  window for the trending list (default week)
+  --view day|week|month  window for the trending list and the OpenCode
+                         leaderboard (default week)
+
+The OpenCode table needs one extra request per model, so --limit N adds roughly
+N + 1 requests on top of the three the OpenRouter tables need. OpenCode has no
+month window, so a month view shows its week and says so.
 EOF
 }
 
@@ -129,6 +145,17 @@ fetch_catalogue() {
   api_get "https://openrouter.ai/api/v1/models"
 }
 
+# OpenCode publishes one document for the whole dataset and one per model. The
+# index is keyed by lab and model, and a model may redirect to its canonical
+# slug, which api_get follows.
+fetch_opencode_index() {
+  api_get "https://opencode.ai/data/index.json"
+}
+
+fetch_opencode_model() {
+  api_get "https://opencode.ai/data/$1/$2.json"
+}
+
 # Trending: join the usage ranking against the price catalogue and emit one
 # record per model. The documents arrive as files because the catalogue is too
 # large to pass as a command line argument.
@@ -219,6 +246,59 @@ build_most_popular_rows() {
     '
 }
 
+# OpenCode's leaderboard. Rank and token volume come from its index; the cost,
+# the context window and the canonical id are only in the per-model document,
+# so each row costs one more request. That document is optional: a model whose
+# document is missing keeps its rank and shows the name the leaderboard used,
+# with the fields it cannot supply reported as n/a, so the leaderboard stays
+# faithful rather than quietly losing a row.
+#
+# A reported cost of zero does not mean free. OpenCode only fills the cost in
+# for some models, and a priced model can report zero, so the cost is shown as
+# reported and nothing is inferred from it.
+build_opencode_rows() {
+  local index=$1
+  local detail=$2
+  local rank model lab tokens cost context model_id values
+
+  jq -nr --argjson limit "$limit" --arg window "$opencode_window" --slurpfile index "$index" '
+    $index[0].leaderboard[$window][0:$limit]
+    | .[]
+    | [ (.rank | tostring), .model, (.lab // "unknown"), (.tokens | tostring) ]
+    | @tsv
+  ' | while IFS=$'\t' read -r rank model lab tokens; do
+    [ -n "$model" ] || continue
+
+    cost=n/a
+    context=null
+    model_id=$model
+
+    if fetch_opencode_model "$lab" "$model" >"$detail" 2>/dev/null; then
+      # A document that is not the JSON we expect leaves nothing to read, and
+      # the defaults above then stand rather than being blanked out. Its parse
+      # error is left on stderr, because an undocumented source changing shape
+      # is worth noticing.
+      values=$(jq -r --argjson days "$opencode_days" --arg fallback "$model" '
+        [ ((.usage.daily[-$days:] | map(.costUsd // 0) | add) // 0),
+          (.model.contextTokens // "null"),
+          (.model.id // $fallback) ]
+        | @tsv
+      ' "$detail") || values=''
+
+      if [ -n "$values" ]; then
+        IFS=$'\t' read -r cost context model_id <<<"$values"
+      fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$rank" \
+      "$model_id" \
+      "$(format_tokens_compact "$tokens")" \
+      "$(format_cost "$cost")" \
+      "$(format_context "$context")"
+  done
+}
+
 # Prices are quoted per token, which is awkward to read. Convert to US dollars
 # per million tokens, keeping enough decimals that a tenth-of-a-cent rate does
 # not round down to a misleading zero.
@@ -255,6 +335,9 @@ format_price() {
   '
 }
 
+# Context windows are reported in thousands of tokens. Three decimals is exact:
+# an integer token count divided by 1000 always lands on a thousandth, so
+# 1048576 shows as 1048.576 and multiplying by 1000 recovers it.
 format_context() {
   local value=$1
 
@@ -265,7 +348,9 @@ format_context() {
       ;;
   esac
 
-  jq -nr --argjson value "$value" '($value / 1000 * 10 | round / 10 | tostring)'
+  jq -nr --argjson value "$value" '
+    ($value / 1000 * 1000 | round / 1000) | tostring
+  '
 }
 
 # Compact token counts, e.g. 1234567 -> 1.23M.
@@ -288,10 +373,65 @@ format_tokens() {
   '
 }
 
+# OpenCode token volumes run from billions to tens of trillions, so unlike the
+# OpenRouter tables they carry their unit rather than assuming one.
+format_tokens_compact() {
+  local value=$1
+
+  case "$value" in
+    ''|null|0)
+      printf 'n/a'
+      return
+      ;;
+  esac
+
+  jq -nr --argjson value "$value" '
+    if   $value >= 1000000000000 then ((($value / 1000000000000) * 100 | round / 100) | tostring) + "T"
+    elif $value >= 1000000000    then ((($value / 1000000000)    * 100 | round / 100) | tostring) + "B"
+    elif $value >= 1000000       then ((($value / 1000000)       * 100 | round / 100) | tostring) + "M"
+    elif $value >= 1000          then ((($value / 1000)          * 100 | round / 100) | tostring) + "K"
+    else $value | tostring
+    end
+  '
+}
+
+# Dollars, grouped so a six-figure sum stays legible.
+format_cost() {
+  local value=$1
+
+  case "$value" in
+    ''|null|n/a)
+      printf 'n/a'
+      return
+      ;;
+  esac
+
+  printf "%'.2f" "$value"
+}
+
+# The two OpenRouter tables share a column shape, so one formatter serves both.
+# The builders emit raw values; this turns them into the strings to display.
+format_openrouter_rows() {
+  local model_id context prompt completion tokens
+
+  while IFS=$'\t' read -r model_id context prompt completion tokens; do
+    [ -n "$model_id" ] || continue
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$model_id" \
+      "$(format_price "$prompt")" \
+      "$(format_price "$completion")" \
+      "$(format_context "$context")" \
+      "$(format_tokens "$tokens")"
+  done <<<"$1"
+}
+
+# Render a TSV table. The first column is left aligned, the rest right aligned,
+# and every column is as wide as its widest cell, so one printer serves all
+# three tables.
 print_table() {
   local title=$1
-  local rows=$2
-  local width=0
+  local header=$2
+  local rows=$3
 
   echo "========================================"
   echo "$title"
@@ -303,24 +443,35 @@ print_table() {
     return
   fi
 
-  local slug context prompt completion tokens
+  printf '%s\n' "$rows" | awk -F'\t' -v header="$header" '
+    BEGIN {
+      n = split(header, h, "\t")
+      for (i = 1; i <= n; i++) w[i] = length(h[i])
+    }
+    {
+      line[NR] = $0
+      for (i = 1; i <= n; i++) if (length($i) > w[i]) w[i] = length($i)
+    }
+    END {
+      out = ""
+      for (i = 1; i <= n; i++) out = out sprintf(i == 1 ? "%-*s" : "  %*s", w[i], h[i])
+      print out
 
-  while IFS=$'\t' read -r slug context prompt completion tokens; do
-    [ "${#slug}" -gt "$width" ] && width=${#slug}
-  done <<<"$rows"
+      total = 0
+      for (i = 1; i <= n; i++) total += w[i]
+      total += 2 * (n - 1)
+      rule = ""
+      for (i = 0; i < total; i++) rule = rule "-"
+      print rule
 
-  printf '%-*s  %9s  %9s  %8s  %9s\n' \
-    "$width" "MODEL ID" "IN ($/M)" "OUT ($/M)" "CTX (k)" "TOKENS (B)"
-  printf '%s\n' "$(printf '%*s' $((width + 44)) '' | tr ' ' '-')"
-
-  while IFS=$'\t' read -r slug context prompt completion tokens; do
-    printf '%-*s  %9s  %9s  %8s  %9s\n' \
-      "$width" "$slug" \
-      "$(format_price "$prompt")" \
-      "$(format_price "$completion")" \
-      "$(format_context "$context")" \
-      "$(format_tokens "$tokens")"
-  done <<<"$rows"
+      for (r = 1; r <= NR; r++) {
+        split(line[r], f, "\t")
+        out = ""
+        for (i = 1; i <= n; i++) out = out sprintf(i == 1 ? "%-*s" : "  %*s", w[i], f[i])
+        print out
+      }
+    }
+  '
 
   echo
 }
@@ -328,13 +479,48 @@ print_table() {
 catalogue=$(mktemp)
 ranking=$(mktemp)
 popular=$(mktemp)
-trap 'rm -f "$catalogue" "$ranking" "$popular"' EXIT
+opencode=$(mktemp)
+opencode_detail=$(mktemp)
+trap 'rm -f "$catalogue" "$ranking" "$popular" "$opencode" "$opencode_detail"' EXIT
 
 fetch_catalogue >"$catalogue"
 
 fetch_trending >"$ranking"
 fetch_most_popular >"$popular"
-print_table "Most Popular" "$(build_most_popular_rows "$popular" "$catalogue")"
-print_table "Trending by tokens ($view)" "$(build_trending_rows "$ranking" "$catalogue" "$popular")"
+fetch_opencode_index >"$opencode"
 
-echo "Sources: https://openrouter.ai/rankings and https://openrouter.ai/models"
+# OpenCode publishes a day and a week window but no month, so a month view falls
+# back to its week and says so rather than quietly reporting a different window.
+case "$view" in
+  day)
+    opencode_window=pastDay
+    opencode_days=1
+    opencode_label=day
+    ;;
+  week|month)
+    opencode_window=pastWeek
+    opencode_days=7
+    opencode_label=week
+    ;;
+esac
+
+openrouter_header=$(printf 'MODEL ID\tIN ($/M)\tOUT ($/M)\tCTX (k)\tTOKENS (B)')
+
+print_table "Most Popular" \
+  "$openrouter_header" \
+  "$(format_openrouter_rows "$(build_most_popular_rows "$popular" "$catalogue")")"
+
+print_table "Trending by tokens ($view)" \
+  "$openrouter_header" \
+  "$(format_openrouter_rows "$(build_trending_rows "$ranking" "$catalogue" "$popular")")"
+
+print_table "OpenCode by tokens ($opencode_label)" \
+  "$(printf 'RANK\tMODEL ID\tTOKENS\tCOST ($)\tCTX (k)')" \
+  "$(build_opencode_rows "$opencode" "$opencode_detail")"
+
+if [ "$view" != "$opencode_label" ]; then
+  echo "note: OpenCode publishes no month window, so its week is shown above"
+  echo
+fi
+
+echo "Sources: https://openrouter.ai/rankings, https://openrouter.ai/models and https://opencode.ai/data/"
