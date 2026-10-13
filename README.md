@@ -31,10 +31,11 @@ Commands (also available with `/help`):
 - `/model <alias>` — switch straight to that model
 - `/reload` — reload `~/.oneloop/config.json` without restarting
 - `/clear` — wipe context and start a fresh session
-- `/cc [focus]` — critique the discussion, optionally focusing on an aspect
-- `/ca <question>` — ask about the discussion, including brainstorming
-- `/cn <prompt>` — send only that prompt, with no discussion history
 - `Ctrl+C` — stop a running request, or discard the draft at the terminal prompt
+
+`/help` also lists Claude Code (`/cc`, `/ca`, `/cn`) and Antigravity
+(`/ag`, `/aga`, `/agn`) commands when their CLI binaries are available
+on `PATH`. This allow you to use your existing Claude Code or Google subscription.
 
 The prompt shows the model and, when the model declares a `context_window`
 in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The

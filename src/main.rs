@@ -1,4 +1,5 @@
 mod agent;
+mod antigravity;
 mod app;
 mod auth;
 mod catalog;

@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, env};
 
 use anyhow::Result;
 use rustyline::{
@@ -50,18 +50,18 @@ fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
 
 /// How `/cc`, `/ca`, and `/cn` ask Claude.
 #[derive(Debug, PartialEq, Eq)]
-enum ClaudeMode {
+enum AskMode {
     Critique,
     Ask,
     Standalone,
 }
 
-impl ClaudeMode {
+impl AskMode {
     fn as_command(&self) -> &'static str {
         match self {
-            ClaudeMode::Critique => "/cc",
-            ClaudeMode::Ask => "/ca",
-            ClaudeMode::Standalone => "/cn",
+            AskMode::Critique => "/cc",
+            AskMode::Ask => "/ca",
+            AskMode::Standalone => "/cn",
         }
     }
 }
@@ -71,7 +71,11 @@ enum Command<'a> {
     Help,
     Clear,
     Claude {
-        mode: ClaudeMode,
+        mode: AskMode,
+        text: Option<&'a str>,
+    },
+    Antigravity {
+        mode: AskMode,
         text: Option<&'a str>,
     },
     Reload,
@@ -94,15 +98,27 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
         "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
         "cc" => Some(Command::Claude {
-            mode: ClaudeMode::Critique,
+            mode: AskMode::Critique,
             text: argument,
         }),
         "ca" => Some(Command::Claude {
-            mode: ClaudeMode::Ask,
+            mode: AskMode::Ask,
             text: argument,
         }),
         "cn" => Some(Command::Claude {
-            mode: ClaudeMode::Standalone,
+            mode: AskMode::Standalone,
+            text: argument,
+        }),
+        "ag" => Some(Command::Antigravity {
+            mode: AskMode::Critique,
+            text: argument,
+        }),
+        "aga" => Some(Command::Antigravity {
+            mode: AskMode::Ask,
+            text: argument,
+        }),
+        "agn" => Some(Command::Antigravity {
+            mode: AskMode::Standalone,
             text: argument,
         }),
         _ => None,
@@ -172,26 +188,46 @@ fn nonempty_trimmed(input: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-fn print_help(agent: &Agent) {
+fn executable_available(name: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+
+    env::split_paths(&path).any(|directory| {
+        let executable = directory.join(name);
+        if cfg!(windows) {
+            executable.with_extension("exe").is_file() || executable.is_file()
+        } else {
+            executable.is_file()
+        }
+    })
+}
+
+fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
+    let mut commands = String::from(
+        "  /help               Show this help\n  /model [alias]      Choose a model or switch directly to an alias\n  /reload             Reload configuration\n  /clear              Reset context and start a fresh session\n",
+    );
+    if has_claude {
+        commands.push_str(
+            "  /cc [focus]         Ask Claude to critique the discussion\n  /ca <question>      Ask Claude about the discussion (or request implementation)\n  /cn <prompt>        Ask Claude without discussion history\n",
+        );
+    }
+    if has_antigravity {
+        commands.push_str(
+            "  /ag [focus]         Ask Antigravity to critique the discussion\n  /aga <question>     Ask Antigravity about the discussion (or request implementation)\n  /agn <prompt>       Ask Antigravity without discussion history\n",
+        );
+    }
+    commands.push_str(
+        "\n  /clear; <prompt>          Reset context, then send a prompt\n  /model <alias>; <prompt>  Switch model, then send a prompt\n\n  Ctrl+C              Stop a running request or discard the current input\n\nUnknown slash commands are sent as ordinary prompts to the current model.",
+    );
+    commands
+}
+
+fn print_help(agent: &Agent, has_claude: bool, has_antigravity: bool) {
     output::head("Current session");
     eprintln!("{}\n", agent.summary());
     output::head("Commands");
-    eprintln!(
-        "  /help               Show this help
-  /model [alias]      Choose a model or switch directly to an alias
-  /reload             Reload configuration
-  /clear              Reset context and start a fresh session
-  /cc [focus]         Ask Claude to critique the discussion
-  /ca <question>      Ask Claude about the discussion (or request implementation)
-  /cn <prompt>        Ask Claude without discussion history
-
-  /clear; <prompt>          Reset context, then send a prompt
-  /model <alias>; <prompt>  Switch model, then send a prompt
-
-  Ctrl+C              Stop a running request or discard the current input
-
-Unknown slash commands are sent as ordinary prompts to the current model."
-    );
+    eprintln!("{}", help_commands(has_claude, has_antigravity));
 }
 
 /// Returns false when the command failed or selection was cancelled, so a
@@ -199,7 +235,11 @@ Unknown slash commands are sent as ordinary prompts to the current model."
 async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
     match command {
         Command::Help => {
-            print_help(agent);
+            print_help(
+                agent,
+                executable_available("claude"),
+                executable_available("agy"),
+            );
             true
         }
         Command::Clear => match agent.clear_session() {
@@ -227,13 +267,13 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
 
             let focused;
             let request = match (mode, text) {
-                (ClaudeMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
-                (ClaudeMode::Critique, Some(focus)) => {
+                (AskMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
+                (AskMode::Critique, Some(focus)) => {
                     focused = format!("{DEFAULT_INSTRUCTION} Focus on: {focus}");
                     Request::Discussion(&focused)
                 }
-                (ClaudeMode::Ask, Some(question)) => Request::Discussion(question),
-                (ClaudeMode::Standalone, Some(prompt)) => Request::Direct(prompt),
+                (AskMode::Ask, Some(question)) => Request::Discussion(question),
+                (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
                 (mode, None) => {
                     output::fail(&format!(
                         "usage: {} <question or prompt>",
@@ -260,6 +300,53 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
                     }
                     output::note(
                         "Claude response saved as reference — tell the current model how to proceed",
+                    );
+                    true
+                }
+                Err(error) => {
+                    output::fail(&format!("{error:#}"));
+                    false
+                }
+            }
+        }
+        Command::Antigravity { mode, text } => {
+            use crate::antigravity::{DEFAULT_INSTRUCTION, Request};
+
+            let focused;
+            let request = match (mode, text) {
+                (AskMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
+                (AskMode::Critique, Some(focus)) => {
+                    focused = format!("{DEFAULT_INSTRUCTION} Focus on: {focus}");
+                    Request::Discussion(&focused)
+                }
+                (AskMode::Ask, Some(question)) => Request::Discussion(question),
+                (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
+                (mode, None) => {
+                    output::fail(&format!(
+                        "usage: {} <question or prompt>",
+                        mode.as_command()
+                    ));
+                    return false;
+                }
+            };
+            output::step(if matches!(request, Request::Direct(_)) {
+                "asking Antigravity (sending your prompt only)..."
+            } else {
+                "asking Antigravity (sharing discussion and recorded tool calls/results)..."
+            });
+
+            match crate::antigravity::review(agent.messages(), request, agent.cwd()).await {
+                Ok(review) => {
+                    output::head("Antigravity response");
+                    println!("{}", review.text);
+                    if let Err(error) = agent.record_reference(review.reference) {
+                        output::fail(&format!(
+                            "Antigravity response displayed but could not be saved: {error:#}"
+                        ));
+                        return false;
+                    }
+                    output::note(
+                        "Antigravity response saved as reference — tell the current model how to proceed",
                     );
                     true
                 }
@@ -430,7 +517,7 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 
 #[cfg(test)]
 mod tests {
-    use super::{ClaudeMode, Command, interactive_prompt, parse_command, parse_input};
+    use super::{AskMode, Command, interactive_prompt, parse_command, parse_input};
 
     #[test]
     fn interactive_prompt_names_the_active_model() {
@@ -447,7 +534,7 @@ mod tests {
         assert!(matches!(
             parse_input("/cc").command,
             Some(Command::Claude {
-                mode: ClaudeMode::Critique,
+                mode: AskMode::Critique,
                 text: None
             })
         ));
@@ -460,7 +547,7 @@ mod tests {
             (parsed.command, parsed.prompt),
             (
                 Some(Command::Claude {
-                    mode: ClaudeMode::Critique,
+                    mode: AskMode::Critique,
                     text: Some("the retry logic")
                 }),
                 None
@@ -473,7 +560,7 @@ mod tests {
         assert!(matches!(
             parse_input("/ca").command,
             Some(Command::Claude {
-                mode: ClaudeMode::Ask,
+                mode: AskMode::Ask,
                 text: None
             })
         ));
@@ -486,7 +573,7 @@ mod tests {
             (parsed.command, parsed.prompt),
             (
                 Some(Command::Claude {
-                    mode: ClaudeMode::Ask,
+                    mode: AskMode::Ask,
                     text: Some("What about the retry logic?")
                 }),
                 None
@@ -499,7 +586,7 @@ mod tests {
         assert!(matches!(
             parse_input("/cn").command,
             Some(Command::Claude {
-                mode: ClaudeMode::Standalone,
+                mode: AskMode::Standalone,
                 text: None
             })
         ));
@@ -512,7 +599,7 @@ mod tests {
             (parsed.command, parsed.prompt),
             (
                 Some(Command::Claude {
-                    mode: ClaudeMode::Standalone,
+                    mode: AskMode::Standalone,
                     text: Some("Hello world")
                 }),
                 None
