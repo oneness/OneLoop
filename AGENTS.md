@@ -48,23 +48,11 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 
 ## Code Search
 
-Use `semble search` to find code by describing what it does or naming a symbol/identifier, instead of grep:
-
-​```bash
-semble search "authentication flow" ./my-project
-semble search "save_pretrained" ./my-project
-semble search "save model to disk" ./my-project --top-k 10
-​```
-
-Use `semble find-related` to discover code similar to a known location (pass `file_path` and `line` from a prior search result):
-
-​```bash
-semble find-related src/auth.py 42 ./my-project
-​```
+Use the OneSearch skill linked at `.oneloop/skills/onesearch.md` for repository search. It documents invoking the local binary at `~/repos/OneSearch/target/debug/onesearch`, selecting `code`, `docs`, `all`, or `session` filters, and following result chunks. Prefer OneSearch over grep for semantic questions and symbol lookups; use literal grep only for exhaustive exact-string checks or when OneSearch is unavailable.
 
 ## Workflow
 
-1. Start with `semble search` to find relevant chunks.
-2. Inspect full files only when the returned chunk is not enough context.
-3. Optionally use `semble find-related` with a promising result's `file_path` and `line` to discover related implementations.
-4. Use grep only when you need exhaustive literal matches or quick confirmation of an exact string.
+1. Start with a OneSearch query that describes behavior or names the symbol.
+2. Choose `code`, `docs`, `all`, or `session` based on the material needed.
+3. Inspect full files only when returned chunks lack sufficient context.
+4. Use grep only for exhaustive literal matches or when OneSearch is unavailable.
