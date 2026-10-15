@@ -24,6 +24,9 @@ pub struct Session {
     /// name. Prefixed to the id sent to providers so two projects worked on
     /// the same day do not look like one conversation.
     project: String,
+    /// Whether messages are written to `path`. A one-shot session keeps them
+    /// in memory and touches no file.
+    persist: bool,
 }
 
 impl Session {
@@ -49,7 +52,25 @@ impl Session {
             messages,
             path,
             project: project_name(cwd),
+            persist: true,
         })
+    }
+
+    /// A session that lives only in memory: nothing is read on the way in,
+    /// nothing is written on the way out. A one-shot run uses one so it
+    /// neither inherits nor disturbs the conversation on disk.
+    pub fn in_memory(cwd: &Path) -> Self {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        Self {
+            messages: Vec::new(),
+            // Named but never created: it only gives `id()` a stem to report.
+            path: cwd
+                .join(".oneloop")
+                .join("sessions")
+                .join(format!("{today}.jsonl")),
+            project: project_name(cwd),
+            persist: false,
+        }
     }
 
     pub fn push_user(&mut self, content: String) -> Result<()> {
@@ -146,6 +167,7 @@ impl Session {
             messages: Vec::new(),
             path: new_path,
             project: self.project.clone(),
+            persist: self.persist,
         })
     }
 
@@ -180,9 +202,22 @@ impl Session {
     }
 
     fn append(&mut self, message: Message) -> Result<()> {
-        append_message(&self.path, &message)?;
+        if self.persist {
+            append_message(&self.path, &message)?;
+        }
         self.messages.push(message);
         Ok(())
+    }
+
+    /// A session for tests: in memory, so no test writes to a real path.
+    #[cfg(test)]
+    fn for_test(messages: Vec<Message>, path: PathBuf, project: &str) -> Self {
+        Self {
+            messages,
+            path,
+            project: project.to_string(),
+            persist: false,
+        }
     }
 }
 
@@ -283,11 +318,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
-        Session {
-            messages: Vec::new(),
-            path,
-            project: "oneloop".to_string(),
-        }
+        Session::for_test(Vec::new(), path, "oneloop")
     }
 
     #[test]
@@ -325,11 +356,8 @@ mod tests {
         assert!(id.starts_with("oneloop-"), "got: {id}");
         assert!(id.len() > "oneloop-".len());
 
-        let same_day_other_project = Session {
-            messages: Vec::new(),
-            path: session.path().to_path_buf(),
-            project: "foo".to_string(),
-        };
+        let same_day_other_project =
+            Session::for_test(Vec::new(), session.path().to_path_buf(), "foo");
         assert_ne!(same_day_other_project.id(), id);
     }
 
@@ -359,5 +387,47 @@ mod tests {
         assert_eq!(repaired, 0);
         assert_eq!(session.messages().len(), 2);
         let _ = fs::remove_file(session.path());
+    }
+
+    /// A one-shot uses one of these: it must not inherit a session on disk.
+    #[test]
+    fn an_in_memory_session_ignores_a_prior_session_file() {
+        let dir = project_dir("mem-read");
+        fs::write(today_file(&dir), "prior\n").unwrap();
+
+        let session = Session::in_memory(&dir);
+
+        assert!(session.messages().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Nor may it write one, so it leaves no trace for the next run.
+    #[test]
+    fn an_in_memory_session_writes_no_file() {
+        let dir = project_dir("mem-write");
+        let file = today_file(&dir);
+
+        let mut session = Session::in_memory(&dir);
+        session.push_user("hello".to_string()).unwrap();
+
+        assert!(!file.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn project_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oneloop-session-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".oneloop").join("sessions")).unwrap();
+        dir
+    }
+
+    fn today_file(cwd: &Path) -> PathBuf {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        cwd.join(".oneloop")
+            .join("sessions")
+            .join(format!("{today}.jsonl"))
     }
 }

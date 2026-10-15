@@ -51,10 +51,16 @@ pub fn remaining_context(
 /// File lives at `.oneloop/metrics/<session-filename>.jsonl`,
 /// mirroring the session file naming for easy correlation.
 pub struct Metrics {
-    path: PathBuf,
+    /// `None` when metrics are off — a one-shot run leaves no trace.
+    path: Option<PathBuf>,
 }
 
 impl Metrics {
+    /// Metrics that record nothing.
+    pub fn disabled() -> Self {
+        Self { path: None }
+    }
+
     /// `.oneloop/sessions/2026-04-20.jsonl` → `.oneloop/metrics/2026-04-20.jsonl`
     pub fn from_session_path(session_path: &Path) -> Result<Self> {
         let project_dir = session_path
@@ -75,7 +81,7 @@ impl Metrics {
             .context("session path has no filename")?;
 
         Ok(Self {
-            path: metrics_dir.join(filename),
+            path: Some(metrics_dir.join(filename)),
         })
     }
 
@@ -87,6 +93,10 @@ impl Metrics {
     }
 
     fn try_log(&self, event: &str, data: Value) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+
         let ts = Local::now().to_rfc3339();
         let mut entry = serde_json::json!({ "ts": ts, "event": event });
 
@@ -101,13 +111,12 @@ impl Metrics {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
-            .with_context(|| format!("failed to open metrics file: {}", self.path.display()))?;
+            .open(path)
+            .with_context(|| format!("failed to open metrics file: {}", path.display()))?;
 
         serde_json::to_writer(&mut file, &entry)
-            .with_context(|| format!("failed to write metrics: {}", self.path.display()))?;
-        writeln!(file)
-            .with_context(|| format!("failed to write metrics: {}", self.path.display()))?;
+            .with_context(|| format!("failed to write metrics: {}", path.display()))?;
+        writeln!(file).with_context(|| format!("failed to write metrics: {}", path.display()))?;
 
         Ok(())
     }
@@ -164,5 +173,14 @@ mod tests {
     #[test]
     fn a_session_fitting_many_times_over_saturates_at_one_hundred() {
         assert_eq!(remaining_context(&user_of(400), 400, 100_000), 100);
+    }
+
+    #[test]
+    fn a_disabled_metrics_records_nothing() {
+        assert!(
+            Metrics::disabled()
+                .try_log("api_call", serde_json::json!({}))
+                .is_ok()
+        );
     }
 }

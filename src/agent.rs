@@ -84,6 +84,19 @@ impl Agent {
         })
     }
 
+    /// A one-shot run: no session file is opened, read, or written, and no
+    /// metrics are recorded. The conversation exists only for this turn.
+    pub fn ephemeral(config: Config, models: ModelRegistry, tool_registry: ToolRegistry) -> Self {
+        let session = session::Session::in_memory(&config.cwd);
+        Self {
+            config,
+            models: Arc::new(models),
+            tool_registry,
+            session,
+            metrics: metrics::Metrics::disabled(),
+        }
+    }
+
     /// Visible history can be shared with an explicitly requested reviewer.
     pub fn messages(&self) -> &[messages::Message] {
         self.session.messages()

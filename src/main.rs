@@ -7,6 +7,7 @@ mod claude;
 mod config;
 mod models;
 mod output;
+mod prompt;
 mod providers;
 mod status;
 mod tools;
@@ -63,8 +64,14 @@ async fn main() -> Result<()> {
                 (Some(s), None) => Some(s),
                 (Some(s), Some(a)) => Some(format!("{s}\n\n{a}")),
             };
+            // A prompt given on the command line or over a pipe is a one-shot:
+            // it runs stateless, loading no session or project context.
+            let run = match prompt {
+                Some(prompt) => app::Run::OneShot(prompt),
+                None => app::Run::Interactive,
+            };
             let app = app::App::new(config::Config::default());
-            app.run(prompt).await
+            app.run(run).await
         }
     }
 }

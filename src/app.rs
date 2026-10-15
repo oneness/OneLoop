@@ -7,12 +7,16 @@ use rustyline::{
 };
 
 use crate::output;
-use crate::{
-    agent::Agent,
-    config::{self, Config},
-    models::ModelRegistry,
-    tools::ToolRegistry,
-};
+use crate::{agent::Agent, config::Config, models::ModelRegistry, prompt, tools::ToolRegistry};
+
+/// How the process was asked to run. The one-shot variant is stateless by
+/// definition: it exists only because a prompt was given on the command line
+/// or over a pipe.
+#[derive(Debug)]
+pub enum Run {
+    Interactive,
+    OneShot(String),
+}
 
 pub struct App {
     config: Config,
@@ -396,40 +400,51 @@ impl App {
         Self { config }
     }
 
-    pub async fn run(mut self, prompt: Option<String>) -> Result<()> {
+    pub async fn run(self, run: Run) -> Result<()> {
         let models = ModelRegistry::new()?;
         let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
-        self.config.system_prompt = Some(config::build_system_prompt(
-            &self.config.cwd,
-            &tool_registry.names(),
-        ));
-        self.config.prompt_sources = config::prompt_sources(&self.config.cwd);
-        let mut agent = Agent::new(self.config, models, tool_registry)?;
+        let mut agent = assemble(self.config, models, tool_registry, &run)?;
 
-        match prompt {
-            Some(prompt) => {
-                let ParsedInput { prompt, command } = parse_input(&prompt);
-                if let Some((alias, prompt)) = model_prompt(command.as_ref(), prompt) {
-                    output::step(&format!("{}", agent.models().get(alias)?));
-                    agent
-                        .run_once_with_model(prompt.to_string(), Some(alias))
-                        .await
-                } else {
-                    if let Some(command) = command
-                        && !run_command(&mut agent, command).await
-                    {
-                        return Ok(());
-                    }
-                    let Some(prompt) = prompt else {
-                        return Ok(());
-                    };
-                    // A one-shot run must not be silent about which model it is
-                    // spending on.
-                    output::step(&format!("{}", agent.models().active()));
-                    agent.run_once(prompt.to_string()).await
-                }
+        match run {
+            Run::Interactive => run_interactive(&mut agent).await,
+            Run::OneShot(prompt) => {
+                // A one-shot run must not be silent about which model it is
+                // spending on.
+                output::step(&format!("{}", agent.models().active()));
+                agent.run_once(prompt).await
             }
-            None => run_interactive(&mut agent).await,
+        }
+    }
+}
+
+/// Builds the agent a run needs. This is the one place the two modes diverge:
+/// the REPL loads the session, project instructions, and metrics; a one-shot
+/// loads none of them.
+fn assemble(
+    mut config: Config,
+    models: ModelRegistry,
+    tool_registry: ToolRegistry,
+    run: &Run,
+) -> Result<Agent> {
+    match run {
+        Run::Interactive => {
+            let instructions = prompt::instructions(&config.cwd);
+            config.prompt_sources = instructions.iter().map(|i| i.name).collect();
+            config.system_prompt = Some(prompt::system_prompt(
+                &config.cwd,
+                &tool_registry.names(),
+                &instructions,
+            ));
+            Agent::new(config, models, tool_registry)
+        }
+        Run::OneShot(_) => {
+            config.prompt_sources = Vec::new();
+            config.system_prompt = Some(prompt::system_prompt(
+                &config.cwd,
+                &tool_registry.names(),
+                &[],
+            ));
+            Ok(Agent::ephemeral(config, models, tool_registry))
         }
     }
 }

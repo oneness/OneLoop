@@ -25,7 +25,11 @@ pub fn instructions(cwd: &Path) -> Vec<Instruction> {
 /// plus whatever instructions it was given.
 pub fn system_prompt(cwd: &Path, tool_names: &[&str], instructions: &[Instruction]) -> String {
     let mut sections = vec![environment_block(cwd)];
-    sections.extend(instructions.iter().map(|instruction| instruction.body.clone()));
+    sections.extend(
+        instructions
+            .iter()
+            .map(|instruction| instruction.body.clone()),
+    );
     format!("{}\n\n{}", tool_preamble(tool_names), sections.join("\n\n"))
 }
 

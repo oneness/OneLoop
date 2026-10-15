@@ -32,6 +32,10 @@ That keeps the core honest without forcing a full plugin runtime too early.
 7. store tool results
 8. continue until the provider stops returning tool calls
 
+Both modes run this same loop. They differ only in what is set up before it
+starts: the interactive REPL opens the session file and loads project
+instructions, while a one-shot loads neither.
+
 ## Built-in tools
 
 - read
@@ -191,6 +195,10 @@ Sessions are linear append-only JSONL files stored at:
 `/clear` rotates to a new file (`YYYY-MM-DD-001.jsonl`, `YYYY-MM-DD-002.jsonl`, etc.).
 Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
+
+A one-shot — `ol "…"`, or a prompt piped in — is stateless: it opens no
+session file, reads no `AGENTS.md`, and records no metrics, so it neither
+inherits nor disturbs the conversation on disk.
 
 On open (and after a Ctrl+C-cancelled run), any tool call left without a matching
 result is closed out with a synthetic error result — providers reject conversations

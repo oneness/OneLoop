@@ -60,7 +60,8 @@ without switching your current model:
 ./ol "your prompt here"
 ```
 
-Runs a single prompt and exits.
+Runs a single prompt and exits, stateless: it neither reads nor writes a
+session file, and loads no `AGENTS.md`.
 
 ### Piped input
 
@@ -69,7 +70,8 @@ git diff | ./ol "summarise these changes"
 cat error.log | ./ol "what is causing this?"
 ```
 
-When stdin is a pipe, its content is prepended to the prompt and the agent runs non-interactively.
+When stdin is a pipe, its content is prepended to the prompt and the agent runs
+non-interactively. Like a one-shot on the command line, it is stateless.
 
 ### Login
 
