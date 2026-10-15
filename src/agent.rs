@@ -3,13 +3,15 @@ pub mod metrics;
 pub mod session;
 mod spinner;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
 use futures::future::join_all;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::output;
 use crate::status::TurnStatus;
@@ -17,7 +19,7 @@ use crate::{
     config::Config,
     models::ModelRegistry,
     providers::{ProviderRequest, is_context_overflow},
-    tools::{ToolRegistry, ToolResult},
+    tools::{ToolRegistry, ToolResult, resolve_path},
 };
 
 use spinner::SpinnerGuard;
@@ -53,6 +55,102 @@ fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
         Some(argument) => format!("{name}: {}", first_line(argument)),
         None => name.to_string(),
     }
+}
+
+/// Runs one batch of tool calls. Calls that name the same file take turns —
+/// each holds that file's lock for the whole call — so a batch of edits to one
+/// file applies one at a time instead of each reading the original and
+/// overwriting the rest. Calls on different files, and tools that cannot be
+/// reasoned about by path (bash, elisp), still run together.
+async fn run_batch(
+    tool_registry: ToolRegistry,
+    tool_calls: &[messages::ToolCall],
+    cwd: &Path,
+) -> Vec<ToolResult> {
+    let mut locks: HashMap<PathBuf, Arc<Mutex<()>>> = HashMap::new();
+
+    let handles: Vec<_> = tool_calls
+        .iter()
+        .map(|tc| {
+            let name = tc.name.clone();
+            let arguments = tc.arguments.clone();
+            // A call whose arguments never decoded cannot be run, but it can be
+            // answered. Reported as a tool failure it reaches the model as a
+            // result it can act on, instead of ending the run.
+            let parse_error = tc.parse_error.clone();
+            let ctx = AgentContext {
+                cwd: cwd.to_path_buf(),
+            };
+            let registry = tool_registry.clone();
+            let lock = file_key(cwd, &tc.name, &tc.arguments)
+                .map(|key| locks.entry(key).or_default().clone());
+            tokio::spawn(async move {
+                let _held = match lock {
+                    Some(lock) => Some(lock.lock_owned().await),
+                    None => None,
+                };
+                match parse_error {
+                    Some(err) => bail!(
+                        "arguments were not valid JSON ({err}). Send the call \
+                         again with complete, valid JSON arguments."
+                    ),
+                    None => registry.execute(&name, arguments, &ctx).await,
+                }
+            })
+        })
+        .collect();
+
+    join_all(handles)
+        .await
+        .into_iter()
+        .map(|res| match res {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => ToolResult {
+                content: format!("Tool execution failed: {e:#}"),
+                is_error: true,
+            },
+            Err(join_err) => ToolResult {
+                content: format!("Tool task failed: {join_err}"),
+                is_error: true,
+            },
+        })
+        .collect()
+}
+
+/// The lock key for a tool call: the file it names, resolved and normalized,
+/// for the tools that operate on one path. `None` for the rest — bash and
+/// elisp can touch anything, so no single path stands for them.
+fn file_key(cwd: &Path, name: &str, arguments: &serde_json::Value) -> Option<PathBuf> {
+    let field = match name {
+        "read" | "write" | "edit" => "path",
+        _ => return None,
+    };
+    let raw = arguments.get(field)?.as_str()?;
+    Some(normalize(&resolve_path(cwd, raw)))
+}
+
+/// Collapse `.` and `..` lexically, without touching the filesystem, so two
+/// spellings of one path share a key — `sub/../note.txt` and `note.txt` must
+/// not look like two different files to the lock.
+fn normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else {
+                    normalized.push("..");
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 pub struct Agent {
@@ -304,46 +402,7 @@ impl Agent {
 
         let spinner = SpinnerGuard::new("running tools...");
 
-        let handles: Vec<_> = tool_calls
-            .iter()
-            .map(|tc| {
-                let name = tc.name.clone();
-                let arguments = tc.arguments.clone();
-                // A call whose arguments never decoded cannot be run, but it
-                // can be answered. Reported as a tool failure it reaches the
-                // model as a result it can act on, instead of ending the run.
-                let parse_error = tc.parse_error.clone();
-                let ctx = AgentContext {
-                    cwd: self.config.cwd.clone(),
-                };
-                let registry = self.tool_registry.clone();
-                tokio::spawn(async move {
-                    match parse_error {
-                        Some(err) => bail!(
-                            "arguments were not valid JSON ({err}). Send the call \
-                             again with complete, valid JSON arguments."
-                        ),
-                        None => registry.execute(&name, arguments, &ctx).await,
-                    }
-                })
-            })
-            .collect();
-
-        let results: Vec<_> = join_all(handles)
-            .await
-            .into_iter()
-            .map(|res| match res {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => ToolResult {
-                    content: format!("Tool execution failed: {e:#}"),
-                    is_error: true,
-                },
-                Err(join_err) => ToolResult {
-                    content: format!("Tool task failed: {join_err}"),
-                    is_error: true,
-                },
-            })
-            .collect();
+        let results = run_batch(self.tool_registry.clone(), &tool_calls, &self.config.cwd).await;
 
         spinner.stop();
 
@@ -403,5 +462,52 @@ impl Agent {
             self.models.active(),
             self.models.by_provider()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn edit_call(id: &str, path: &str, old: &str, new: &str) -> messages::ToolCall {
+        messages::ToolCall {
+            id: id.to_string(),
+            name: "edit".to_string(),
+            arguments: serde_json::json!({ "path": path, "old_text": old, "new_text": new }),
+            parse_error: None,
+        }
+    }
+
+    fn project_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("oneloop-agent-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Two edits to one file in a single batch must take turns: the second
+    /// reads what the first wrote. Run at once, each would read the original
+    /// and one edit would be silently lost. The two spellings only meet after
+    /// normalization, so this also holds the lock's key honest.
+    #[tokio::test]
+    async fn edits_to_one_file_in_a_batch_do_not_lose_each_other() {
+        let dir = project_dir("edit-lock");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("note.txt"), "foo").unwrap();
+
+        let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
+        let calls = vec![
+            edit_call("call-1", "note.txt", "foo", "bar"),
+            edit_call("call-2", "sub/../note.txt", "foo", "baz"),
+        ];
+
+        let results = run_batch(registry, &calls, &dir).await;
+
+        let errors = results.iter().filter(|result| result.is_error).count();
+        assert_eq!(errors, 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
