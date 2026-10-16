@@ -341,7 +341,29 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     })
 }
 
+/// The reasoning to send back for one assistant turn.
+///
+/// A turn the model answered without reasoning still has to carry the field
+/// once the conversation is one whose provider requires the whole set back,
+/// so it goes as an empty string rather than being dropped. A stored value —
+/// including an empty one — is always passed through untouched.
+fn replayed_reasoning(reasoning: Option<String>, replaying: bool) -> Option<String> {
+    match reasoning {
+        Some(text) => Some(text),
+        None if replaying => Some(String::new()),
+        None => None,
+    }
+}
+
 fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
+    // Once a provider has returned reasoning for any turn, it requires the
+    // reasoning of every assistant turn to be passed back — DeepSeek's
+    // thinking mode rejects the request otherwise, even for turns the model
+    // answered without reasoning. So the field is replayed on all of them.
+    let replaying = messages
+        .iter()
+        .any(|message| matches!(message, Message::Assistant(assistant) if assistant.reasoning_content.is_some()));
+
     let mut result: Vec<ChatMessage> = Vec::new();
 
     for message in messages {
@@ -356,9 +378,7 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
             Message::Assistant(assistant) => result.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: Some(assistant.content),
-                // Preserve even an empty string: in thinking mode the provider
-                // may require the field's presence on every assistant turn.
-                reasoning_content: assistant.reasoning_content,
+                reasoning_content: replayed_reasoning(assistant.reasoning_content, replaying),
                 tool_call_id: None,
                 tool_calls: None,
             }),
@@ -386,7 +406,7 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
                     result.push(ChatMessage {
                         role: "assistant".to_string(),
                         content: None,
-                        reasoning_content: None,
+                        reasoning_content: replayed_reasoning(None, replaying),
                         tool_call_id: None,
                         tool_calls: Some(vec![tc]),
                     });
@@ -421,6 +441,13 @@ mod tests {
         Message::Assistant(AssistantMessage {
             content: text.into(),
             reasoning_content: None,
+        })
+    }
+
+    fn assistant_with_reasoning(text: &str, reasoning: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            content: text.into(),
+            reasoning_content: Some(reasoning.into()),
         })
     }
 
@@ -468,6 +495,55 @@ mod tests {
         let result = to_chat_messages(vec![assistant("answer")]);
         let json = serde_json::to_value(&result[0]).unwrap();
         assert!(json.get("reasoning_content").is_none());
+    }
+
+    /// The bug this fixes: the model answered one turn without reasoning, and
+    /// the field was dropped on the way back. DeepSeek's thinking mode then
+    /// refuses the whole request — every assistant turn has to carry it once
+    /// any turn does.
+    #[test]
+    fn a_turn_without_reasoning_carries_an_empty_field_when_the_conversation_has_reasoning() {
+        let result = to_chat_messages(vec![
+            assistant_with_reasoning("first", "thinking"),
+            user("again"),
+            assistant("second"),
+        ]);
+        let json = serde_json::to_value(&result[2]).unwrap();
+        assert_eq!(json["content"], "second");
+        assert_eq!(json["reasoning_content"], "");
+    }
+
+    /// The same requirement holds for a tool call that has to open its own
+    /// assistant frame because no assistant text precedes it.
+    #[test]
+    fn a_tool_call_frame_carries_an_empty_field_when_the_conversation_has_reasoning() {
+        let result = to_chat_messages(vec![
+            assistant_with_reasoning("plan", "thinking"),
+            tool_result("t0"),
+            tool_call("t1"),
+        ]);
+        let frame = result.last().unwrap();
+        assert_eq!(frame.role, "assistant");
+        let json = serde_json::to_value(frame).unwrap();
+        assert_eq!(json["reasoning_content"], "");
+    }
+
+    /// A stored value, empty included, is never replaced by the filler.
+    #[test]
+    fn a_stored_reasoning_is_passed_through_unchanged() {
+        let result = to_chat_messages(vec![
+            assistant_with_reasoning("first", "kept verbatim"),
+            user("again"),
+            assistant_with_reasoning("second", ""),
+        ]);
+        assert_eq!(
+            serde_json::to_value(&result[0]).unwrap()["reasoning_content"],
+            "kept verbatim"
+        );
+        assert_eq!(
+            serde_json::to_value(&result[2]).unwrap()["reasoning_content"],
+            ""
+        );
     }
 
     #[test]
