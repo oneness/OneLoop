@@ -123,6 +123,11 @@ pub struct ProviderResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub reasoning_content: Option<String>,
+    /// Input tokens the server counted for the request that produced this
+    /// response, when it reports them. The real size of the prompt, as
+    /// opposed to `estimate_tokens`'s approximation, so the context gauge can
+    /// use a measured number once a turn has succeeded.
+    pub input_tokens: Option<u64>,
 }
 
 /// A provider that is configured but that nobody has signed in to. Its own

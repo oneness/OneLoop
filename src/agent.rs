@@ -159,6 +159,10 @@ pub struct Agent {
     tool_registry: ToolRegistry,
     session: session::Session,
     metrics: metrics::Metrics,
+    /// Input tokens the server reported for the last successful turn, when it
+    /// reported any. Cleared on `/clear`; until a turn runs the gauge falls
+    /// back to `estimate_tokens`.
+    last_input_tokens: Option<u64>,
 }
 
 impl Agent {
@@ -179,6 +183,7 @@ impl Agent {
             tool_registry,
             session,
             metrics,
+            last_input_tokens: None,
         })
     }
 
@@ -192,6 +197,7 @@ impl Agent {
             tool_registry,
             session,
             metrics: metrics::Metrics::disabled(),
+            last_input_tokens: None,
         }
     }
 
@@ -244,6 +250,8 @@ impl Agent {
     pub fn clear_session(&mut self) -> Result<()> {
         self.session = self.session.rotate()?;
         self.metrics = metrics::Metrics::from_session_path(self.session.path())?;
+        // The measured count belonged to the conversation just rotated away.
+        self.last_input_tokens = None;
         output::step(&format!(
             "cleared context, new session: {}",
             self.session.path().display()
@@ -311,7 +319,7 @@ impl Agent {
                 }
                 Err(e) => {
                     spinner.stop();
-                    self.log_api_call(&requested_model, api_start, tokens_estimated, false);
+                    self.log_api_call(&requested_model, api_start, tokens_estimated, None, false);
                     output::fail(&format!("provider error: {e:#}"));
                     // Nothing the loop can do about this one, but the cure is
                     // one command away and worth naming: the server is the
@@ -330,7 +338,16 @@ impl Agent {
             // active_model was just set to the model that answered (it may
             // differ from the requested one after a fallback).
             let used_model = active_model.clone().unwrap_or(requested_model);
-            self.log_api_call(&used_model, api_start, tokens_estimated, true);
+            self.log_api_call(
+                &used_model,
+                api_start,
+                tokens_estimated,
+                response.input_tokens,
+                true,
+            );
+            // The server's own count for this prompt, when it gave one: the
+            // gauge prefers it over the estimate until the session moves on.
+            self.last_input_tokens = response.input_tokens;
 
             if !response.content.trim().is_empty() || response.reasoning_content.is_some() {
                 self.session.push_assistant_with_reasoning(
@@ -364,19 +381,31 @@ impl Agent {
             .unwrap_or(0)
     }
 
-    /// What the prompt's gauge shows: how much of the context is still free,
-    /// estimated the same way the metrics are. `None` when the active model
-    /// declares no window — the number would be fiction without one.
+    /// What the prompt's gauge shows: how much of the context is still free.
+    /// Prefers the prompt-token count the server reported for the last turn,
+    /// which is measured rather than approximated; falls back to the byte
+    /// estimate until a turn has run. `None` when the active model declares no
+    /// window — the number would be fiction without one.
     pub fn remaining_context(&self) -> Option<u8> {
         let window = self.models.active().context_window?;
-        Some(metrics::remaining_context(
-            self.session.messages(),
-            self.system_prompt_chars(),
-            window,
-        ))
+        Some(match self.last_input_tokens {
+            Some(tokens) => metrics::remaining_context_from_tokens(tokens, window),
+            None => metrics::remaining_context(
+                self.session.messages(),
+                self.system_prompt_chars(),
+                window,
+            ),
+        })
     }
 
-    fn log_api_call(&self, model: &str, started: Instant, tokens_estimated: usize, success: bool) {
+    fn log_api_call(
+        &self,
+        model: &str,
+        started: Instant,
+        tokens_estimated: usize,
+        input_tokens: Option<u64>,
+        success: bool,
+    ) {
         self.metrics.log(
             "api_call",
             json!({
@@ -386,6 +415,9 @@ impl Agent {
                     .map_or_else(|_| "?".to_string(), |m| m.id.clone()),
                 "duration_ms": started.elapsed().as_millis(),
                 "tokens_estimated": tokens_estimated,
+                // The server's own count when it reported one; the pair lets
+                // the estimate's accuracy be checked against reality.
+                "input_tokens": input_tokens,
                 "success": success,
             }),
         );

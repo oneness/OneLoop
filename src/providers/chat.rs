@@ -168,6 +168,16 @@ fn encode_arguments(arguments: &Value) -> String {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
+    /// Absent on some local servers; the gauge falls back to its estimate.
+    #[serde(default)]
+    usage: Option<ChatUsage>,
+}
+
+/// The prompt's real token count, as the server counted it.
+#[derive(Debug, Deserialize)]
+struct ChatUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +320,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         }
     };
 
+    let input_tokens = parsed.usage.and_then(|usage| usage.prompt_tokens);
     let Some(choice) = parsed.choices.into_iter().next() else {
         bail!("{} response contained no choices", model.alias);
     };
@@ -338,6 +349,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         ),
         reasoning_content: choice.message.reasoning_content,
         tool_calls,
+        input_tokens,
     })
 }
 
@@ -578,6 +590,29 @@ mod tests {
         assert_eq!(result[0].role, "tool");
         assert_eq!(result[0].tool_call_id.as_deref(), Some("t1"));
         assert_eq!(result[0].content.as_deref(), Some("ok"));
+    }
+
+    /// The prompt's real token count travels in `usage.prompt_tokens`; the
+    /// gauge reads it instead of estimating once a turn has run.
+    #[test]
+    fn a_chat_response_carries_the_servers_prompt_token_count() {
+        let body = r#"{"choices":[{"message":{"content":"hi"}}],
+                       "usage":{"prompt_tokens":123,"completion_tokens":4,
+                                "total_tokens":127}}"#;
+        let parsed: ChatResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            parsed.usage.and_then(|usage| usage.prompt_tokens),
+            Some(123)
+        );
+    }
+
+    /// A server that reports no usage is not an error — the count is simply
+    /// absent.
+    #[test]
+    fn a_chat_response_without_usage_reports_no_token_count() {
+        let body = r#"{"choices":[{"message":{"content":"hi"}}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.usage.and_then(|usage| usage.prompt_tokens), None);
     }
 
     /// What a replayed call looks like on the wire, not in the struct.

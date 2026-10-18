@@ -168,6 +168,18 @@ enum Event {
 struct CompletedResponse {
     #[serde(default)]
     output: Vec<OutputItem>,
+    /// What the turn cost. The backend reports the prompt's real token count
+    /// here, which is what the context gauge reads once a turn has run.
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+/// Only the input side is kept: the gauge asks how full the prompt is, and
+/// the output it already counted by hand.
+#[derive(Debug, Deserialize)]
+struct Usage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,11 +261,13 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         .header("accept", "text/event-stream")
         .json(&body);
 
-    let (content, tool_calls) = split_output(read_turn(post, &model.alias).await?);
+    let (output, input_tokens) = read_turn(post, &model.alias).await?;
+    let (content, tool_calls) = split_output(output);
     Ok(ProviderResponse {
         content,
         tool_calls,
         reasoning_content: None,
+        input_tokens,
     })
 }
 
@@ -264,7 +278,10 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 /// event, so reading the body to its end — which is what every other
 /// request here does — waits out an idle timeout that has nothing to do
 /// with the answer, on a turn that finished seconds earlier.
-async fn read_turn(request: reqwest::RequestBuilder, alias: &str) -> Result<Vec<OutputItem>> {
+async fn read_turn(
+    request: reqwest::RequestBuilder,
+    alias: &str,
+) -> Result<(Vec<OutputItem>, Option<u64>)> {
     let mut response = tokio::time::timeout(STREAM_IDLE_TIMEOUT, request.send())
         .await
         .with_context(|| {
@@ -316,7 +333,7 @@ async fn read_turn(request: reqwest::RequestBuilder, alias: &str) -> Result<Vec<
             let event = event(&String::from_utf8_lossy(&line))
                 .with_context(|| format!("failed to parse an event from the {alias} stream"))?;
             if let Some(output) = turn.absorb(event, alias)? {
-                return Ok(output);
+                return Ok((output, turn.input_tokens));
             }
         }
     }
@@ -327,6 +344,9 @@ async fn read_turn(request: reqwest::RequestBuilder, alias: &str) -> Result<Vec<
 #[derive(Debug, Default)]
 struct Turn {
     items: Vec<OutputItem>,
+    /// The prompt's token count from the closing event, when the backend
+    /// reported one.
+    input_tokens: Option<u64>,
 }
 
 impl Turn {
@@ -338,10 +358,16 @@ impl Turn {
                 self.items.push(item);
                 Ok(None)
             }
-            Some(Event::Completed { response }) => Ok(Some(match response.output.is_empty() {
-                true => std::mem::take(&mut self.items),
-                false => response.output,
-            })),
+            Some(Event::Completed { response }) => {
+                // Read before the payload is chosen, so the count is kept
+                // whether the closing event repeats the items or leaves them
+                // empty.
+                self.input_tokens = response.usage.and_then(|usage| usage.input_tokens);
+                Ok(Some(match response.output.is_empty() {
+                    true => std::mem::take(&mut self.items),
+                    false => response.output,
+                }))
+            }
             Some(Event::Failed { response }) => {
                 let message = response
                     .error
@@ -375,14 +401,19 @@ fn event(line: &str) -> Result<Option<Event>> {
 /// The same read, over a stream already in hand — which is what the tests
 /// have.
 #[cfg(test)]
-fn final_output(stream: &str, alias: &str) -> Result<Vec<OutputItem>> {
+fn final_turn(stream: &str, alias: &str) -> Result<(Vec<OutputItem>, Option<u64>)> {
     let mut turn = Turn::default();
     for line in stream.lines() {
         if let Some(output) = turn.absorb(event(line)?, alias)? {
-            return Ok(output);
+            return Ok((output, turn.input_tokens));
         }
     }
     Err(Turn::incomplete(alias))
+}
+
+#[cfg(test)]
+fn final_output(stream: &str, alias: &str) -> Result<Vec<OutputItem>> {
+    final_turn(stream, alias).map(|(output, _)| output)
 }
 
 fn split_output(output: Vec<OutputItem>) -> (String, Vec<ToolCall>) {
@@ -595,5 +626,49 @@ mod tests {
                  "content": [{"type": "output_text", "text": "half"}]}}),
         ]);
         assert!(final_output(&text, "codex").is_err());
+    }
+
+    /// The real prompt size the backend counted, read from the closing event.
+    /// This is what the context gauge shows once a turn has succeeded.
+    #[test]
+    fn the_servers_token_count_is_read_from_the_closing_event() {
+        let text = stream(&[
+            json!({"type": "response.output_item.done", "item":
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "hi"}]}}),
+            json!({"type": "response.completed", "response": {
+                "output": [],
+                "usage": {"input_tokens": 360_296, "output_tokens": 12,
+                          "total_tokens": 360_308}}}),
+        ]);
+        let (_, input_tokens) = final_turn(&text, "codex").unwrap();
+        assert_eq!(input_tokens, Some(360_296));
+    }
+
+    /// A turn closed without a usage block is not an error: the gauge just
+    /// falls back to its estimate.
+    #[test]
+    fn a_turn_without_a_usage_block_reports_no_token_count() {
+        let text = stream(&[json!({"type": "response.completed",
+            "response": {"output": []}})]);
+        let (_, input_tokens) = final_turn(&text, "codex").unwrap();
+        assert_eq!(input_tokens, None);
+    }
+
+    /// The count is kept even when the closing event repeats every item
+    /// rather than leaving `output` empty.
+    #[test]
+    fn the_token_count_survives_a_repeated_output() {
+        let item = json!({"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text", "text": "hello"}]});
+        let text = stream(&[
+            json!({"type": "response.output_item.done", "item": item}),
+            json!({"type": "response.completed", "response": {
+                "output": [item],
+                "usage": {"input_tokens": 42}}}),
+        ]);
+        let (output, input_tokens) = final_turn(&text, "codex").unwrap();
+        assert_eq!(split_output(output).0, "hello");
+        assert_eq!(input_tokens, Some(42));
     }
 }

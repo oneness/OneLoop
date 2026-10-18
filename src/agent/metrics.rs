@@ -9,10 +9,10 @@ use serde_json::Value;
 
 use super::messages::Message;
 
-/// Approximate characters per token (conservative for mixed code/prose).
+/// Approximate bytes per token (conservative for mixed code/prose).
 /// Good enough to size a metric by; never good enough to decide on, which is
 /// why nothing branches on it — the server is the authority on what fits.
-const CHARS_PER_TOKEN: usize = 4;
+const BYTES_PER_TOKEN: usize = 3;
 
 /// Roughly how many tokens a request will carry, for the `tokens_estimated`
 /// field of an `api_call` event. Approximate by construction: it exists to
@@ -30,7 +30,7 @@ pub fn estimate_tokens(messages: &[Message], system_prompt_chars: usize) -> usiz
         })
         .sum();
 
-    (system_prompt_chars + message_chars) / CHARS_PER_TOKEN
+    (system_prompt_chars + message_chars) / BYTES_PER_TOKEN
 }
 
 /// Roughly how much of a declared context window is still free, as a
@@ -42,8 +42,25 @@ pub fn remaining_context(
     system_prompt_chars: usize,
     context_window: u64,
 ) -> u8 {
+    percent_remaining(
+        estimate_tokens(messages, system_prompt_chars),
+        context_window,
+    )
+}
+
+/// The same gauge from a prompt-token count the server reported for the last
+/// turn — the real size of the request rather than an estimate. Preferred
+/// whenever a turn has run, since it is measured against the model's own
+/// tokenizer instead of a bytes-per-token constant.
+pub fn remaining_context_from_tokens(input_tokens: u64, context_window: u64) -> u8 {
+    percent_remaining(input_tokens as usize, context_window)
+}
+
+/// `used` tokens against a declared window, clamped to 0–100 so an overfull
+/// request reads empty rather than negative.
+fn percent_remaining(used: usize, context_window: u64) -> u8 {
     let window = context_window.max(1) as usize;
-    let fraction = 1.0 - (estimate_tokens(messages, system_prompt_chars) as f64 / window as f64);
+    let fraction = 1.0 - (used as f64 / window as f64);
     ((fraction * 100.0).round() as i64).clamp(0, 100) as u8
 }
 
@@ -141,12 +158,12 @@ mod tests {
             }),
         ];
 
-        assert_eq!(estimate_tokens(&messages, 20), 25);
+        assert_eq!(estimate_tokens(&messages, 20), 33);
     }
 
     #[test]
     fn an_empty_session_estimates_the_prompt_alone() {
-        assert_eq!(estimate_tokens(&[], 400), 100);
+        assert_eq!(estimate_tokens(&[], 400), 133);
     }
 
     fn user_of(len: usize) -> Vec<Message> {
@@ -162,7 +179,7 @@ mod tests {
 
     #[test]
     fn a_heavy_session_reads_near_empty() {
-        assert_eq!(remaining_context(&user_of(384_000), 0, 100_000), 4);
+        assert_eq!(remaining_context(&user_of(384_000), 0, 100_000), 0);
     }
 
     #[test]
@@ -173,6 +190,18 @@ mod tests {
     #[test]
     fn a_session_fitting_many_times_over_saturates_at_one_hundred() {
         assert_eq!(remaining_context(&user_of(400), 400, 100_000), 100);
+    }
+
+    /// A count the server reported is used as-is: same window, same clamp,
+    /// no bytes-per-token approximation in the path.
+    #[test]
+    fn a_reported_token_count_drives_the_gauge_directly() {
+        assert_eq!(remaining_context_from_tokens(444_590, 1_050_000), 58);
+    }
+
+    #[test]
+    fn a_reported_token_count_over_the_window_reads_empty() {
+        assert_eq!(remaining_context_from_tokens(2_000_000, 1_050_000), 0);
     }
 
     #[test]
