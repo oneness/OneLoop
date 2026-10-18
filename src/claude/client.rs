@@ -5,13 +5,12 @@ use std::{path::Path, process::Stdio, time::Duration};
 use anyhow::{Context, Result, bail};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
+    process::{ChildStdin, Command},
 };
 
 use crate::agent::messages::Message;
 use crate::status::TurnStatus;
 
-const MAX_PROMPT_BYTES: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(300);
 const CLI_ARGS: &[&str] = &[
     "-p",
@@ -69,16 +68,10 @@ pub async fn review(messages: &[Message], request: Request<'_>, cwd: &Path) -> R
 }
 
 fn build_prompt(messages: &[Message], request: &Request<'_>) -> Result<String> {
-    let prompt = match request {
-        Request::Direct(prompt) => (*prompt).to_string(),
-        Request::Discussion(instruction) => discussion_prompt(messages, instruction)?,
-    };
-    if prompt.len() > MAX_PROMPT_BYTES {
-        bail!(
-            "Claude input exceeds the {MAX_PROMPT_BYTES}-byte limit; shorten the prompt or discussion (nothing was sent)"
-        );
+    match request {
+        Request::Direct(prompt) => Ok((*prompt).to_string()),
+        Request::Discussion(instruction) => discussion_prompt(messages, instruction),
     }
-    Ok(prompt)
 }
 
 fn discussion_prompt(messages: &[Message], instruction: &str) -> Result<String> {
@@ -112,6 +105,17 @@ fn discussion_prompt(messages: &[Message], instruction: &str) -> Result<String> 
     Ok(prompt)
 }
 
+/// Stream the prompt to the child and close stdin. A child that exits before
+/// reading it all closes the pipe, so a broken pipe is not an error here: the
+/// exit status and stderr read alongside are the real story, and surfacing
+/// `EPIPE` instead would hide them behind an unrelated message.
+async fn write_prompt(mut stdin: ChildStdin, prompt: &str) -> std::io::Result<()> {
+    match stdin.write_all(prompt.as_bytes()).await {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 // Keep the child owned here so every interrupted/error path can kill and reap it.
 async fn execute(
     command: &mut Command,
@@ -121,7 +125,7 @@ async fn execute(
     let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped())
         .stderr(Stdio::piped()).kill_on_drop(true).spawn()
         .context("could not launch Claude Code; install `claude` and log in with your subscription first")?;
-    let mut stdin = child.stdin.take().context("Claude stdin unavailable")?;
+    let stdin = child.stdin.take().context("Claude stdin unavailable")?;
     let mut stdout = child.stdout.take().context("Claude stdout unavailable")?;
     let mut stderr = child.stderr.take().context("Claude stderr unavailable")?;
     let mut output = Vec::new();
@@ -129,7 +133,7 @@ async fn execute(
     let result = tokio::select! {
         result = async {
             let (_, _, _, status) = tokio::try_join!(
-                async move { stdin.write_all(prompt.as_bytes()).await?; drop(stdin); Ok(()) },
+                write_prompt(stdin, prompt),
                 stdout.read_to_end(&mut output),
                 stderr.read_to_end(&mut errors),
                 child.wait(),
@@ -318,28 +322,25 @@ mod tests {
         );
     }
 
+    /// Without a cap nothing is dropped or cut short: a discussion larger than
+    /// any old byte limit is sent whole.
     #[test]
-    fn oversized_tool_results_are_rejected_not_dropped() {
-        let messages = vec![Message::ToolResult(ToolResultMessage {
-            tool_call_id: "1".into(),
-            tool_name: "read".into(),
-            content: "x".repeat(MAX_PROMPT_BYTES),
-            is_error: false,
+    fn a_large_discussion_is_sent_whole() {
+        let big = "x".repeat(1 << 20);
+        let messages = vec![Message::User(UserMessage {
+            content: big.clone(),
         })];
-        assert!(build_prompt(&messages, &Request::Discussion(DEFAULT_INSTRUCTION)).is_err());
+        let prompt = build_prompt(&messages, &Request::Discussion(DEFAULT_INSTRUCTION)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+        assert_eq!(
+            value["discussion"][0]["text"],
+            serde_json::Value::String(big)
+        );
     }
 
     #[test]
     fn empty_discussion_is_rejected() {
         assert!(build_prompt(&[], &Request::Discussion(DEFAULT_INSTRUCTION)).is_err());
-    }
-
-    #[test]
-    fn oversized_discussion_is_rejected_without_truncation() {
-        let messages = vec![Message::User(UserMessage {
-            content: "x".repeat(MAX_PROMPT_BYTES),
-        })];
-        assert!(build_prompt(&messages, &Request::Discussion(DEFAULT_INSTRUCTION)).is_err());
     }
 
     #[test]
@@ -358,34 +359,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn explicit_prompt_ignores_even_oversized_history() {
-        let messages = vec![Message::User(UserMessage {
-            content: "x".repeat(MAX_PROMPT_BYTES),
-        })];
-        assert_eq!(
-            build_prompt(&messages, &Request::Direct("Hello")).unwrap(),
-            "Hello"
-        );
-    }
-
-    #[test]
-    fn oversized_explicit_prompt_is_rejected() {
-        assert!(build_prompt(&[], &Request::Direct(&"x".repeat(MAX_PROMPT_BYTES + 1))).is_err());
-    }
-
     async fn fake(script: &str) -> Result<String> {
         execute(
             Command::new("sh").args(["-c", script]),
-            "literal ' $() prompt",
+            "test prompt",
             std::future::pending(),
         )
         .await
     }
 
     #[tokio::test]
-    async fn subprocess_receives_literal_prompt_on_stdin() {
-        assert_eq!(fake("cat").await.unwrap(), "literal ' $() prompt");
+    async fn subprocess_receives_prompt_on_stdin() {
+        let output = execute(
+            Command::new("sh").args(["-c", "cat"]),
+            "literal ' $() prompt",
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, "literal ' $() prompt");
+    }
+
+    /// A payload past the OS pipe buffer must not surface `EPIPE` when the
+    /// child exits without reading it; the exit status and stderr are the
+    /// story, not the write.
+    #[tokio::test]
+    async fn subprocess_exiting_without_reading_stdin_is_not_a_broken_pipe_error() {
+        let big = "x".repeat(1 << 20);
+        let output = execute(
+            Command::new("sh").args(["-c", "printf 'review'; exit 0"]),
+            &big,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, "review");
     }
 
     #[tokio::test]
