@@ -35,12 +35,14 @@ Commands (also available with `/help`):
 
 `/help` also lists Claude Code (`/cc`, `/ca`, `/cn`) and Antigravity
 (`/ag`, `/aga`, `/agn`) commands when their CLI binaries are available
-on `PATH`. This allow you to use your existing Claude Code or Google subscription.
+on `PATH`. This allows you to use your existing Claude Code or Google subscription.
 
 The prompt shows the model and, when the model declares a `context_window`
-in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. The
-percentage is an estimate; the server still refuses the request when the
-conversation truly no longer fits.
+in the config, roughly how much of it is still free — `(qwen ~ 80%)> `. Once a
+turn has run the percentage is measured from the token count the server reports
+for the prompt; before that, or when a server reports none, it is an estimate.
+Either way the server still refuses the request when the conversation truly no
+longer fits.
 
 ### Ask Claude about the discussion
 
@@ -179,10 +181,12 @@ OneLoop reports the active model and turn state via **OSC 7501** (Program Status
 The sequence is:
 
 ```
-ESC ] 7501 ; state=working|idle|done|blocked|error|clear : app=oneloop : title=<base64 model> ESC \
+ESC ] 7501 ; state=working|idle : app=oneloop : title=<base64 model> ESC \
 ```
 
-- `state` — `working` while a turn runs, `idle` between turns, `clear` on reset
+- `state` — `working` while a turn runs, `idle` between turns. OSC 7501 defines
+  further states (`done`, `blocked`, `error`, `clear`); OneLoop emits only these
+  two.
 - `title` — the model alias (base64-encoded UTF-8), so the client always knows the current model even in idle
 
 

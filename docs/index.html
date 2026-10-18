@@ -262,7 +262,7 @@
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="tagline">A local-first coding agent.<br>Runs on your own machine by default. One loop, five tools, zero config.</p>
+    <p class="tagline">A local-first coding agent.<br>Runs on your own machine by default. One loop, six tools, zero config.</p>
   </div>
 </section>
 
@@ -312,13 +312,14 @@
 <section class="slide">
   <div class="box">
     <div class="label">tools</div>
-    <h2>Five tools</h2>
+    <h2>Six tools</h2>
     <div class="tool-grid">
       <div class="tool-item"><code>read</code> <span>File contents</span></div>
       <div class="tool-item"><code>write</code> <span>Create or overwrite</span></div>
       <div class="tool-item"><code>edit</code> <span>Search-and-replace</span></div>
       <div class="tool-item"><code>bash</code> <span>Shell commands</span></div>
       <div class="tool-item"><code>elisp</code> <span>Live Emacs state</span></div>
+      <div class="tool-item"><code>skill</code> <span>Load a playbook</span></div>
     </div>
     <p class="big" style="font-size: 16px; margin-top: 20px;"><code>elisp</code> evaluates bounded expressions in a running Emacs server, exposing unsaved buffers, windows, diagnostics, and process output. Load the bundled <code>emacs</code> skill before use.</p>
   </div>
@@ -371,7 +372,7 @@
     <div class="label">reliability</div>
     <h2>Resilience</h2>
     <table>
-      <tr><td><strong>Retry with fallback</strong></td><td>Makes up to 3 attempts by default on transient failures, then offers another model. Your selection immediately becomes active for the session, without changing config; a rejected request fails at once</td></tr>
+      <tr><td><strong>Retry with fallback</strong></td><td>Makes up to 5 attempts by default on transient failures, then offers another model. Your selection immediately becomes active for the session, without changing config; a rejected request fails at once</td></tr>
       <tr><td><strong>Bounded waits</strong></td><td>Connections and finite responses time out; an active stream may run long, but a stalled one cannot</td></tr>
       <tr><td><strong>Parallel tools</strong></td><td>Multiple calls execute concurrently</td></tr>
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
@@ -389,18 +390,17 @@
     <h2>Agent Status via OSC 7501</h2>
     <p class="big">OneLoop emits the active model and turn state as OSC 7501<br>when running under Emacs <code>comint</code>.</p>
     <div class="mono" style="margin-top: 20px; font-size: 14px; line-height: 1.6;">
-      <span class="cm">ESC ] 7501 ; state=working|idle : app=oneloop : title=<base64 model> ESC \</span>
+      <span class="cm">ESC ] 7501 ; state=working|idle : app=oneloop : title=&lt;base64 model&gt; ESC \</span>
     </div>
     <p class="big" style="margin-top: 20px; font-size: 16px;">
-      <code>state</code> — <code>working</code> during a turn, <code>idle</code> between turns,<br>
-      <code>clear</code> on reset.
+      <code>state</code> — <code>working</code> during a turn, <code>idle</code> between turns.
     </p>
     <p class="big" style="margin-top: 16px; font-size: 16px;">
       <code>title</code> — model alias (base64 UTF-8), so the client always knows<br>
       the current model even in idle.
     </p>
     <p class="big" style="margin-top: 20px; font-size: 16px;">
-      Bundled <code>oneloop.el</filter reads these and updates the mode line:<br>
+      A small <code>oneloop.el</code> filter reads these and updates the mode line:<br>
       <code>model: thinking...</code> / <code>model: idle</code>.
     </p>
     <p class="big" style="margin-top: 16px; font-size: 16px;">
@@ -409,23 +409,23 @@
   </div>
 </section>
 
-<!-- ═══ 11. Codebase ═══ -->
+<!-- ═══ 10. Codebase ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">stats</div>
     <h2>Codebase</h2>
-    <!-- Snapshot: existing git-tracked .rs/.html/.md files; physical lines including blanks and tests. -->
+    <!-- Snapshot: git-tracked .rs/.html/.md files; physical lines including blanks and tests. HTML is this page. -->
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">27</td><td style="text-align:right;">7,252</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">496</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">909</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">35</td><td style="text-align:right;">8,657</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">30</td><td style="text-align:right;">8,382</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">483</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">912</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">38</td><td style="text-align:right;">9,777</td></tr>
     </table>
   </div>
 </section>
 
-<!-- ═══ 10. Quick Start ═══ -->
+<!-- ═══ 11. Quick Start ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">get started</div>

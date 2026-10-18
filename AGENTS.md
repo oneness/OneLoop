@@ -48,7 +48,7 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 
 ## Code Search
 
-Use the OneSearch skill linked at `.oneloop/skills/onesearch.md` for repository search. It documents invoking the local binary at `~/repos/OneSearch/target/debug/onesearch`, selecting `code`, `docs`, `all`, or `session` filters, and following result chunks. Prefer OneSearch over grep for semantic questions and symbol lookups; use literal grep only for exhaustive exact-string checks or when OneSearch is unavailable.
+Use the OneSearch skill (`onesearch.md`, loaded from `~/.oneloop/skills/` or `.oneloop/skills/`) for repository search. It documents invoking the local binary at `~/repos/OneSearch/target/debug/onesearch`, selecting `code`, `docs`, `all`, or `session` filters, and following result chunks. Prefer OneSearch over grep for semantic questions and symbol lookups; use literal grep only for exhaustive exact-string checks or when OneSearch is unavailable.
 
 ## Workflow
 

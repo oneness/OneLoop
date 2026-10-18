@@ -288,10 +288,12 @@ src/
   agent.rs          Agent struct, run_once, execute_tool_calls, session repair
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
-    status.rs       TurnStatus busy/idle reports for Emacs/comint
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
     session.rs      Session persistence, rotation, dangling-tool-call repair
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
+  antigravity/
+    mod.rs          Public entry points for Antigravity requests
+    client.rs       Stateless Antigravity CLI execution, discussion prompts, reference responses
   app.rs            Interactive REPL (rustyline), /commands, Ctrl+C handling
   auth.rs           Credential resolution (env over ~/.oneloop/auth.json) and storage
   auth/
@@ -300,11 +302,12 @@ src/
   claude/
     mod.rs          Public entry points for Claude requests
     client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
-  config.rs         System prompt assembly (tool preamble + AGENTS.md), env_or
+  config.rs         Config (cwd, instruction sources), env_or, the per-prompt iteration cap
   models.rs         Model (alias + settings + its provider), registry, active-model switching
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
+  prompt.rs         System prompt assembly (tool preamble + AGENTS.md + environment)
   providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response types
   providers/
     chat.rs         The Chat Completions wire format
