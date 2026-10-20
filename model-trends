@@ -18,16 +18,17 @@ set -euo pipefail
 #
 # Both endpoints are public and need no API key.
 #
-# The OpenCode leaderboard is a third source, reporting on a different
-# population: the models used by OpenCode's own users rather than OpenRouter's
-# traffic. It lives at https://opencode.ai/data/, which hydrates from plain
-# JSON documents and is undocumented -- the documented OpenCode API covers its
-# local server, not these statistics. Its index carries the ranking and the
-# token volume for the chosen window but nothing else, so each row costs one
-# more request for the model document. That document supplies the cost, summed
-# over the last entries of its daily series for the same window, and also the
-# context window and the canonical model id. OpenCode has no month window, so a
-# month view reads its week.
+# The OpenCode Go plan is a third source, reporting on a different population:
+# the models OpenCode's own users can run on its subscription rather than
+# OpenRouter's traffic. Its table lives at https://opencode.ai/go and lists,
+# per model, the estimated requests per 5 hours and the monthly usage limit,
+# for the Go plan and for the Go Plus plan. The free models report no limit at
+# all. That page has no documented API, but it is server rendered, so the
+# table is read straight out of the HTML.
+#
+# Only the free models and the three paid models with the most requests per 5
+# hours are shown: the free ones because they cost nothing, the paid ones
+# because the request count is what says how much traffic a model carries.
 #
 # The rankings return dated permaslugs such as
 # `openai/gpt-6-luna-20260922`, while the price catalogue keys on the bare
@@ -42,21 +43,27 @@ usage() {
 usage: ./model-trends [--limit N] [--view day|week|month]
 
 Show the trending and the most popular models on OpenRouter, each with its
-input price, output price and context window, then the OpenCode usage
-leaderboard. Prices and costs are US dollars.
+input price, output price and context window, then the OpenCode Go plan.
+Prices and costs are US dollars.
 
   --limit N              how many models to show per list (default 15)
-  --view day|week|month  window for the trending list and the OpenCode
-                         leaderboard (default week)
+  --view day|week|month  window for the trending list (default week)
 
-The OpenCode table needs one extra request per model, so --limit N adds roughly
-N + 1 requests on top of the three the OpenRouter tables need. OpenCode has no
-month window, so a month view shows its week and says so.
+The OpenCode table lists every free model of the Go plan and the three paid
+models with the most requests per 5 hours, each with a bar drawn from that
+request count.
 EOF
 }
 
 limit=15
 view=week
+
+# How many paid models the OpenCode table shows. The free ones are always
+# listed in full, so this only trims the paid end.
+paid_limit=3
+
+# How wide the usage bar is, in cells.
+bar_width=20
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -145,15 +152,13 @@ fetch_catalogue() {
   api_get "https://openrouter.ai/api/v1/models"
 }
 
-# OpenCode publishes one document for the whole dataset and one per model. The
-# index is keyed by lab and model, and a model may redirect to its canonical
-# slug, which api_get follows.
-fetch_opencode_index() {
-  api_get "https://opencode.ai/data/index.json"
-}
-
-fetch_opencode_model() {
-  api_get "https://opencode.ai/data/$1/$2.json"
+# The OpenCode Go plan page is plain HTML rather than JSON, so it gets its own
+# fetch with an HTML Accept header.
+fetch_opencode_go() {
+  curl --fail --silent --show-error --location \
+    --header "Accept: text/html" \
+    --header "User-Agent: OneLoop-model-trends" \
+    "https://opencode.ai/go"
 }
 
 # Trending: join the usage ranking against the price catalogue and emit one
@@ -246,57 +251,109 @@ build_most_popular_rows() {
     '
 }
 
-# OpenCode's leaderboard. Rank and token volume come from its index; the cost,
-# the context window and the canonical id are only in the per-model document,
-# so each row costs one more request. That document is optional: a model whose
-# document is missing keeps its rank and shows the name the leaderboard used,
-# with the fields it cannot supply reported as n/a, so the leaderboard stays
-# faithful rather than quietly losing a row.
+# The OpenCode Go plan table is read out of the server rendered page. Each row
+# holds the model name and two number cells: the requests per 5 hours and the
+# monthly usage limit, each for the Go plan and then for the Go Plus plan. A
+# value the page strikes through is a superseded one, and only the current
+# value counts.
 #
-# A reported cost of zero does not mean free. OpenCode only fills the cost in
-# for some models, and a priced model can report zero, so the cost is shown as
-# reported and nothing is inferred from it.
-build_opencode_rows() {
-  local index=$1
-  local detail=$2
-  local rank model lab tokens cost context model_id values
+# The Go plan is the one reported, because it is the plan anyone can buy, and
+# the free models report no limit at all.
+#
+# The rows come out as TSV: name, requests per 5 hours, monthly usage, free
+# flag, and the request count as a number for ranking.
+parse_go_rows() {
+  local page=$1
 
-  jq -nr --argjson limit "$limit" --arg window "$opencode_window" --slurpfile index "$index" '
-    $index[0].leaderboard[$window][0:$limit]
-    | .[]
-    | [ (.rank | tostring), .model, (.lab // "unknown"), (.tokens | tostring) ]
+  awk '
+    # The text of one number cell. A struck through value is dropped, the
+    # hydration markers carry no text, and the remaining tags separate the
+    # values from each other.
+    function cell_values(cell,   text, count, parts, out, i) {
+      text = cell
+      gsub(/<s[^>]*>[^<]*<\/s>/, "", text)
+      gsub(/<!--[^>]*-->/, "", text)
+      gsub(/<[^>]*>/, " ", text)
+
+      count = split(text, parts, /[ \t]+/)
+      out = ""
+      for (i = 1; i <= count; i++) {
+        if (parts[i] == "") continue
+        out = out (out == "" ? "" : "\t") parts[i]
+      }
+      return out
+    }
+
+    # A row starts at <tr, which is rare enough in the page to be a safe
+    # record separator.
+    BEGIN { RS = "<tr" }
+
+    {
+      # The header row and the axis row carry no numbers, and the page holds
+      # only this one table.
+      if (index($0, "data-slot=\"number\"") == 0) next
+
+      if (match($0, /<bdi>[^<]*<\/bdi>/) == 0) next
+      name = substr($0, RSTART + 5, RLENGTH - 11)
+      if (name == "") next
+
+      split($0, cells, /<td data-slot="number">/)
+      if (length(cells) < 3) next
+
+      split(cell_values(cells[2]), requests, "\t")
+      split(cell_values(cells[3]), monthly, "\t")
+      if (length(requests) < 2 || length(monthly) < 2) next
+
+      # A model is free when its name says so, or when it reports no limit at
+      # all: the page writes an infinity rather than a number for those, and
+      # the two markers always agree.
+      free = (tolower(name) ~ /free/ || requests[1] !~ /^[0-9,]+$/) ? 1 : 0
+
+      # The page groups thousands with a comma, and a free model reports an
+      # infinity, which reads as zero here because the free models are picked
+      # out before anything is ranked.
+      count = requests[1]
+      gsub(/,/, "", count)
+
+      print name "\t" requests[1] "\t" monthly[1] "\t" free "\t" (count + 0)
+    }
+  ' "$page"
+}
+
+# The free models are listed in full and the paid models in descending order of
+# requests per 5 hours, trimmed to the top few. The bar is drawn against the
+# largest request count on the page, so the paid models read as a share of the
+# busiest one, and a free model takes the whole bar because it has no limit.
+build_go_rows() {
+  local rows=$1
+
+  jq -nr --argjson paid_limit "$paid_limit" --argjson bar_width "$bar_width" --arg rows "$rows" '
+    def record: split("\t") | {
+      name: .[0],
+      requests: .[1],
+      monthly: .[2],
+      free: (.[3] == "1"),
+      count: (.[4] | tonumber)
+    };
+
+    ($rows | split("\n") | map(select(length > 0)) | map(record)) as $all
+    | ($all | map(select(.free))) as $free
+    | ($all | map(select(.free | not)) | sort_by(-.count)) as $paid
+    | ($paid[0:$paid_limit]) as $top
+    | ($all | map(.count) | max // 0) as $max
+    | ($free + $top)[]
+    | . as $row
+    | (if $row.free then $bar_width
+       elif $max == 0 then 0
+       else ((($row.count / $max) * $bar_width) | round) end) as $filled
+    | [
+        $row.name,
+        $row.requests,
+        $row.monthly,
+        ("█" * $filled)
+      ]
     | @tsv
-  ' | while IFS=$'\t' read -r rank model lab tokens; do
-    [ -n "$model" ] || continue
-
-    cost=n/a
-    context=null
-    model_id=$model
-
-    if fetch_opencode_model "$lab" "$model" >"$detail" 2>/dev/null; then
-      # A document that is not the JSON we expect leaves nothing to read, and
-      # the defaults above then stand rather than being blanked out. Its parse
-      # error is left on stderr, because an undocumented source changing shape
-      # is worth noticing.
-      values=$(jq -r --argjson days "$opencode_days" --arg fallback "$model" '
-        [ ((.usage.daily[-$days:] | map(.costUsd // 0) | add) // 0),
-          (.model.contextTokens // "null"),
-          (.model.id // $fallback) ]
-        | @tsv
-      ' "$detail") || values=''
-
-      if [ -n "$values" ]; then
-        IFS=$'\t' read -r cost context model_id <<<"$values"
-      fi
-    fi
-
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$rank" \
-      "$model_id" \
-      "$(format_tokens_compact "$tokens")" \
-      "$(format_cost "$cost")" \
-      "$(format_context "$context")"
-  done
+  '
 }
 
 # Prices are quoted per token, which is awkward to read. Convert to US dollars
@@ -373,42 +430,6 @@ format_tokens() {
   '
 }
 
-# OpenCode token volumes run from billions to tens of trillions, so unlike the
-# OpenRouter tables they carry their unit rather than assuming one.
-format_tokens_compact() {
-  local value=$1
-
-  case "$value" in
-    ''|null|0)
-      printf 'n/a'
-      return
-      ;;
-  esac
-
-  jq -nr --argjson value "$value" '
-    if   $value >= 1000000000000 then ((($value / 1000000000000) * 100 | round / 100) | tostring) + "T"
-    elif $value >= 1000000000    then ((($value / 1000000000)    * 100 | round / 100) | tostring) + "B"
-    elif $value >= 1000000       then ((($value / 1000000)       * 100 | round / 100) | tostring) + "M"
-    elif $value >= 1000          then ((($value / 1000)          * 100 | round / 100) | tostring) + "K"
-    else $value | tostring
-    end
-  '
-}
-
-# Dollars, grouped so a six-figure sum stays legible.
-format_cost() {
-  local value=$1
-
-  case "$value" in
-    ''|null|n/a)
-      printf 'n/a'
-      return
-      ;;
-  esac
-
-  printf "%'.2f" "$value"
-}
-
 # The two OpenRouter tables share a column shape, so one formatter serves both.
 # The builders emit raw values; this turns them into the strings to display.
 format_openrouter_rows() {
@@ -428,6 +449,9 @@ format_openrouter_rows() {
 # Render a TSV table. The first column is left aligned, the rest right aligned,
 # and every column is as wide as its widest cell, so one printer serves all
 # three tables.
+#
+# The widths are counted in characters rather than bytes, so a cell holding an
+# infinity sign or a bar still lines up whatever the locale says.
 print_table() {
   local title=$1
   local header=$2
@@ -443,35 +467,29 @@ print_table() {
     return
   fi
 
-  printf '%s\n' "$rows" | awk -F'\t' -v header="$header" '
-    BEGIN {
-      n = split(header, h, "\t")
-      for (i = 1; i <= n; i++) w[i] = length(h[i])
-    }
-    {
-      line[NR] = $0
-      for (i = 1; i <= n; i++) if (length($i) > w[i]) w[i] = length($i)
-    }
-    END {
-      out = ""
-      for (i = 1; i <= n; i++) out = out sprintf(i == 1 ? "%-*s" : "  %*s", w[i], h[i])
-      print out
+  jq -nr --arg header "$header" --arg rows "$rows" '
+    def cells: split("\t");
 
-      total = 0
-      for (i = 1; i <= n; i++) total += w[i]
-      total += 2 * (n - 1)
-      rule = ""
-      for (i = 0; i < total; i++) rule = rule "-"
-      print rule
-
-      for (r = 1; r <= NR; r++) {
-        split(line[r], f, "\t")
-        out = ""
-        for (i = 1; i <= n; i++) out = out sprintf(i == 1 ? "%-*s" : "  %*s", w[i], f[i])
-        print out
-      }
-    }
-  '
+    ($header | cells) as $head
+    | ($rows | split("\n") | map(select(length > 0)) | map(cells)) as $body
+    | ($head | length) as $count
+    | ([$head] + $body) as $all
+    | [ range(0; $count) as $i
+        | ([$all[] | .[$i] // "" | length] | max)
+      ] as $widths
+    | def row:
+        . as $cells
+        | [ range(0; $count) as $i
+            | ($cells[$i] // "") as $cell
+            | (($widths[$i] - ($cell | length)) | if . < 0 then 0 else . end) as $gap
+            | if $i == 0
+              then $cell + (" " * $gap)
+              else "  " + (" " * $gap) + $cell
+              end
+          ]
+        | join("");
+      (($head | row), ("-" * (([$widths[]] | add) + 2 * ($count - 1))), ($body[] | row))
+    '
 
   echo
 }
@@ -479,30 +497,21 @@ print_table() {
 catalogue=$(mktemp)
 ranking=$(mktemp)
 popular=$(mktemp)
-opencode=$(mktemp)
-opencode_detail=$(mktemp)
-trap 'rm -f "$catalogue" "$ranking" "$popular" "$opencode" "$opencode_detail"' EXIT
+opencode_page=$(mktemp)
+trap 'rm -f "$catalogue" "$ranking" "$popular" "$opencode_page"' EXIT
 
 fetch_catalogue >"$catalogue"
 
 fetch_trending >"$ranking"
 fetch_most_popular >"$popular"
-fetch_opencode_index >"$opencode"
 
-# OpenCode publishes a day and a week window but no month, so a month view falls
-# back to its week and says so rather than quietly reporting a different window.
-case "$view" in
-  day)
-    opencode_window=pastDay
-    opencode_days=1
-    opencode_label=day
-    ;;
-  week|month)
-    opencode_window=pastWeek
-    opencode_days=7
-    opencode_label=week
-    ;;
-esac
+# The Go plan page is HTML and the least stable of the sources, so a page that
+# cannot be read leaves the other tables standing rather than taking the whole
+# run down with it.
+go_rows=""
+if fetch_opencode_go >"$opencode_page"; then
+  go_rows=$(parse_go_rows "$opencode_page")
+fi
 
 openrouter_header=$(printf 'MODEL ID\tIN ($/M)\tOUT ($/M)\tCTX (k)\tTOKENS (B)')
 
@@ -514,13 +523,15 @@ print_table "Trending by tokens ($view)" \
   "$openrouter_header" \
   "$(format_openrouter_rows "$(build_trending_rows "$ranking" "$catalogue" "$popular")")"
 
-print_table "OpenCode by tokens ($opencode_label)" \
-  "$(printf 'RANK\tMODEL ID\tTOKENS\tCOST ($)\tCTX (k)')" \
-  "$(build_opencode_rows "$opencode" "$opencode_detail")"
+print_table "OpenCode Go plan (free models, top $paid_limit paid)" \
+  "$(printf 'MODEL\tREQ/5H\tMONTHLY\tUSAGE')" \
+  "$(build_go_rows "$go_rows")"
 
-if [ "$view" != "$opencode_label" ]; then
-  echo "note: OpenCode publishes no month window, so its week is shown above"
+if [ -z "$go_rows" ]; then
+  echo "note: the Go plan table could not be read from https://opencode.ai/go"
   echo
 fi
 
-echo "Sources: https://openrouter.ai/rankings, https://openrouter.ai/models and https://opencode.ai/data/"
+echo "note: the Go Plus plan raises these limits; see https://opencode.ai/go"
+echo
+echo "Sources: https://openrouter.ai/rankings, https://openrouter.ai/models and https://opencode.ai/go"
