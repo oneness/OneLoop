@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OneLoop — A Local-First Coding Agent</title>
+<title>OneLoop — A Provider-Neutral Coding Agent</title>
+<meta name="description" content="One loop, six tools, any model: a tiny, provider-neutral coding agent for the terminal. Local by default, any provider when you ask, and no compaction.">
 <style>
   :root {
     --nav-height: 80px;
@@ -258,15 +259,16 @@
   <button id="nextBtn" onclick="go(1)">Next →</button>
 </div>
 
-<!-- ═══ 1. Title ═══ -->
+<!-- ═══ Title ═══ -->
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="tagline">A local-first coding agent.<br>Runs on your own machine by default. One loop, six tools, zero config.</p>
+    <p class="tagline">Most coding agents are built around a vendor.<br>OneLoop is built around a loop.</p>
+    <p class="big" style="font-size:17px; margin-top:24px;">One loop, six tools, no framework.<br>Local by default — any provider when you ask.</p>
   </div>
 </section>
 
-<!-- ═══ 2. Agent Loop ═══ -->
+<!-- ═══ Agent Loop ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">core idea</div>
@@ -287,14 +289,30 @@
   </div>
 </section>
 
-<!-- ═══ 3. Models ═══ -->
+<!-- ═══ Models ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">models</div>
     <h2>Any Model</h2>
     <p class="big">A local model by default — no key, no account, nothing leaving the box.<br>Reach a hosted one only when you ask for it.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one credential, one connection pool. Credentials may be absent, an API key, or a renewable subscription grant. Its models get short aliases: <code>qwen</code>, <code>chatgpt</code>, <code>flash</code>. <code>/model</code> switches which one answers for the session.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;">The same code serves llama-server, OpenRouter, OpenCode Go, and ChatGPT's Codex backend — anything that speaks Chat Completions.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">Edit <code>~/.oneloop/config.json</code>, then use <code>/reload</code> to refresh providers and models without restarting or clearing the conversation. Your current model stays selected while its alias exists; changing <code>default</code> alone does not switch it. If reloading fails, the working configuration stays untouched.</p>
+  </div>
+</section>
+
+<!-- ═══ One session, many models ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">multi-model</div>
+    <h2>One session, many models</h2>
+    <p class="big">Switch mid-conversation. Plan with the expensive model,<br>implement with the cheap one, ask a third for a second opinion.</p>
+    <div class="mono" style="margin-top: 24px; font-size: 15px; text-align: left;">
+      <span class="cm">(flash)&gt;</span> /model chatgpt; plan how to split the parser<br>
+      <span class="cm">(chatgpt)&gt;</span> /model flash; implement step 1 of that plan<br>
+      <span class="cm">(flash)&gt;</span> /ca is the plan still consistent with the code?
+    </div>
+    <p class="big" style="font-size: 16px; margin-top: 20px;">A command can carry a prompt across the <code>;</code> boundary, so switching and asking is one line. Every answer is recorded in the same append-only session.</p>
   </div>
 </section>
 
@@ -304,11 +322,11 @@
     <div class="label">optional CLI subscriptions</div>
     <h2>Claude Code and Antigravity</h2>
     <p class="big">When the corresponding CLI is installed, <code>/help</code> lists its slash commands. Claude Code uses <code>/cc</code>, <code>/ca</code>, and <code>/cn</code>; Antigravity uses <code>/ag</code>, <code>/aga</code>, and <code>/agn</code>.</p>
-    <p class="big" style="font-size:16px; margin-top:16px;">These commands use your existing CLI subscription and keep your selected OneLoop model unchanged. OpenAI subscriptions are supported separately through the Codex provider and <code>./ol login openai</code>.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;">These commands use your existing CLI subscription and keep your selected OneLoop model unchanged. The answer comes back as a reference message in this session, so the current model can reason about it. OpenAI subscriptions are supported separately through the Codex provider and <code>./ol login openai</code>.</p>
   </div>
 </section>
 
-<!-- ═══ 4. Tools ═══ -->
+<!-- ═══ Tools ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">tools</div>
@@ -325,7 +343,7 @@
   </div>
 </section>
 
-<!-- ═══ 5. Skills ═══ -->
+<!-- ═══ Skills ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">skills</div>
@@ -340,7 +358,7 @@
   </div>
 </section>
 
-<!-- ═══ 6. Sessions ═══ -->
+<!-- ═══ Sessions ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -353,7 +371,7 @@
   </div>
 </section>
 
-<!-- ═══ 7. Context ═══ -->
+<!-- ═══ Context ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -366,7 +384,7 @@
   </div>
 </section>
 
-<!-- ═══ 8. Resilience ═══ -->
+<!-- ═══ Resilience ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
@@ -383,7 +401,7 @@
   </div>
 </section>
 
-<!-- ═══ 9. OSC 7501 Status ═══ -->
+<!-- ═══ OSC 7501 Status ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">integration</div>
@@ -409,7 +427,7 @@
   </div>
 </section>
 
-<!-- ═══ 10. Codebase ═══ -->
+<!-- ═══ Codebase ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">stats</div>
@@ -418,14 +436,14 @@
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
       <tr><td>Rust</td><td style="text-align:right;">30</td><td style="text-align:right;">8,382</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">483</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">912</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">38</td><td style="text-align:right;">9,777</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">502</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">957</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">38</td><td style="text-align:right;">9,841</td></tr>
     </table>
   </div>
 </section>
 
-<!-- ═══ 11. Quick Start ═══ -->
+<!-- ═══ Quick Start ═══ -->
 <section class="slide">
   <div class="box">
     <div class="label">get started</div>
@@ -438,6 +456,7 @@
       ./ol<br><br>
       <span class="cm"># Reach a hosted model only if you want one</span><br>
       ./ol login openrouter<br>
+      ./ol login opencode-go<br>
       ./ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br><br>
       <span class="cm"># One-shot</span><br>
       ./ol "explain this codebase"<br><br>
