@@ -324,5 +324,6 @@ src/
 docs/
   architecture.md   This file
   index.html        Executive presentation (GitHub Pages, space-bar nav)
+  onesearch-use-case.md  A worked example: one search, its results, and the greps it beat
   style-guide.md    Coding conventions and lint config
 ```
