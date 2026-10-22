@@ -225,8 +225,8 @@ ESC ] 7501 ; state=working|idle : app=oneloop : title=<base64 model> ESC \
 All optional:
 
 - `ONELOOP_MODEL` — run this one model instead of the config's `default`
-- `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `72`)
-- `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `5`)
+- `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `100`)
+- `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `10`)
 - `ONELOOP_WEB_TOOLS` — override a provider's `web_tools` for this run
 
 ## Development

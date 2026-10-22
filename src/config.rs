@@ -29,7 +29,10 @@ impl Default for Config {
 }
 
 /// Cap on agent-loop iterations per prompt.
-pub const DEFAULT_MAX_ITERATIONS: usize = 72;
+pub const DEFAULT_MAX_ITERATIONS: usize = 100;
+
+/// Attempts one model gets before the user is offered another.
+pub const DEFAULT_MAX_RETRIES: usize = 10;
 
 /// Read an env var, falling back to `default` when unset or unparsable.
 pub fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {

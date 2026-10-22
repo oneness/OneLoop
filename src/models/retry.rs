@@ -25,7 +25,8 @@ impl ModelRegistry {
         stop_spinner: Option<Box<dyn FnOnce() + Send>>,
         start_spinner: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<(String, ProviderResponse)> {
-        let max_retries: usize = crate::config::env_or("ONELOOP_MAX_RETRIES", 5);
+        let max_retries: usize =
+            crate::config::env_or("ONELOOP_MAX_RETRIES", crate::config::DEFAULT_MAX_RETRIES);
 
         let model = self.resolve(alias)?;
         let label = model.alias.as_str();

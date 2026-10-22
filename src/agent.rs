@@ -153,6 +153,30 @@ fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Why the per-prompt loop returned. `Resolved` and `Failed` have already
+/// said their piece — an answer was given, or an error was printed — so the
+/// cap is the only exit that would otherwise end a run in silence.
+#[derive(Clone, Copy)]
+enum Stop {
+    /// The model answered without asking for more tools.
+    Resolved,
+    /// The provider refused; its error is already on the terminal.
+    Failed,
+    /// The iteration cap ran out with tool calls still coming.
+    Cap,
+}
+
+/// The one line a run the cap cut short prints. `None` for the exits that
+/// spoke for themselves.
+fn cap_notice(stop: Stop, max_iterations: usize) -> Option<String> {
+    matches!(stop, Stop::Cap).then(|| {
+        format!(
+            "iteration cap reached ({max_iterations}) — this run stopped mid-task; \
+             send another prompt to continue, or raise ONELOOP_MAX_ITERATIONS"
+        )
+    })
+}
+
 pub struct Agent {
     config: Config,
     models: Arc<ModelRegistry>,
@@ -283,6 +307,11 @@ impl Agent {
         // whichever model actually replied.
         let mut active_model: Option<String> = model.map(str::to_string);
 
+        // Pessimistic until a break says otherwise: falling off the end of the
+        // range means the cap ran out, and that is the exit with nothing else
+        // to announce it.
+        let mut stop = Stop::Cap;
+
         for _iteration in 1..=max_iterations {
             let spinner = SpinnerGuard::new("thinking...");
             let tokens_estimated =
@@ -330,6 +359,7 @@ impl Agent {
                              or switch to a model with a larger context window",
                         );
                     }
+                    stop = Stop::Failed;
                     break;
                 }
             };
@@ -364,10 +394,15 @@ impl Agent {
             }
 
             if response.tool_calls.is_empty() {
+                stop = Stop::Resolved;
                 break;
             }
 
             self.execute_tool_calls(response.tool_calls).await?;
+        }
+
+        if let Some(notice) = cap_notice(stop, max_iterations) {
+            output::warn(&notice);
         }
 
         Ok(())
@@ -502,6 +537,15 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    /// Only the cap goes unreported by the loop itself, so only the cap gets a
+    /// line — a resolved or failed run must not be told it ran out of budget.
+    #[test]
+    fn the_cap_is_the_only_stop_that_reports_itself() {
+        assert!(cap_notice(Stop::Resolved, 72).is_none());
+        assert!(cap_notice(Stop::Failed, 72).is_none());
+        assert!(cap_notice(Stop::Cap, 72).is_some_and(|notice| notice.contains("72")));
+    }
 
     fn edit_call(id: &str, path: &str, old: &str, new: &str) -> messages::ToolCall {
         messages::ToolCall {
