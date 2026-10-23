@@ -1,8 +1,9 @@
 # OneLoop architecture
 
-OneLoop is local-first: the default model runs on the same machine, needs no
-credentials, and sends nothing off the box. Hosted models are reachable, but
-only when named.
+OneLoop is subscription-first: one agent drives the Claude, ChatGPT, Antigravity,
+OpenRouter, and OpenCode subscriptions you already pay for. The default model is
+still local — it runs on the same machine, needs no credentials, and sends
+nothing off the box — and hosted models are reachable whenever named.
 
 ## Core
 

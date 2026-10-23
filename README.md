@@ -1,10 +1,8 @@
 # OneLoop
 
-Most coding agents are built around a vendor. OneLoop is built around a loop.
+Most coding agents are built around a vendor. OneLoop is built around your subscriptions.
 
-One loop, six tools, no framework. Any model that speaks an OpenAI-compatible
-protocol can drive it. Models are chosen per run and switched mid-conversation,
-and everything said lands in one append-only session file you can grep.
+One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus local when you want private. One loop, six tools, no framework. Models are chosen per run and switched mid-conversation, and everything said lands in one append-only session file you can grep.
 
 **Deeper:** [Overview](https://www.birkey.co/oneloop/) ·
 [Architecture](docs/architecture.md) ·
@@ -20,10 +18,11 @@ and everything said lands in one append-only session file you can grep.
   through their own CLI binaries, so their answers spend quota you have already
   bought rather than metered tokens. ChatGPT Plus/Pro is signed in to directly
   over OAuth and then behaves as an ordinary provider.
-- **Any OpenAI-compatible endpoint.** A provider is one URL, one credential, one
+- **Any endpoint your subscriptions already cover.** A provider is one URL, one credential, one
   connection pool; the models listed under it get short aliases. The same code
-  serves llama-server, OpenRouter, OpenCode Go, and anything else that speaks
-  Chat Completions.
+  serves llama-server, OpenRouter, OpenCode Go over Chat Completions, and
+  ChatGPT's Codex backend plus OpenCode Go Responses models over the Responses
+  API.
 - **Nothing is compacted.** No summarization, no silent truncation. Every
   message, tool call, and result is appended to a JSONL file, so the session is
   what was said, in order — and it is greppable on disk. The one substitution is
@@ -105,9 +104,11 @@ OpenRouter is a single provider serving hundreds of models, so its URL and API
 key are stated once and the models listed under it. ChatGPT's Codex backend
 instead shares a renewable OAuth grant across its models.
 
-Two protocols are spoken: Chat Completions for everything above, and the
-Responses API for the Codex backend — which is the only way into a ChatGPT
-subscription. A provider's `api` field names which.
+Three API families are spoken: Chat Completions for local models and most
+hosted providers, and the Responses API for the Codex backend — which is the
+only way into a ChatGPT subscription — and for Responses models on providers
+like OpenCode Go. A provider's `api` field names the default, and a model can
+override it.
 
 Every model has a short **alias**, which is the name used everywhere else:
 `/model flash` rather than the wire id it resolves to. Aliases are unique across
