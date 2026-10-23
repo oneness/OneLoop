@@ -4,6 +4,7 @@
 //! provider share an `Arc` of it, so they share its connection pool and
 //! credentials. The list is flat because every lookup here is by alias.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write as IoWrite};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use crate::auth::{self, Auth};
 use crate::catalog::{self, Api, Catalog, ProviderEntry};
 use crate::output::{self, BOLD, DIM, RESET};
-use crate::providers::{Credentials, Provider, ProviderRequest, ProviderResponse, chat, codex};
+use crate::providers::{Credentials, Provider, ProviderRequest, ProviderResponse, chat, responses};
 use crate::status;
 
 mod retry;
@@ -44,7 +45,7 @@ impl Model {
     pub async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
         match self.api {
             Api::Chat => chat::complete(self, request).await,
-            Api::Codex => codex::complete(self, request).await,
+            Api::Codex | Api::Responses => responses::complete(self, request).await,
         }
     }
 }
@@ -67,33 +68,47 @@ impl ModelRegistry {
     pub fn new() -> Result<Self> {
         let catalog = catalog::load()?;
         let auth = auth::load();
-        Self::build(&catalog, |name, entry| credentials(&auth, name, entry))
+        Self::build(&catalog, |name, api, entry| {
+            credentials(&auth, name, api, entry)
+        })
     }
 
     /// Split from `new` so tests can build one without a home directory or
     /// a keyring.
     fn build(
         catalog: &Catalog,
-        credentials: impl Fn(&str, &ProviderEntry) -> Credentials,
+        credentials: impl Fn(&str, Api, &ProviderEntry) -> Credentials,
     ) -> Result<Self> {
         let mut models = Vec::new();
+        let mut providers: HashMap<(String, Api), Arc<Provider>> = HashMap::new();
         for (name, entry) in &catalog.providers {
-            let provider = Arc::new(Provider::new(
-                name,
-                &entry.base_url,
-                credentials(name, entry),
-            )?);
-            models.extend(entry.models.iter().map(|(alias, model)| Model {
-                alias: alias.clone(),
-                id: model.id.clone(),
-                provider: Arc::clone(&provider),
-                api: entry.api,
-                max_tokens: model.max_tokens,
-                temperature: model.temperature,
-                web_tools: model.web_tools.or(entry.web_tools).unwrap_or(false),
-                reasoning_effort: model.reasoning_effort.clone(),
-                context_window: model.context_window,
-            }));
+            for (alias, model) in &entry.models {
+                let api = model.api.unwrap_or(entry.api);
+                let key = (name.clone(), api);
+                let provider = match providers.get(&key) {
+                    Some(provider) => Arc::clone(provider),
+                    None => {
+                        let provider = Arc::new(Provider::new(
+                            name,
+                            &entry.base_url,
+                            credentials(name, api, entry),
+                        )?);
+                        providers.insert(key, Arc::clone(&provider));
+                        provider
+                    }
+                };
+                models.push(Model {
+                    alias: alias.clone(),
+                    id: model.id.clone(),
+                    provider,
+                    api,
+                    max_tokens: model.max_tokens,
+                    temperature: model.temperature,
+                    web_tools: model.web_tools.or(entry.web_tools).unwrap_or(false),
+                    reasoning_effort: model.reasoning_effort.clone(),
+                    context_window: model.context_window,
+                });
+            }
         }
 
         // The catalog guarantees this alias exists; `position` rather than
@@ -221,9 +236,9 @@ impl ModelRegistry {
 /// The wiring between the config and the stored credentials lives here
 /// rather than in either: `catalog` reads a file and `auth` holds secrets,
 /// and neither needs to know what the other calls things.
-fn credentials(auth: &Auth, name: &str, entry: &ProviderEntry) -> Credentials {
-    match entry.api {
-        Api::Chat => match auth.api_key(name, entry.api_key_env.as_deref()) {
+fn credentials(auth: &Auth, name: &str, api: Api, entry: &ProviderEntry) -> Credentials {
+    match api {
+        Api::Chat | Api::Responses => match auth.api_key(name, entry.api_key_env.as_deref()) {
             Some(key) => Credentials::ApiKey(key),
             None => Credentials::None,
         },
@@ -281,11 +296,39 @@ mod tests {
     fn registry(json: &str) -> ModelRegistry {
         let file = serde_json::from_str(json).expect("test json must parse");
         let catalog = catalog::resolve(file, None).expect("catalog must resolve");
-        ModelRegistry::build(&catalog, |_, entry| match &entry.api_key_env {
-            Some(var) => Credentials::ApiKey(format!("key-for-{var}")),
-            None => Credentials::None,
+        ModelRegistry::build(&catalog, |_, api, entry| match api {
+            Api::Codex => Credentials::Missing("ol login openai".to_string()),
+            Api::Chat | Api::Responses => match &entry.api_key_env {
+                Some(var) => Credentials::ApiKey(format!("key-for-{var}")),
+                None => Credentials::None,
+            },
         })
         .expect("registry must build")
+    }
+
+    #[test]
+    fn models_with_different_effective_apis_get_matching_providers() {
+        let registry = registry(
+            r#"{"default":"chat","providers":{"p":{"base_url":"http://u",
+                 "api_key_env":"P_KEY","models":{
+                   "chat":{"id":"chat-model"},
+                   "chat-alternate":{"id":"chat-model-alternate"},
+                   "responses":{"id":"responses-model","api":"responses"},
+                   "codex":{"id":"codex-model","api":"codex"}}}}}"#,
+        );
+        let chat = registry.get("chat").unwrap();
+        let chat_alternate = registry.get("chat-alternate").unwrap();
+        let responses = registry.get("responses").unwrap();
+        let codex = registry.get("codex").unwrap();
+
+        assert_eq!(chat.api, Api::Chat);
+        assert_eq!(chat_alternate.api, Api::Chat);
+        assert_eq!(responses.api, Api::Responses);
+        assert_eq!(codex.api, Api::Codex);
+        assert!(Arc::ptr_eq(&chat.provider, &chat_alternate.provider));
+        assert!(!Arc::ptr_eq(&chat.provider, &responses.provider));
+        assert!(!Arc::ptr_eq(&chat.provider, &codex.provider));
+        assert!(!Arc::ptr_eq(&responses.provider, &codex.provider));
     }
 
     #[test]

@@ -1,26 +1,18 @@
-//! The Responses API, as ChatGPT's Codex backend speaks it.
-//!
-//! The second protocol, and the reason `Model::complete` has a `match`. It
-//! is not Chat Completions renamed: the conversation is a flat list of typed
-//! items rather than roles with attachments, a tool is a function with its
-//! fields inline, and the system prompt is a field of its own. The backend
-//! only streams, so the answer arrives as server-sent events even though
-//! nothing here is displayed until the turn is done.
-//!
-//! What it buys is the ChatGPT subscription: the same account the Codex CLI
-//! uses, reached with the grant `auth/codex.rs` stores.
+//! The shared Responses API implementation. It serves ChatGPT's Codex backend
+//! and API-key providers that expose a compatible Responses endpoint.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::messages::{Message, ToolCall};
 use crate::auth::codex::ORIGINATOR;
+use crate::catalog::Api;
 use crate::models::Model;
 
 use super::{
-    ProviderHttpError, ProviderRequest, ProviderResponse, STREAM_IDLE_TIMEOUT,
-    decode_tool_arguments, extract_error_message,
+    OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
+    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_message,
 };
 
 // ── Request ───────────────────────────────────────────────────────────
@@ -250,16 +242,21 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
             .map(|effort| Reasoning { effort }),
     };
 
-    let post = model
-        .provider
-        .post("codex/responses")
-        .await?
-        // Codex-specific, and required: the backend serves this endpoint
-        // only to clients that ask for it by name.
-        .header("OpenAI-Beta", "responses=experimental")
-        .header("originator", ORIGINATOR)
-        .header("accept", "text/event-stream")
-        .json(&body);
+    let (path, codex_only) = match model.api {
+        Api::Codex => ("codex/responses", true),
+        Api::Responses => ("responses", false),
+        Api::Chat => bail!("Responses provider called for a Chat model"),
+    };
+    let mut post = model.provider.post(path).await?;
+    if codex_only {
+        post = post
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("originator", ORIGINATOR);
+    }
+    if model.provider.name == OPENCODE_GO {
+        post = post.header(OPENCODE_SESSION_HEADER, &request.session_id);
+    }
+    let post = post.header("accept", "text/event-stream").json(&body);
 
     let (output, input_tokens) = read_turn(post, &model.alias).await?;
     let (content, tool_calls) = split_output(output);

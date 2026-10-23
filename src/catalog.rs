@@ -34,7 +34,7 @@ pub struct ConfigFile {
 /// One field rather than two: only the Codex backend speaks `codex`, and
 /// only a ChatGPT subscription gets into it, so naming the protocol has
 /// already named the credentials.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Api {
     /// OpenAI Chat Completions, which is what everything else speaks.
@@ -42,6 +42,8 @@ pub enum Api {
     Chat,
     /// ChatGPT's Codex backend, over the Responses API.
     Codex,
+    /// A non-Codex endpoint using the Responses API.
+    Responses,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,9 @@ pub struct ModelEntry {
     /// What goes on the wire — `~deepseek/deepseek-v4-flash-latest`, not
     /// something to type at a prompt, hence the alias.
     pub id: String,
+    /// Override the provider protocol for this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<Api>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,6 +285,7 @@ mod tests {
                 "mimo-v2.5-pro",
                 "mimo-v2.6-flash",
                 "mimo-v2.6-pro",
+                "muse-spark-1.3-contributor",
                 "space-bunny",
                 "step-5-preview-free",
                 "flash",

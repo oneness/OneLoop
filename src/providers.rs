@@ -17,6 +17,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CHAT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// OpenCode Go requires a stable per-conversation ID to route and cache prompts.
+pub(super) const OPENCODE_GO: &str = "opencode-go";
+pub(super) const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
+
 /// How a provider is let in.
 #[derive(Debug)]
 pub enum Credentials {
@@ -229,7 +233,7 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
 }
 
 pub mod chat;
-pub mod codex;
+pub mod responses;
 
 /// Keeps the raw text when it will not parse.
 ///

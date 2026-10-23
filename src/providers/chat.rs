@@ -15,12 +15,10 @@ use serde_json::Value;
 use crate::agent::messages::{Message, ToolCall};
 use crate::models::Model;
 
-use super::{ProviderRequest, ProviderResponse, decode_tool_arguments, send_and_read};
-
-/// OpenCode Go asks each client for a stable per-conversation id so it can
-/// optimize routing and prompt caching. Only that provider reads it.
-const OPENCODE_GO: &str = "opencode-go";
-const SESSION_HEADER: &str = "x-opencode-session";
+use super::{
+    OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderRequest, ProviderResponse, decode_tool_arguments,
+    send_and_read,
+};
 
 fn log_invalid_response(
     alias: &str,
@@ -289,7 +287,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 
     let post = model.provider.post("chat/completions").await?;
     let post = if model.provider.name == OPENCODE_GO {
-        post.header(SESSION_HEADER, &request.session_id)
+        post.header(OPENCODE_SESSION_HEADER, &request.session_id)
     } else {
         post
     }

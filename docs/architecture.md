@@ -78,13 +78,14 @@ cannot trigger a paid search.
 
 ## Providers and models
 
-There are two protocols. OpenAI Chat Completions is what a local
-llama-server and every hosted provider speak — they differ only by URL,
-model id, and whether a key is required, so `providers/chat.rs` serves all
-of them. `providers/codex.rs` speaks the Responses API to ChatGPT's Codex
-backend, which is the one way into a ChatGPT subscription. A provider's
-`api` field names which, and `Model::complete` is a two-arm `match` on it —
-no client trait, because two protocols do not need a plug-in point either.
+There are three API families. OpenAI Chat Completions is what a local
+llama-server and hosted providers speak by default; `providers/chat.rs` serves
+those models. `providers/responses.rs` serves both ChatGPT's Codex backend and
+other compatible Responses endpoints. A per-model API override can select
+Responses for one model on an otherwise Chat provider. The Codex backend uses
+OAuth and its own endpoint headers; other Responses providers use API keys as
+configured. `Model::complete` dispatches on the resolved API, without a client
+trait or plug-in framework.
 
 The second one is not the first renamed: the conversation is a flat list of
 typed items rather than roles with attachments, tools are functions with
@@ -320,7 +321,7 @@ src/
   providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response types
   providers/
     chat.rs         The Chat Completions wire format
-    codex.rs        The Responses wire format, as ChatGPT's Codex backend speaks it
+    responses.rs    The shared Responses API implementation
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
     bash.rs         Shell command execution
