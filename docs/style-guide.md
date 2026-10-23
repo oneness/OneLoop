@@ -3,6 +3,11 @@
 This guide defines the coding conventions for the OneLoop project. The goal is
 clean, idiomatic, functional-leaning Rust that is consistent across the codebase.
 
+OneLoop is a binary, not a library. API-design guidance here is a strong
+recommendation, not a contract: favor simplicity and directness over broad
+reusability, avoid premature generalization, and solve the problem in front of
+you. (After the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html).)
+
 ## References
 
 - [PRINCIPLES.md](../PRINCIPLES.md) — project soul and engineering direction
@@ -15,7 +20,11 @@ clean, idiomatic, functional-leaning Rust that is consistent across the codebase
 
 ## Imports
 
-Order: `std` → external crates → `crate`/`super`.
+Order: `std` → external crates → `crate`/`super`. One module per `use`
+statement: no `::` inside the `{...}` block (`use foo::{a, b}`, never
+`use foo::{bar::Baz}`). (rustfmt's `imports_granularity = "Module"` would
+enforce this, but it is nightly-only and this project pins stable, so it
+stays a review convention.)
 
 ```rust
 use std::io::{self, Write as IoWrite};
@@ -93,6 +102,8 @@ When to use `for` loops instead:
 ## Module Organization
 
 - One concern per module. If a file exceeds ~300 lines, consider splitting.
+- Name the file and its leaf module after the primary item inside
+  (`providers/chat.rs` holds the Chat Completions provider, not a grab bag).
 - Prefer private modules with explicit `pub use` re-exports.
 - Module file structure:
   ```
