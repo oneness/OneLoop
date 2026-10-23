@@ -26,7 +26,9 @@ and everything said lands in one append-only session file you can grep.
   Chat Completions.
 - **Nothing is compacted.** No summarization, no silent truncation. Every
   message, tool call, and result is appended to a JSONL file, so the session is
-  what was said, in order — and it is greppable on disk.
+  what was said, in order — and it is greppable on disk. The one substitution is
+  a `read` whose bytes the conversation already holds: it is recorded as a
+  pointer to the earlier copy, and the trace says so when it happens.
 - **Small enough to read.** Six tools, about eight thousand lines. No plugins,
   no hooks, no middleware — the whole agent reads in a sitting.
 

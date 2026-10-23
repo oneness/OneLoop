@@ -44,6 +44,15 @@ instructions, while a one-shot loads neither.
 - bash
 - elisp — evaluates Emacs Lisp through `emacsclient` in the running Emacs server
 
+`read` returns a window of a file rather than the whole thing: `offset` and
+`limit` choose it, and a window that stops short ends by naming the offset that
+continues it, so a long file is read in the pieces the model asks for instead of
+one message the conversation pays for on every remaining turn. A read whose
+bytes the conversation already holds is answered with a pointer to the earlier
+copy. That check walks the transcript on every batch, so `/clear` and a resumed
+session need no cache to invalidate, and a file that changed underneath cannot
+produce a matching digest.
+
 `elisp` is for editor-only state that the filesystem tools cannot see: open or
 unsaved buffers, visible windows, cursor positions, diagnostics, and process
 output. It requires `emacsclient` and a running Emacs server. The bundled
