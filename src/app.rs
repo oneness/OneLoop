@@ -68,6 +68,14 @@ impl AskMode {
             AskMode::Standalone => "/cn",
         }
     }
+
+    fn as_antigravity_command(&self) -> &'static str {
+        match self {
+            AskMode::Critique => "/ag",
+            AskMode::Ask => "/aga",
+            AskMode::Standalone => "/agn",
+        }
+    }
 }
 
 /// A line the REPL answers itself instead of sending to a model.
@@ -328,7 +336,7 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
                 (mode, None) => {
                     output::fail(&format!(
                         "usage: {} <question or prompt>",
-                        mode.as_command()
+                        mode.as_antigravity_command()
                     ));
                     return false;
                 }
@@ -533,6 +541,42 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{AskMode, Command, interactive_prompt, parse_command, parse_input};
+
+    #[test]
+    fn ag_modes_report_their_command_names() {
+        assert_eq!(AskMode::Critique.as_antigravity_command(), "/ag");
+        assert_eq!(AskMode::Ask.as_antigravity_command(), "/aga");
+        assert_eq!(AskMode::Standalone.as_antigravity_command(), "/agn");
+    }
+
+    #[test]
+    fn bare_ag_is_the_default_critique_command() {
+        assert!(matches!(
+            parse_input("/ag").command,
+            Some(Command::Antigravity {
+                mode: AskMode::Critique,
+                text: None
+            })
+        ));
+    }
+
+    #[test]
+    fn aga_and_agn_parse_their_arguments() {
+        assert!(matches!(
+            parse_input("/aga question").command,
+            Some(Command::Antigravity {
+                mode: AskMode::Ask,
+                text: Some("question")
+            })
+        ));
+        assert!(matches!(
+            parse_input("/agn prompt").command,
+            Some(Command::Antigravity {
+                mode: AskMode::Standalone,
+                text: Some("prompt")
+            })
+        ));
+    }
 
     #[test]
     fn interactive_prompt_names_the_active_model() {

@@ -132,9 +132,9 @@ rather than flattening it — providers, each with the models it hosts — and
 `models.rs` makes that live, then flattens only the lookup: everything
 downstream asks for a model by alias. It owns the one thing that moves:
 which model a request goes to when nothing names another. That index is
-atomic because both `/model` and the retry path can change it. Choosing a
-fallback immediately makes it active for the rest of the session, even if
-that request fails; the config file is untouched.
+atomic because both `/model` and the retry path can change it. A fallback
+becomes active for the rest of the session only after it successfully answers;
+if it fails, the current model stays selected. The config file is untouched.
 
 Setting a model, narrowest scope first: `/model` switches the session;
 `ONELOOP_MODEL` sets a run; `default` in the config sets every run. Only the

@@ -205,6 +205,19 @@ pub fn window_notice(line: &str) -> Option<&str> {
         .then_some(line)
 }
 
+/// Longest suffix of `input` at most `max_bytes` long that starts on a UTF-8
+/// character boundary.
+fn truncate_tail_at_char_boundary(input: &str, max_bytes: usize) -> &str {
+    if input.len() <= max_bytes {
+        return input;
+    }
+    let mut start = input.len() - max_bytes;
+    while start < input.len() && !input.is_char_boundary(start) {
+        start += 1;
+    }
+    &input[start..]
+}
+
 /// Longest prefix of `input` at most `max_bytes` long that ends on a UTF-8
 /// character boundary — plain byte-index slicing panics mid-character.
 pub fn truncate_at_char_boundary(input: &str, max_bytes: usize) -> &str {
@@ -235,9 +248,18 @@ enum Keep {
 
 fn truncate(input: &str, max_bytes: usize, max_lines: usize, keep: Keep) -> TruncationResult {
     let lines: Vec<&str> = input.lines().collect();
-    let normalized_input = lines.join("\n");
-    let original_bytes = normalized_input.len();
+    let original_bytes = input.len();
     let original_lines = lines.len();
+    if original_bytes <= max_bytes && original_lines <= max_lines {
+        return TruncationResult {
+            content: input.to_string(),
+            truncated: false,
+            original_bytes,
+            original_lines,
+            shown_bytes: original_bytes,
+            shown_lines: original_lines,
+        };
+    }
 
     let mut chosen: Vec<&str> = match keep {
         Keep::Head => lines.iter().copied().take(max_lines).collect(),
@@ -258,10 +280,24 @@ fn truncate(input: &str, max_bytes: usize, max_lines: usize, keep: Keep) -> Trun
         }
     }
 
-    let content = chosen.join("\n");
+    let mut content = chosen.join("\n");
+    if chosen.is_empty() && original_lines > 0 && max_lines > 0 && max_bytes > 0 {
+        let line = match keep {
+            Keep::Head => lines[0],
+            Keep::Tail => lines[original_lines - 1],
+        };
+        content = match keep {
+            Keep::Head => truncate_at_char_boundary(line, max_bytes).to_string(),
+            Keep::Tail => truncate_tail_at_char_boundary(line, max_bytes).to_string(),
+        };
+    }
     let shown_bytes = content.len();
-    let shown_lines = chosen.len();
-    let truncated = shown_lines < original_lines || shown_bytes < original_bytes;
+    let shown_lines = if chosen.is_empty() {
+        usize::from(!content.is_empty())
+    } else {
+        chosen.len()
+    };
+    let truncated = shown_bytes < original_bytes || original_lines > max_lines;
 
     TruncationResult {
         content,
@@ -300,6 +336,39 @@ fn with_notice(result: TruncationResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncation_preserves_original_when_input_fits_limits() {
+        let input = "one\r\ntwo\r\n";
+        assert_eq!(truncate_head(input, 64, 4), input);
+        assert_eq!(truncate_tail(input, 64, 4), input);
+    }
+
+    #[test]
+    fn head_truncation_slices_a_single_oversized_line() {
+        let output = truncate_head("0123456789", 4, 10);
+        assert_eq!(
+            output,
+            "0123\n[output truncated: showing 1 of 1 lines, 4 of 10 bytes]"
+        );
+    }
+
+    #[test]
+    fn tail_truncation_slices_a_single_oversized_line_from_the_end() {
+        let output = truncate_tail("0123456789", 4, 10);
+        assert_eq!(
+            output,
+            "6789\n[output truncated: showing 1 of 1 lines, 4 of 10 bytes]"
+        );
+    }
+
+    #[test]
+    fn oversized_line_truncation_preserves_utf8_boundaries() {
+        assert_eq!(
+            truncate_head("aéé", 2, 10),
+            "a\n[output truncated: showing 1 of 1 lines, 1 of 5 bytes]"
+        );
+    }
 
     /// A window that stops early must say where to resume, in the file's own
     /// numbering — an offset the model cannot act on is worse than no hint.

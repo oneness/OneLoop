@@ -28,6 +28,10 @@ fn log_invalid_response(
 ) -> Result<()> {
     let home = std::env::var_os("HOME").context("HOME is not set")?;
     let path = PathBuf::from(home).join(".oneloop").join("oneloop.log");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
