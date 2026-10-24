@@ -477,8 +477,9 @@ format_context() {
   '
 }
 
-# Display counts in billions to match the table header, retaining enough
-# precision to recover integer token counts to the nearest 10 million.
+# Display counts in billions to match the table header. Two decimals are kept
+# even when the second is a zero, so every row in the column has the same
+# width and the decimal points line up down the table.
 format_tokens() {
   local value=$1
 
@@ -490,7 +491,10 @@ format_tokens() {
   esac
 
   jq -nr --argjson value "$value" '
-    ($value / 1000000000 * 100 | round / 100 | tostring)
+    (($value / 10000000) | round) as $cents
+    | (($cents / 100) | floor) as $whole
+    | ($cents - ($whole * 100)) as $fraction
+    | "\($whole).\(if $fraction < 10 then "0" else "" end)\($fraction)"
   '
 }
 
