@@ -7,14 +7,20 @@ set -euo pipefail
 # The two rankings come from different places, because the OpenRouter UI shows
 # them in different places too:
 #
-#   Trending     is a usage ranking from the rankings page, ordered by token
+#   Trending     is a usage ranking from the rankings page, reporting token
 #                volume over a day, week or month window.
-#   Most Popular is the ordering of the model catalogue, which the models page
-#                shows by default. It is also token based: measured against the
-#                usage figures OpenRouter embeds alongside the catalogue, the
-#                token ordering reproduces the catalogue ordering closely,
-#                while request count and spend do not. Ranking by spend would
-#                surface expensive models, which is not what the UI shows.
+#   Most Popular pairs the ordering of the model catalogue, which the models
+#                page shows by default, with the usage figures OpenRouter
+#                embeds alongside the catalogue. Token volume is what matches
+#                that ordering: request count and spend do not. Ranking by
+#                spend would surface expensive models, which is not what the
+#                UI shows.
+#
+# Both tables are strictly sorted by the token count they display, descending,
+# before the limit is applied. Neither source returns that order itself: the
+# rankings endpoint follows its own metric rather than total prompt tokens,
+# and the catalogue order is only approximately token ordered. So both
+# builders sort explicitly instead of trusting the response order.
 #
 # Both endpoints are public and need no API key.
 #
@@ -165,8 +171,13 @@ fetch_opencode_go() {
 # record per model. The documents arrive as files because the catalogue is too
 # large to pass as a command line argument.
 #
-# A ranked model missing from the catalogue keeps its position and reports
-# "n/a" rather than disappearing, so the ranking stays faithful.
+# Both OpenRouter tables are strictly sorted by the token count they display,
+# descending, before the limit is applied. The rankings endpoint does not
+# return a strict total_prompt_tokens ordering (it follows its own metric),
+# so this sorts explicitly rather than trusting the response order.
+#
+# A ranked model missing from the catalogue keeps its position in the sorted
+# order and reports "n/a" rather than disappearing.
 build_trending_rows() {
   local ranking=$1
   local catalogue=$2
@@ -176,32 +187,60 @@ build_trending_rows() {
     --slurpfile ranking "$ranking" \
     --slurpfile catalogue "$catalogue" \
     --slurpfile popular "$popular" '
-      # Rankings identify catalogue models by canonical_slug, while the
-      # displayed OpenRouter id may include a variant such as :free or :batch.
+      # Rankings identify a model by permaslug and a variant separately.
+      # Match the variant to its catalogue id so free and batch usage does not
+      # get labeled as standard usage.
+      def variant_suffix($variant):
+        if $variant == "batch" then ":batch"
+        elif $variant == "free" then ":free"
+        else "" end;
       def bare_id: sub("-[0-9]{8}$"; "");
+      def model_id: sub(":(batch|free)$"; "") | bare_id;
 
-      ($catalogue[0].data | map(select(.canonical_slug != null)
-          | { key: .canonical_slug, value: . }) | from_entries) as $by_canonical
-      | ($catalogue[0].data | map({ key: .id, value: . }) | from_entries) as $catalogue
-      | # The rankings include models available through frontend endpoints but
-        # missing from /api/v1/models. Their endpoint pricing is still usable.
+      ($catalogue[0].data | map(select(.canonical_slug != null))
+          | group_by(.canonical_slug)
+          | map({key: .[0].canonical_slug, value: .})
+          | from_entries) as $by_canonical
+      | ($catalogue[0].data | map({key: .id, value: .}) | from_entries) as $catalogue_by_id
+      | # Frontend endpoints cover ranked models missing from the public
+        # catalogue. Index them by their actual endpoint variant.
         ($popular[0].data.models
           | map(select(.endpoint.pricing != null)
-              | {key: .slug, value: .endpoint})
+              | (.endpoint.variant // "standard") as $variant
+              | {key: (.slug + variant_suffix($variant)), value: .endpoint})
           | from_entries) as $endpoints
-      | $ranking[0].data[0:$limit]
-      | .[]
-      | . as $ranked
-      | (($by_canonical[$ranked.model_permaslug] // null) as $entry
-          | ($entry.id // ($ranked.model_permaslug | bare_id)) as $id
-          | ($endpoints[$id] // $endpoints[($ranked.model_permaslug | bare_id)] // null) as $endpoint
-          | [
-              $id,
-              (($entry.context_length // $endpoint.context_length // 0) | tostring),
-              (($entry.pricing.prompt // $endpoint.pricing.prompt // null) | tostring),
-              (($entry.pricing.completion // $endpoint.pricing.completion // null) | tostring),
-              (($ranked.total_prompt_tokens // 0) | tostring)
-            ]
+      | ([
+          $ranking[0].data[]
+          | . as $ranked
+          | select($ranked.model_permaslug != null and $ranked.model_permaslug != "" and $ranked.variant != "batch")
+          | ($by_canonical[$ranked.model_permaslug] // []) as $entries
+          | ($ranked.variant // "standard") as $variant
+          | (if $variant == "batch" then ($entries | map(select(.id | endswith(":batch"))) | .[0])
+             elif $variant == "free" then ($entries | map(select(.id | endswith(":free"))) | .[0])
+             else (($entries | map(select(((.id | endswith(":batch")) | not) and ((.id | endswith(":free")) | not))) | .[0]) // $entries[0])
+             end) as $entry
+          | (($ranked.variant_permaslug // $ranked.model_permaslug) | model_id) as $base_id
+          | (if $entry != null then $entry.id
+             else $base_id + variant_suffix($variant) end) as $id
+          | ($catalogue_by_id[$id] // null) as $catalogue_entry
+          | ($endpoints[$id] // $endpoints[$base_id + variant_suffix($variant)] // $endpoints[$base_id] // null) as $endpoint
+          | {
+              id: $id,
+              context: ($entry.context_length // $catalogue_entry.context_length // $endpoint.context_length // 0),
+              prompt: ($endpoint.pricing.prompt // $entry.pricing.prompt // $catalogue_entry.pricing.prompt // null),
+              completion: ($endpoint.pricing.completion // $entry.pricing.completion // $catalogue_entry.pricing.completion // null),
+              tokens: ($ranked.total_prompt_tokens // 0)
+            }
+        ]
+        | sort_by(-.tokens)
+        | .[0:$limit][]
+        | [
+            .id,
+            (.context | tostring),
+            (.prompt | tostring),
+            (.completion | tostring),
+            (.tokens | tostring)
+          ]
           | @tsv)
     '
 }
@@ -209,8 +248,12 @@ build_trending_rows() {
 # Most Popular: that response already carries the ranking and the model
 # records together. Its per-model records use `slug` rather than `id` and hold
 # no pricing, so the public catalogue supplies the prices. The usage figures it
-# embeds are keyed by permaslug and variant, so they are summed per model to
-# report a comparable token volume.
+# embeds are keyed by permaslug and variant, so each model-variant row reports
+# its own token volume rather than combining other variants.
+#
+# The catalogue order is only approximately token ordered, so this sorts all
+# candidates by the token count actually displayed, descending, before the
+# limit is applied.
 build_most_popular_rows() {
   local popular=$1
   local catalogue=$2
@@ -218,35 +261,59 @@ build_most_popular_rows() {
   jq -nr --argjson limit "$limit" \
     --slurpfile popular "$popular" \
     --slurpfile catalogue "$catalogue" '
-      def bare_id: sub("-[0-9]{8}$"; "");
+      def variant_suffix($variant):
+        if $variant == "batch" then ":batch"
+        elif $variant == "free" then ":free"
+        else "" end;
 
-      ($catalogue[0].data | map(select(.canonical_slug != null)
-          | { key: .canonical_slug, value: . }) | from_entries) as $by_canonical
-      | # One model can appear as several dated variants, and some carry a
-        # separate :batch variant. Sum them so each model reports one row.
+      ($catalogue[0].data | map(select(.canonical_slug != null))
+          | group_by(.canonical_slug)
+          | map({key: .[0].canonical_slug, value: .})
+          | from_entries) as $by_canonical
+      | # Exclude batch variants from the displayed models. Keep analytics
+        # separated by variant so the displayed count and ordering match.
         ($popular[0].data.analytics
           | to_entries
           | map(.value)
-          | group_by(.model_permaslug | bare_id)
+          | group_by(.model_permaslug)
           | map({
-              id: (.[0].model_permaslug | bare_id),
-              tokens: (map(.total_prompt_tokens // 0) | add)
+              key: .[0].model_permaslug,
+              value: (group_by(.variant)
+                | map({key: .[0].variant, value: (map(.total_prompt_tokens // 0) | add // 0)})
+                | from_entries)
             })
-          | map({ key: .id, value: .tokens })
           | from_entries) as $tokens
 
-      | $popular[0].data.models[0:$limit]
-      | .[]
-      | . as $ranked
-      | (($by_canonical[$ranked.permaslug] // null) as $entry
-          | ($entry.id // ($ranked.slug // "")) as $id
-          | [
-              $id,
-              (($entry.context_length // $ranked.context_length // 0) | tostring),
-              (($entry.pricing.prompt // null) | tostring),
-              (($entry.pricing.completion // null) | tostring),
-              (($tokens[($ranked.permaslug | bare_id)] // 0) | tostring)
-            ]
+      | ([
+          $popular[0].data.models[]
+          | . as $ranked
+          | select($ranked.permaslug != null and $ranked.permaslug != "")
+          | ($ranked.endpoint.variant // "standard") as $variant
+          | select($variant != "batch")
+          | ($by_canonical[$ranked.permaslug] // []) as $entries
+          | (if $variant == "batch" then ($entries | map(select(.id | endswith(":batch"))) | .[0])
+             elif $variant == "free" then ($entries | map(select(.id | endswith(":free"))) | .[0])
+             else (($entries | map(select(((.id | endswith(":batch")) | not) and ((.id | endswith(":free")) | not))) | .[0]) // $entries[0])
+             end) as $entry
+          | (if $entry != null then $entry.id
+             else ($ranked.slug // "") + variant_suffix($variant) end) as $id
+          | {
+              id: $id,
+              context: ($entry.context_length // $ranked.endpoint.context_length // $ranked.context_length // 0),
+              prompt: ($ranked.endpoint.pricing.prompt // $entry.pricing.prompt // null),
+              completion: ($ranked.endpoint.pricing.completion // $entry.pricing.completion // null),
+              tokens: ($tokens[$ranked.permaslug][$variant] // 0)
+            }
+        ]
+        | sort_by(-.tokens)
+        | .[0:$limit][]
+        | [
+            .id,
+            (.context | tostring),
+            (.prompt | tostring),
+            (.completion | tostring),
+            (.tokens | tostring)
+          ]
           | @tsv)
     '
 }
