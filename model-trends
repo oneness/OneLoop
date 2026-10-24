@@ -477,7 +477,8 @@ format_context() {
   '
 }
 
-# Compact token counts, e.g. 1234567 -> 1.23M.
+# Display counts in billions to match the table header, retaining enough
+# precision to recover integer token counts to the nearest 10 million.
 format_tokens() {
   local value=$1
 
@@ -489,11 +490,7 @@ format_tokens() {
   esac
 
   jq -nr --argjson value "$value" '
-    if   $value >= 1000000000 then ($value / 1000000000 * 100 | round / 100 | tostring)
-    elif $value >= 1000000    then ($value / 1000000    * 100 | round / 100 | tostring)
-    elif $value >= 1000       then ($value / 1000       * 100 | round / 100 | tostring)
-    else $value | tostring
-    end
+    ($value / 1000000000 * 100 | round / 100 | tostring)
   '
 }
 
