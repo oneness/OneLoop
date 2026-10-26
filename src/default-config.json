@@ -16,8 +16,8 @@
       "base_url": "https://chatgpt.com/backend-api",
       "api": "codex",
       "models": {
-        "chatgpt": {
-          "id": "gpt-5.6-sol",
+        "luna": {
+          "id": "gpt-6-luna",
           "reasoning_effort": "medium"
         }
       }
@@ -25,10 +25,19 @@
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
-      "web_tools": true,
+      "web_tools": false,
       "models": {
-        "flash": {
-          "id": "~deepseek/deepseek-v4-flash-latest"
+        "nvidia": {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "context_window": 1000000
+        },
+        "laguna": {
+          "id": "poolside/laguna-s-2.1:free",
+          "context_window": 262144
+        },
+        "ling": {
+          "id": "inclusionai/ling-3.1-flash",
+          "context_window": 262144
         }
       }
     },
@@ -36,70 +45,18 @@
       "base_url": "https://opencode.ai/zen/go/v1",
       "api_key_env": "OPENCODE_GO_API_KEY",
       "models": {
-        "muse-spark-1.3-contributor": {
+        "deepseek-flash": {
+          "id": "deepseek-v4.1-flash",
+          "context_window": 1000000
+        },
+        "meta-muse": {
           "id": "muse-spark-1.3-contributor",
-          "api": "responses",
-          "context_window": 1048576
+          "context_window": 1048576,
+          "api": "responses"
         },
-        "kimi-k3": {
-          "id": "kimi-k3"
-        },
-        "kimi-k2.7-code": {
-          "id": "kimi-k2.7-code"
-        },
-        "kimi-k2.6": {
-          "id": "kimi-k2.6"
-        },
-        "glm-5.3-flash": {
-          "id": "glm-5.3-flash"
-        },
-        "glm-5.3": {
-          "id": "glm-5.3"
-        },
-        "glm-5.2": {
-          "id": "glm-5.2"
-        },
-        "deepseek-v4-pro": {
-          "id": "deepseek-v4-pro"
-        },
-        "deepseek-v4-flash": {
-          "id": "deepseek-v4-flash"
-        },
-        "deepseek-v4.1-flash": {
-          "id": "deepseek-v4.1-flash"
-        },
-        "deepseek-v4-flash-vision-exp": {
-          "id": "deepseek-v4-flash-vision-exp"
-        },
-        "mimo-v2.6-pro": {
-          "id": "mimo-v2.6-pro"
-        },
-        "mimo-v2.6-flash": {
-          "id": "mimo-v2.6-flash"
-        },
-        "mimo-v2.5-pro": {
-          "id": "mimo-v2.5-pro"
-        },
-        "mimo-v2.5": {
-          "id": "mimo-v2.5"
-        },
-        "longcat-2.0": {
-          "id": "longcat-2.0"
-        },
-        "longcat-2.5-preview-free": {
-          "id": "longcat-2.5-preview-free"
-        },
-        "step-5-preview-free": {
-          "id": "step-5-preview-free"
-        },
-        "hy4-preview": {
-          "id": "hy4-preview"
-        },
-        "hy3": {
-          "id": "hy3"
-        },
-        "space-bunny": {
-          "id": "space-bunny"
+        "mimo-flash": {
+          "id": "mimo-v2.6-flash",
+          "context_window": 1050000
         }
       }
     }

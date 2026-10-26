@@ -295,7 +295,7 @@
     <div class="label">models</div>
     <h2>Any Model</h2>
     <p class="big">One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus a local model when you want private.<br>Reach a hosted one only when you ask for it.</p>
-    <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one credential, one connection pool. Credentials may be absent, an API key, or a renewable subscription grant. Its models get short aliases: <code>qwen</code>, <code>chatgpt</code>, <code>flash</code>. <code>/model</code> switches which one answers for the session.</p>
+    <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one credential, one connection pool. Credentials may be absent, an API key, or a renewable subscription grant. Its models get short aliases: <code>qwen</code>, <code>luna</code>, <code>nvidia</code>. <code>/model</code> switches which one answers for the session.</p>
     <p class="big" style="font-size:16px; margin-top:16px;">The same code serves llama-server, OpenRouter, and OpenCode Go over Chat Completions, plus ChatGPT's Codex backend and OpenCode Go Responses models over the Responses API.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">Edit <code>~/.oneloop/config.json</code>, then use <code>/reload</code> to refresh providers and models without restarting or clearing the conversation. Your current model stays selected while its alias exists; changing <code>default</code> alone does not switch it. If reloading fails, the working configuration stays untouched.</p>
   </div>
@@ -308,9 +308,9 @@
     <h2>One session, many models</h2>
     <p class="big">Switch mid-conversation. Plan with the expensive model,<br>implement with the cheap one, ask a third for a second opinion.</p>
     <div class="mono" style="margin-top: 24px; font-size: 15px; text-align: left;">
-      <span class="cm">(flash)&gt;</span> /model chatgpt; plan how to split the parser<br>
-      <span class="cm">(chatgpt)&gt;</span> /model flash; implement step 1 of that plan<br>
-      <span class="cm">(flash)&gt;</span> /ca is the plan still consistent with the code?
+      <span class="cm">(nvidia)&gt;</span> /model luna; plan how to split the parser<br>
+      <span class="cm">(luna)&gt;</span> /model nvidia; implement step 1 of that plan<br>
+      <span class="cm">(nvidia)&gt;</span> /ca is the plan still consistent with the code?
     </div>
     <p class="big" style="font-size: 16px; margin-top: 20px;">A command can carry a prompt across the <code>;</code> boundary, so switching and asking is one line. Every answer is recorded in the same append-only session.</p>
   </div>

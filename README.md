@@ -82,9 +82,9 @@ A command can carry a prompt across the `;` boundary, which is what makes the
 multi-model workflow quick:
 
 ```text
-(flash)> /model chatgpt; plan how to split the parser into modules
-(chatgpt)> /model flash; implement step 1 of that plan
-(flash)> /ca is the plan still consistent with what we implemented?
+(nvidia)> /model luna; plan how to split the parser into modules
+(luna)> /model nvidia; implement step 1 of that plan
+(nvidia)> /ca is the plan still consistent with what we implemented?
 ```
 
 `/cc` and `/ca` send the transcript, including tool arguments and results, as
@@ -111,11 +111,11 @@ like OpenCode Go. A provider's `api` field names the default, and a model can
 override it.
 
 Every model has a short **alias**, which is the name used everywhere else:
-`/model flash` rather than the wire id it resolves to. Aliases are unique across
+`/model nvidia` rather than the wire id it resolves to. Aliases are unique across
 all providers, so naming one never has to say which provider it meant.
 
-Config is `~/.oneloop/config.json`, written from a template on first run —
-shown here with a second OpenRouter model added:
+Config is `~/.oneloop/config.json`, written from a template on first run. This
+is that template:
 
 ```json
 {
@@ -124,24 +124,35 @@ shown here with a second OpenRouter model added:
     "local": {
       "base_url": "http://localhost:8080/v1",
       "models": {
-        "qwen":    { "id": "qwen" },
-        "glimmer": { "id": "glimmer" }
+        "qwen":    { "id": "Qwen3.6-35B-A3B-Q4_K_M.gguf" },
+        "glimmer": { "id": "Muse-Glimmer-30B-Q4_K_M.gguf" }
       }
     },
     "openai": {
       "base_url": "https://chatgpt.com/backend-api",
       "api": "codex",
       "models": {
-        "chatgpt": { "id": "gpt-5.6-sol", "reasoning_effort": "medium" }
+        "luna": { "id": "gpt-6-luna", "reasoning_effort": "medium" }
       }
     },
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
-      "web_tools": true,
+      "web_tools": false,
       "models": {
-        "flash":  { "id": "~deepseek/deepseek-v4-flash-latest" },
-        "pinned": { "id": "deepseek/deepseek-v4-flash-0731" }
+        "nvidia": { "id": "nvidia/nemotron-3-ultra-550b-a55b:free", "context_window": 1000000 },
+        "laguna": { "id": "poolside/laguna-s-2.1:free",              "context_window": 262144 },
+        "ling":   { "id": "inclusionai/ling-3.1-flash",              "context_window": 262144 }
+      }
+    },
+    "opencode-go": {
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_key_env": "OPENCODE_GO_API_KEY",
+      "models": {
+        "deepseek-flash": { "id": "deepseek-v4.1-flash", "context_window": 1000000 },
+        "meta-muse":      { "id": "muse-spark-1.3-contributor",
+                            "context_window": 1048576, "api": "responses" },
+        "mimo-flash":     { "id": "mimo-v2.6-flash", "context_window": 1050000 }
       }
     }
   }
