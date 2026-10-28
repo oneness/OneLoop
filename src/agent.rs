@@ -639,9 +639,7 @@ impl Agent {
             if result.is_error {
                 output::fail(&format!("{tool_label} (failed: {})", result.content));
             } else {
-                let lines = result.content.lines().count();
-                let bytes = result.content.len();
-                output::tick(&format!("{tool_label} ({lines} lines, {bytes} bytes)"));
+                output::tick(&tool_label);
             }
         }
 
