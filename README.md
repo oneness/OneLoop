@@ -14,6 +14,10 @@ One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscr
   `/ca`, and `/ag` ask Claude Code or Antigravity about the conversation
   without switching your model at all. Plan with the expensive one, implement
   with the cheap one, take a second opinion from a third.
+- **Your own commands count.** A line starting with `!` runs bash yourself, and
+  its output is printed and then recorded in the session as reference material
+  without spending a request. Commands that succeed are appended to your own
+  shell history, so `!` completion offers back what you actually ran.
 - **Subscriptions you already pay for.** Claude Code and Antigravity are driven
   through their own CLI binaries, so their answers spend quota you have already
   bought rather than metered tokens. ChatGPT Plus/Pro is signed in to directly
@@ -28,7 +32,7 @@ One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscr
   what was said, in order — and it is greppable on disk. The one substitution is
   a `read` whose bytes the conversation already holds: it is recorded as a
   pointer to the earlier copy, and the trace says so when it happens.
-- **Small enough to read.** Six tools, about eight thousand lines. No plugins,
+- **Small enough to read.** Six tools, about ten thousand lines. No plugins,
   no hooks, no middleware — the whole agent reads in a sitting.
 
 Tools: `read` (file contents), `write` (create or overwrite), `edit`

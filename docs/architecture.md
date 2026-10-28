@@ -182,7 +182,8 @@ stays an ordinary reported error.
 ## Interactive help
 
 The startup banner shows the session summary and a short `/help` hint rather
-than a full command list. `/help` is handled locally without a model request:
+than a full command list. `/help` is handled locally without a model request —
+as is a `!` command, which runs bash for the user and records the output:
 it displays the current summary (model, available models, tools, session path
 and message count, and loaded instruction sources), then commands and keyboard
 shortcuts. The summary is generated when requested, so it reflects session
@@ -361,12 +362,12 @@ src/
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
     messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
-    session.rs      Session persistence, rotation, dangling-tool-call repair
+    session.rs      Session persistence, rotation, dangling-tool-call repair, project lock
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
   antigravity/
     mod.rs          Public entry points for Antigravity requests
     client.rs       Stateless Antigravity CLI execution, discussion prompts, reference responses
-  app.rs            Interactive REPL (rustyline), /commands, Ctrl+C handling
+  app.rs            Interactive REPL (rustyline), `/` and `!` commands, Ctrl+C handling
   auth.rs           Credential resolution (env over ~/.oneloop/auth.json) and storage
   auth/
     codex.rs        ChatGPT sign-in: PKCE, the callback server, token refresh
