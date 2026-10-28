@@ -212,11 +212,6 @@ so the transcript the terminal shows — `command`, `exit_code`, `stdout`,
 uncoloured and unprefixed to stderr, where the rest of what OneLoop says about
 itself goes, between two glyph-prefixed status lines.
 
-The one thing the two callers decide differently is which end of a long output
-to keep: a tool transcript drops its head, since a failure is reported at the
-end, while a command the user ran drops its tail, since they are reading the
-first lines. `output::Keep` is that choice, made at the call site.
-
 Recording reuses the reference path: `Agent::record_reference` pushes a user
 message without starting a turn, the same move `/cc` makes, so the model reads
 the output when the user next writes to it. Nothing about it is hidden — the

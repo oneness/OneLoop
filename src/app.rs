@@ -486,7 +486,7 @@ async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command
     output::step(&format!("! {command}"));
     // Ctrl+C drops the run future; the tool kills the child as it goes.
     let result = tokio::select! {
-        result = bash::run(command, agent.cwd(), BASH_TIMEOUT_SECS, output::Keep::Head) => result,
+        result = bash::run(command, agent.cwd(), BASH_TIMEOUT_SECS) => result,
         _ = tokio::signal::ctrl_c() => {
             output::stopped("stopped");
             return false;

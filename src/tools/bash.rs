@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
 use crate::agent::AgentContext;
-use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, Keep, truncate_head, truncate_tail};
+use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
 
 use super::{Tool, ToolResult};
 
@@ -27,12 +27,7 @@ struct BashInput {
 
 /// Runs one bash command in `cwd` and returns the transcript a model is shown,
 /// so the tool and the prompt share one implementation and one output shape.
-pub async fn run(
-    command_text: &str,
-    cwd: &Path,
-    timeout_secs: u64,
-    keep: Keep,
-) -> Result<ToolResult> {
+pub async fn run(command_text: &str, cwd: &Path, timeout_secs: u64) -> Result<ToolResult> {
     let mut command = Command::new("bash");
     command
         .arg("-lc")
@@ -80,12 +75,8 @@ pub async fn run(
         }
     }
 
-    let content = match keep {
-        Keep::Head => truncate_head(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
-        Keep::Tail => truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
-    };
     Ok(ToolResult {
-        content,
+        content: truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
         is_error: !success,
     })
 }
@@ -126,7 +117,7 @@ impl Tool for BashTool {
             .timeout_secs
             .filter(|seconds| *seconds > 0)
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
-        run(&input.command, &ctx.cwd, timeout_secs, Keep::Tail).await
+        run(&input.command, &ctx.cwd, timeout_secs).await
     }
 }
 
@@ -142,23 +133,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_caller_chooses_which_end_of_a_long_output_survives() {
-        let command = "seq 1 5000";
-        let head = run(command, &std::env::temp_dir(), 30, Keep::Head)
-            .await
-            .unwrap();
-        let tail = run(command, &std::env::temp_dir(), 30, Keep::Tail)
-            .await
-            .unwrap();
+    async fn a_long_output_keeps_its_last_lines_and_says_so() {
+        let result = run("seq 1 5000", &std::env::temp_dir(), 30).await.unwrap();
 
-        assert!(
-            head.content.contains("\n1\n") && !head.content.contains("\n5000"),
-            "head keeps the first lines"
-        );
-        assert!(
-            tail.content.contains("\n5000") && !tail.content.contains("\n1\n"),
-            "tail keeps the last"
-        );
+        assert!(result.content.contains("\n5000") && result.content.contains("output truncated"));
+    }
+
+    #[tokio::test]
+    async fn an_output_within_the_limits_is_untouched() {
+        let result = run("seq 1 500", &std::env::temp_dir(), 30).await.unwrap();
+
+        assert!(!result.content.contains("output truncated"));
     }
 
     #[tokio::test]
