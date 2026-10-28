@@ -263,7 +263,6 @@
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="tagline">Most coding agents are built around a vendor.<br>OneLoop is built around your subscriptions.</p>
     <p class="big" style="font-size:17px; margin-top:24px;">One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus local when you want private.<br>One loop, six tools, no framework.</p>
   </div>
 </section>
@@ -462,18 +461,17 @@
   <div class="box">
     <div class="label">get started</div>
     <h2>Quick start</h2>
-    <div class="mono" style="text-align: left;">
-      <span class="cm"># 1. Start the local model (no key, nothing leaves the box)</span><br>
-      ./ols<br><br>
+    <div class="mono" style="margin-top: 20px; font-size: 15px; line-height: 1.6; text-align: left;">
+      <span class="cm"># 1. Local model — no key, nothing leaves the box</span><br>
+      ./ols<br>
       <span class="cm"># 2. Interactive REPL</span><br>
-      ./ol<br><br>
-      <span class="cm"># Reach a hosted model only if you want one</span><br>
+      ./ol<br>
+      <span class="cm"># Hosted model, only if you want one</span><br>
       ./ol login openrouter<br>
       ./ol login opencode-go<br>
-      ./ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br><br>
-      <span class="cm"># One-shot</span><br>
-      ./ol "explain this codebase"<br><br>
-      <span class="cm"># Pipe into it</span><br>
+      ./ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br>
+      <span class="cm"># One-shot, or piped</span><br>
+      ./ol "explain this codebase"<br>
       git diff | ./ol "summarise these changes"
     </div>
   </div>
