@@ -217,10 +217,9 @@ Sessions are linear append-only files at `.oneloop/sessions/YYYY-MM-DD.jsonl`;
 `/clear` rotates to `-001`, `-002`, and so on, and nothing is ever deleted.
 One `ol` per project at a time: the session file has a single writer, so a
 second run in the same directory says so and exits instead of interleaving
-turns with the first. On
-restart the latest session for today opens automatically. A tool call left
-without a result — after a `Ctrl+C` — is closed out on open, because providers
-reject a conversation containing dangling calls.
+turns with the first. On restart the latest session for today opens
+automatically. A tool call left without a result — after a `Ctrl+C` — is closed
+out on open, because providers reject a conversation containing dangling calls.
 
 Nothing is summarized and nothing is dropped behind your back. A conversation
 grows until the server refuses it, and the refusal names the fix: `/clear`, or a
