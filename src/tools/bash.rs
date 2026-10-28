@@ -1,25 +1,20 @@
-use std::{path::Path, process::Stdio};
+use std::path::Path;
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{
-    process::Command,
-    time::{Duration, timeout},
-};
+use tokio::process::Command;
+use tokio::time::{Duration, timeout};
 
-use crate::{
-    agent::AgentContext,
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail},
-};
+use crate::agent::AgentContext;
+use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
 
 use super::{Tool, ToolResult};
 
-/// The tool's own default, unchanged from the literal it replaced: a model's
-/// `bash` call that names no timeout gets this. A `!` command typed at the
-/// prompt runs under `BASH_TIMEOUT_SECS` in `app.rs` instead, and `run` takes
-/// the number as an argument so neither caller can inherit the other's.
+/// What a model's `bash` call gets when it names no timeout. A `!` command runs
+/// under `BASH_TIMEOUT_SECS` in `app.rs` instead.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 pub struct BashTool;
@@ -30,10 +25,8 @@ struct BashInput {
     timeout_secs: Option<u64>,
 }
 
-/// Runs one bash command in `cwd` and returns what a model is shown, whether
-/// the model asked for it or the user typed it at the prompt behind a `!`. The
-/// transcript shape — `command`, `exit_code`, `stdout`, `stderr` — is therefore
-/// identical on both paths.
+/// Runs one bash command in `cwd` and returns the transcript a model is shown,
+/// so the tool and the prompt share one implementation and one output shape.
 pub async fn run(command_text: &str, cwd: &Path, timeout_secs: u64) -> Result<ToolResult> {
     let mut command = Command::new("bash");
     command
@@ -118,9 +111,8 @@ impl Tool for BashTool {
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
         let input: BashInput = serde_json::from_value(input)
             .context("invalid bash input; expected { command: string, timeout_secs?: number }")?;
-        // A zero-second timeout no command can meet, so a call carrying one is
-        // asking for the default and getting a guaranteed failure instead. It
-        // is a missing timeout in disguise: treat it as one.
+        // No command can meet a zero-second timeout, so it is a missing timeout
+        // in disguise: treat it as one instead of failing every such call.
         let timeout_secs = input
             .timeout_secs
             .filter(|seconds| *seconds > 0)

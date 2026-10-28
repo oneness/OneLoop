@@ -1,31 +1,35 @@
-use std::{borrow::Cow, cell::RefCell, env, rc::Rc};
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::env;
+use std::rc::Rc;
 
 use anyhow::Result;
-use rustyline::{
-    Context, Editor, Helper,
-    completion::{Completer, Pair},
-    error::ReadlineError,
-    highlight::Highlighter,
-    hint::Hinter,
-    history::DefaultHistory,
-    validate::Validator,
-};
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
 
+use crate::agent::Agent;
 use crate::bash_history::BashHistory;
+use crate::config::Config;
+use crate::models::ModelRegistry;
 use crate::output;
+use crate::prompt;
+use crate::tools::ToolRegistry;
 use crate::tools::bash;
-use crate::{agent::Agent, config::Config, models::ModelRegistry, prompt, tools::ToolRegistry};
 
-/// A `!` command runs for the user at the terminal, where Ctrl+C is always
-/// within reach, so it gets a longer leash than the tool's own 30 seconds.
+/// A `!` command runs for the user, with Ctrl+C in reach, so it gets a longer
+/// leash than a tool call's 30 seconds.
 const BASH_TIMEOUT_SECS: u64 = 300;
 
 /// How many candidates Tab lists. A hint offers the first of them.
 const COMPLETION_LIMIT: usize = 5;
 
-/// How many commands `!` on its own shows. Hints and Tab need a terminal that
-/// rustyline can edit on, and this listing is what a plain line reader gets
-/// instead.
+/// How many commands `!` on its own shows: the only route to the history on a
+/// terminal rustyline cannot edit on.
 const RECENT_COMMANDS: usize = 10;
 
 /// How the process was asked to run. The one-shot variant is stateless by
@@ -41,8 +45,7 @@ pub struct App {
     config: Config,
 }
 
-/// Lines that start a `!` command complete from the user's own bash history —
-/// the commands they ran at this prompt, not the REPL's line history.
+/// Completes `!` lines from the user's bash history, not the REPL's line history.
 struct ReplHelper {
     history: Rc<RefCell<BashHistory>>,
 }
@@ -59,8 +62,8 @@ fn bash_fragment(line: &str, pos: usize) -> Option<(usize, &str)> {
 impl Completer for ReplHelper {
     type Candidate = Pair;
 
-    /// The replacement starts right after the sigil, so the elected command
-    /// takes the place of whatever followed the `!` and the `!` itself stays.
+    /// The replacement starts after the sigil, so the `!` survives and the
+    /// elected command replaces the fragment.
     fn complete(
         &self,
         line: &str,
@@ -87,8 +90,7 @@ impl Completer for ReplHelper {
 impl Hinter for ReplHelper {
     type Hint = String;
 
-    /// The rest of the most recent command that starts with what is typed, so
-    /// Right accepts it.
+    /// The rest of the newest command starting with what is typed.
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
         // A hint is drawn after the cursor and accepted by moving right, so it
         // can only speak for the end of the line.
@@ -173,8 +175,7 @@ enum Command<'a> {
     Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
-    /// A command the user runs themselves at the prompt: `!ls`. Its output is
-    /// shown and recorded for the model, which is never asked anything.
+    /// A command the user runs themselves: `!ls`. Recorded, never asked about.
     Bash(&'a str),
 }
 
@@ -473,8 +474,8 @@ async fn run_command(
     }
 }
 
-/// Runs a `!` command, shows its output verbatim, and records it for the next
-/// model turn. No prompt is sent: the model hears nothing until the user asks.
+/// Runs a `!` command, shows its output, and records it for the next turn.
+/// No prompt is sent.
 async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command: &str) -> bool {
     if command.is_empty() {
         print_recent_commands(history);
@@ -499,8 +500,7 @@ async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command
         }
     };
 
-    // Verbatim, uncoloured, unprefixed: what the terminal shows is exactly what
-    // the model is given, so a copy of the screen is a copy of the context.
+    // Verbatim and unprefixed: what the terminal shows is what the model gets.
     eprint!("{}", result.content);
     if !result.content.ends_with('\n') {
         eprintln!();
@@ -531,8 +531,7 @@ async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command
     }
 }
 
-/// What `!` on its own reports: the history the hint and Tab draw from, so it
-/// is reachable where rustyline does no line editing at all.
+/// What `!` on its own reports: the same history the hint and Tab draw from.
 fn print_recent_commands(history: &Rc<RefCell<BashHistory>>) {
     let history = history.borrow();
     let mut recent: Vec<&str> = history.matches("", RECENT_COMMANDS);
@@ -727,8 +726,12 @@ mod tests {
         AskMode, Command, ReplHelper, bash_fragment, interactive_prompt, parse_command, parse_input,
     };
     use crate::bash_history::BashHistory;
-    use rustyline::{Context, completion::Completer, hint::Hinter, history::DefaultHistory};
-    use std::{cell::RefCell, rc::Rc};
+    use rustyline::Context;
+    use rustyline::completion::Completer;
+    use rustyline::hint::Hinter;
+    use rustyline::history::DefaultHistory;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     /// The helper as the REPL holds it, over a history with no file behind it.
     fn helper(commands: &[&str]) -> ReplHelper {

@@ -1,23 +1,17 @@
-//! bash's own history file: read for `!` completion and appended to when a `!`
-//! command succeeds.
+//! bash's own history file: read for `!` completion, appended to on success.
 //!
-//! Nothing here owns that file. It is never trimmed, rewritten, or renamed —
-//! `HISTFILESIZE` decides how long it gets and `histappend` decides whether
-//! anybody else's lines survive a shell exiting. This module only reads it and
-//! adds a line.
+//! The file is bash's, never ours: this module reads it and adds a line, and
+//! leaves length and survival to `HISTFILESIZE` and `histappend`.
 
-use std::{
-    env,
-    fs::{self, File, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::env;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// How many of the newest commands the matcher considers. The file is bash's,
-/// not ours — it is only ever appended to — so this bounds the candidate list
-/// rather than the history.
+/// How many of the newest commands the matcher considers: a cap on candidates,
+/// never on the file.
 const CONSIDERED_COMMANDS: usize = 1000;
 
 /// The commands bash has recorded, newest last.
@@ -133,10 +127,8 @@ fn history_path() -> Option<PathBuf> {
     )
 }
 
-/// The resolution itself, with the environment passed in so precedence can be
-/// tested without mutating the process environment out from under every other
-/// test. An empty value counts as unset, which is what an exported-but-empty
-/// `HISTFILE` means.
+/// The resolution itself, with the environment passed in so precedence is
+/// testable. An empty value counts as unset.
 fn resolve(
     override_path: Option<&str>,
     histfile: Option<&str>,
@@ -174,8 +166,7 @@ fn is_timestamp(line: &str) -> bool {
         .is_some_and(|rest| rest.len() >= 9 && rest.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// Appends one line. Best effort by design: a history that cannot be written is
-/// not a reason to fail the command that ran.
+/// Appends one line, best effort: an unwritable history is not a failed command.
 fn append(path: &Path, command: &str) -> Result<()> {
     let mut file = open_for_append(path)?;
     file.write_all(format!("{command}\n").as_bytes())
@@ -185,8 +176,8 @@ fn append(path: &Path, command: &str) -> Result<()> {
 fn open_for_append(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);
-    // Only consulted when the file has to be created: bash keeps its history
-    // private, and a file created here should match.
+    // Only consulted when creating: a file we create should be as private as
+    // bash's own.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -200,10 +191,8 @@ fn open_for_append(path: &Path) -> Result<File> {
 #[cfg(test)]
 mod tests {
     use super::{BashHistory, CONSIDERED_COMMANDS, deduplicated, resolve};
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     fn temp_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
