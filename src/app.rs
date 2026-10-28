@@ -319,16 +319,30 @@ fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     );
     if has_claude {
         commands.push_str(
-            "  /cc [focus]         Ask Claude to critique the discussion\n  /ca <question>      Ask Claude about the discussion (or request implementation)\n  /cn <prompt>        Ask Claude without discussion history\n",
+            "  /cc [focus]         Claude: critique the discussion\n  /ca <question>      Claude: about the discussion\n  /cn <prompt>        Claude: without discussion history\n",
         );
     }
     if has_antigravity {
         commands.push_str(
-            "  /ag [focus]         Ask Antigravity to critique the discussion\n  /aga <question>     Ask Antigravity about the discussion (or request implementation)\n  /agn <prompt>       Ask Antigravity without discussion history\n",
+            "  /ag [focus]         Antigravity: critique the discussion\n  /aga <question>     Antigravity: about the discussion\n  /agn <prompt>       Antigravity: without discussion history\n",
         );
     }
     commands.push_str(
-        "\n  ! <command>         Run a bash command, show it, and record it for the model\n  !                   Show the recent bash commands\n\n  /clear; <prompt>          Reset context, then send a prompt\n  /model <alias>; <prompt>  Switch model, then send a prompt\n\n  Ctrl+C              Stop a running request, a running ! command, or discard the current input\n\nUnknown slash commands are sent as ordinary prompts to the current model. A ! command\nnever sends a prompt: the model reads its output when you next write to it.",
+        "
+  /clear; <prompt>          Reset context, then send a prompt
+  /model <alias>; <prompt>  Switch model, then send a prompt
+
+  ! <command>         Run a bash command, show it, and record it for the model
+  !                   Show the recent bash commands
+
+  Ctrl+C              Stop a running request or a running ! command,
+                      or discard the current input
+
+  ****************************** Note ******************************
+  * Unknown slash commands are sent as ordinary prompts to the     *
+  * current model. A ! command never sends a prompt: the model     *
+  * reads its output when you next write to it.                    *
+  ******************************************************************",
     );
     commands
 }
@@ -723,7 +737,8 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{
-        AskMode, Command, ReplHelper, bash_fragment, interactive_prompt, parse_command, parse_input,
+        AskMode, Command, ReplHelper, bash_fragment, help_commands, interactive_prompt,
+        parse_command, parse_input,
     };
     use crate::bash_history::BashHistory;
     use rustyline::Context;
@@ -862,6 +877,26 @@ mod tests {
                 None
             )
         ));
+    }
+
+    #[test]
+    fn every_help_line_is_indented() {
+        // A `\` at the end of a string literal also eats the next line's
+        // leading whitespace, which is what once left `! <command>` flush left.
+        for line in help_commands(true, true)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            assert!(line.starts_with("  "), "not indented: {line}");
+        }
+    }
+
+    #[test]
+    fn bang_commands_follow_the_slash_commands() {
+        let help = help_commands(true, true);
+        let last_slash = help.find("  /model <alias>; <prompt>").unwrap();
+        let bang = help.find("  ! <command>").unwrap();
+        assert!(bang > last_slash);
     }
 
     #[test]
