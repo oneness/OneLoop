@@ -195,6 +195,61 @@ reloads model configuration, not instruction files. Ctrl+C stops a running
 request or discards the draft at the terminal prompt. Editor frontends may
 intercept keys before they reach OneLoop.
 
+Those frontends can go further than intercepting. rustyline treats `TERM` of
+`dumb`, `cons25`, or `emacs` as unsupported and reads whole lines instead of
+editing them (`readline_direct`), which is the state comint runs in: there the
+prompt has no hints, no Tab completion, and no line editing at all. Everything
+that needs only the finished line still works, so `!` commands run normally and
+`!` on its own lists the recent ones — that listing exists for exactly this
+case.
+
+## Bash commands at the prompt
+
+A `!` line is the user's own bash command, not the model's: it runs in the working
+directory through `tools/bash.rs::run`, the same function the `bash` tool calls,
+so the transcript the terminal shows — `command`, `exit_code`, `stdout`,
+`stderr`, truncated identically — is exactly what enters the session. That
+output is printed uncoloured and unprefixed to stderr, where the rest of what
+OneLoop says about itself goes, between two glyph-prefixed status lines.
+
+Recording reuses the reference path: `Agent::record_reference` pushes a user
+message without starting a turn, the same move `/cc` makes, so the model reads
+the output when the user next writes to it. Nothing about it is hidden — the
+message is attributed to the user in the session file and says the output is
+reference material. `!` takes the rest of the line verbatim, which is why there
+is no `!cmd; prompt` form: a `;` there belongs to the shell.
+
+`!` and the `bash` tool differ in one thing worth knowing: the command runs with
+no tty and no stdin, so interactive programs need a non-interactive flag
+(`git --no-pager log`), and it is interruptible with `Ctrl+C` under a 300-second
+cap rather than the tool's 30.
+
+`bash_history.rs` reads and appends to the user's own history file — `$HISTFILE`
+if the environment carries it, else `~/.bash_history`, with `ONELOOP_BASH_HISTORY`
+as an override. There is no OneLoop-owned history file: the shell's history is
+the shell's, and one copy of it is what the prompt, `bash` itself, and the Emacs
+client all read. A `!` command that succeeds is appended to it as a single line,
+so it is there for the next shell as well as the next OneLoop.
+
+Ownership is the constraint that shapes the module. The file is never trimmed,
+rewritten, or renamed: `HISTFILESIZE` decides how long it gets, `histappend`
+decides whether anyone else's lines survive a shell exiting, and OneLoop only
+ever adds a line. Reading therefore dedupes by keeping the newest occurrence (a
+history with `HISTCONTROL` unset is full of repeats), skips the `#<epoch>`
+markers bash writes when `HISTTIMEFORMAT` is set, and considers at most the
+newest 1000 unique commands — a cap on the candidate list, not on the file. A
+hint offers a prefix match only, since a hint is appended at the cursor rather
+than written over typed text, but `Tab` lists matches found anywhere in a
+command, prefixes first. `!` with no command prints the last ten, which is the
+only route to the history on a terminal that cannot be edited line by line.
+
+That file is also the contract with the editor frontends: `oneloop.el` reads
+the same variable to complete `!` commands in a comint buffer, where rustyline
+does no line editing at all and its own hint and Tab cannot exist. The format
+is bash's on purpose — a bare command per line — so `bash`, a grep, and a
+`completion-at-point-function` can all read it without agreeing on anything
+else, and nothing OneLoop invents is needed to make that true.
+
 ## Sessions
 
 Sessions are linear append-only JSONL files stored at:
@@ -325,12 +380,13 @@ src/
     responses.rs    The shared Responses API implementation
   tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
   tools/
-    bash.rs         Shell command execution
+    bash.rs         Bash command execution
     elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
+  bash_history.rs  The user's own history file ($HISTFILE): read for hints, appended on `!`
   status.rs         Turn state & model title reports via OSC 7501 (Program Status Protocol)
 docs/
   architecture.md   This file

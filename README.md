@@ -77,6 +77,7 @@ git diff | ./ol "summarise these changes"
 | `/ca <question>` | ask Claude Code about the discussion, or to implement something |
 | `/cn <prompt>` | ask Claude Code with no discussion history |
 | `/ag`, `/aga`, `/agn` | the same three for Antigravity |
+| `! <command>` | run a bash command here and record its output for the model |
 
 A command can carry a prompt across the `;` boundary, which is what makes the
 multi-model workflow quick:
@@ -95,6 +96,21 @@ it. `/help` lists the Claude Code and Antigravity commands only when their
 binaries are on `PATH`. `Ctrl+C` stops a running request, or discards the draft
 at the prompt. An unknown `/word` is sent as an ordinary prompt — a message can
 legitimately start with a path.
+
+A `!` line is yours: it runs in the working directory, prints the transcript
+the `bash` tool would have shown, and records it as reference material. No
+request is made, so the model reads the output when you next write to it.
+Unlike a slash command, everything after the `!` is taken verbatim — a `;`
+there is a shell separator, not a prompt boundary.
+
+OneLoop keeps no history file of its own: a `!` command that succeeds is
+appended to your shell's history (`$HISTFILE`, else `~/.bash_history`), and
+completion reads that file — newest thousand unique commands, `#<epoch>`
+markers skipped, duplicates collapsed. So typing `!` and a few letters offers
+the command back: the rest appears dim at the cursor and `Right` accepts it, or
+`Tab` lists the matches, and `!` on its own lists the recent ones. The first
+two need a terminal rustyline can edit on — under Emacs comint or `TERM=dumb`
+it reads whole lines instead, so there `!` alone is the way to see the history.
 
 ## Providers and models
 
@@ -242,6 +258,7 @@ All optional:
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `100`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `10`)
 - `ONELOOP_WEB_TOOLS` — override a provider's `web_tools` for this run
+- `ONELOOP_BASH_HISTORY` — read and append `!` commands in this file instead of `$HISTFILE`
 
 ## Development
 

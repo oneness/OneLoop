@@ -125,6 +125,7 @@ ONELOOP_MODEL              model alias for this run
 ONELOOP_MAX_ITERATIONS     agent loop cap (default: 100)
 ONELOOP_MAX_RETRIES        retry cap (default: 10)
 ONELOOP_WEB_TOOLS          OpenRouter server-side web search/fetch (default: true)
+ONELOOP_BASH_HISTORY       history file for `!` completion, instead of $HISTFILE
 ```
 
 ## Clippy
