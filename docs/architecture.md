@@ -208,9 +208,14 @@ case.
 A `!` line is the user's own bash command, not the model's: it runs in the working
 directory through `tools/bash.rs::run`, the same function the `bash` tool calls,
 so the transcript the terminal shows — `command`, `exit_code`, `stdout`,
-`stderr`, truncated identically — is exactly what enters the session. That
-output is printed uncoloured and unprefixed to stderr, where the rest of what
-OneLoop says about itself goes, between two glyph-prefixed status lines.
+`stderr` — is exactly what enters the session. That output is printed
+uncoloured and unprefixed to stderr, where the rest of what OneLoop says about
+itself goes, between two glyph-prefixed status lines.
+
+The one thing the two callers decide differently is which end of a long output
+to keep: a tool transcript drops its head, since a failure is reported at the
+end, while a command the user ran drops its tail, since they are reading the
+first lines. `output::Keep` is that choice, made at the call site.
 
 Recording reuses the reference path: `Agent::record_reference` pushes a user
 message without starting a turn, the same move `/cc` makes, so the model reads
@@ -269,6 +274,12 @@ inherits nor disturbs the conversation on disk.
 On open (and after a Ctrl+C-cancelled run), any tool call left without a matching
 result is closed out with a synthetic error result — providers reject conversations
 containing dangling tool calls, so an unrepaired session would break every later request.
+
+That repair assumes a single writer, so a project is claimed by one process at a
+time: `.oneloop/session.lock` is held (an advisory lock, released by the kernel
+when the process dies) for as long as a session is open, and a second `ol` in
+the same directory refuses to start rather than answering a tool call the first
+one is still running. A one-shot takes no lock, because it writes nothing.
 
 ## Auth
 

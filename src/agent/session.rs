@@ -1,10 +1,8 @@
-use std::{
-    fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
-};
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +25,10 @@ pub struct Session {
     /// Whether messages are written to `path`. A one-shot session keeps them
     /// in memory and touches no file.
     persist: bool,
+    /// The project's lock, held for as long as this process owns the session
+    /// files. Dropped — and the lock released by the kernel — when the session
+    /// goes away with the process.
+    lock: Option<File>,
 }
 
 impl Session {
@@ -38,6 +40,7 @@ impl Session {
                 sessions_dir.display()
             )
         })?;
+        let lock = acquire_lock(cwd)?;
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let path = find_latest_session(&sessions_dir, &today);
@@ -53,6 +56,7 @@ impl Session {
             path,
             project: project_name(cwd),
             persist: true,
+            lock: Some(lock),
         })
     }
 
@@ -70,6 +74,7 @@ impl Session {
                 .join(format!("{today}.jsonl")),
             project: project_name(cwd),
             persist: false,
+            lock: None,
         }
     }
 
@@ -163,11 +168,20 @@ impl Session {
         let new_name = format!("{base_name}-{next:03}.jsonl");
         let new_path = sessions_dir.join(new_name);
 
+        // The clone shares the lock: `/clear` moves to a new file in the same
+        // project, not to a project nobody claimed.
+        let lock = self
+            .lock
+            .as_ref()
+            .map(File::try_clone)
+            .transpose()
+            .context("failed to carry the session lock across /clear")?;
         Ok(Self {
             messages: Vec::new(),
             path: new_path,
             project: self.project.clone(),
             persist: self.persist,
+            lock,
         })
     }
 
@@ -217,6 +231,7 @@ impl Session {
             path,
             project: project.to_string(),
             persist: false,
+            lock: None,
         }
     }
 }
@@ -300,6 +315,33 @@ fn max_suffix(sessions_dir: &Path, prefix: &str) -> Option<u32> {
 }
 
 /// The highest-suffixed file for the date, or the base one.
+/// Claims the project for this process.
+///
+/// Two OneLoop runs in one project would both append to the same session file,
+/// and neither can tell a tool call that is still running from one that died —
+/// the startup repair would answer a live call and leave two results for it.
+/// So the second run stops here instead.
+fn acquire_lock(cwd: &Path) -> Result<File> {
+    let path = cwd.join(".oneloop").join("session.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => bail!(
+            "another OneLoop is running in this project ({} is locked); its session file is \
+             append-only, so two would answer each other's tool calls",
+            path.display()
+        ),
+        Err(TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("failed to lock {}", path.display()))
+        }
+    }
+}
+
 fn find_latest_session(sessions_dir: &Path, date: &str) -> PathBuf {
     match max_suffix(sessions_dir, date) {
         Some(n) => sessions_dir.join(format!("{date}-{n:03}.jsonl")),
@@ -319,6 +361,32 @@ mod tests {
         ));
         let _ = fs::remove_file(&path);
         Session::for_test(Vec::new(), path, "oneloop")
+    }
+
+    #[test]
+    fn a_second_session_in_the_same_project_is_refused() {
+        let cwd = project_dir("second-session");
+        let _first = Session::open_or_create(&cwd).unwrap();
+
+        assert!(Session::open_or_create(&cwd).is_err());
+    }
+
+    #[test]
+    fn the_refusal_names_the_other_run() {
+        let cwd = project_dir("refusal-message");
+        let _first = Session::open_or_create(&cwd).unwrap();
+
+        let error = Session::open_or_create(&cwd).unwrap_err();
+
+        assert!(format!("{error:#}").contains("another OneLoop is running"));
+    }
+
+    #[test]
+    fn a_finished_session_releases_the_project() {
+        let cwd = project_dir("released-project");
+        drop(Session::open_or_create(&cwd).unwrap());
+
+        assert!(Session::open_or_create(&cwd).is_ok());
     }
 
     #[test]

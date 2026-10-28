@@ -214,7 +214,10 @@ Qwen3.6-35B-A3B — see the comments in `ols` for what each one is worth.
 ## Sessions and skills
 
 Sessions are linear append-only files at `.oneloop/sessions/YYYY-MM-DD.jsonl`;
-`/clear` rotates to `-001`, `-002`, and so on, and nothing is ever deleted. On
+`/clear` rotates to `-001`, `-002`, and so on, and nothing is ever deleted.
+One `ol` per project at a time: the session file has a single writer, so a
+second run in the same directory says so and exits instead of interleaving
+turns with the first. On
 restart the latest session for today opens automatically. A tool call left
 without a result — after a `Ctrl+C` — is closed out on open, because providers
 reject a conversation containing dangling calls.

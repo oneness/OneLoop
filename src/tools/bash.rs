@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
 use crate::agent::AgentContext;
-use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
+use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, Keep, truncate_head, truncate_tail};
 
 use super::{Tool, ToolResult};
 
@@ -27,7 +27,12 @@ struct BashInput {
 
 /// Runs one bash command in `cwd` and returns the transcript a model is shown,
 /// so the tool and the prompt share one implementation and one output shape.
-pub async fn run(command_text: &str, cwd: &Path, timeout_secs: u64) -> Result<ToolResult> {
+pub async fn run(
+    command_text: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+    keep: Keep,
+) -> Result<ToolResult> {
     let mut command = Command::new("bash");
     command
         .arg("-lc")
@@ -75,8 +80,12 @@ pub async fn run(command_text: &str, cwd: &Path, timeout_secs: u64) -> Result<To
         }
     }
 
+    let content = match keep {
+        Keep::Head => truncate_head(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
+        Keep::Tail => truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
+    };
     Ok(ToolResult {
-        content: truncate_tail(&combined, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES),
+        content,
         is_error: !success,
     })
 }
@@ -117,7 +126,7 @@ impl Tool for BashTool {
             .timeout_secs
             .filter(|seconds| *seconds > 0)
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
-        run(&input.command, &ctx.cwd, timeout_secs).await
+        run(&input.command, &ctx.cwd, timeout_secs, Keep::Tail).await
     }
 }
 
@@ -130,6 +139,26 @@ mod tests {
         AgentContext {
             cwd: std::env::temp_dir(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_caller_chooses_which_end_of_a_long_output_survives() {
+        let command = "seq 1 5000";
+        let head = run(command, &std::env::temp_dir(), 30, Keep::Head)
+            .await
+            .unwrap();
+        let tail = run(command, &std::env::temp_dir(), 30, Keep::Tail)
+            .await
+            .unwrap();
+
+        assert!(
+            head.content.contains("\n1\n") && !head.content.contains("\n5000"),
+            "head keeps the first lines"
+        );
+        assert!(
+            tail.content.contains("\n5000") && !tail.content.contains("\n1\n"),
+            "tail keeps the last"
+        );
     }
 
     #[tokio::test]

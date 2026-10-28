@@ -241,7 +241,11 @@ struct TruncationResult {
 }
 
 #[derive(Clone, Copy)]
-enum Keep {
+/// Which end of a long output to keep. Truncation is the caller's decision
+/// because it depends on what the text is: a tool transcript loses its head
+/// (the failure is at the end), a command the user ran loses its tail (they
+/// are reading the first lines).
+pub enum Keep {
     Head,
     Tail,
 }
