@@ -164,8 +164,9 @@ impl ModelRegistry {
         }
     }
 
-    /// `local (local), openrouter (flash, sonnet)`.
-    pub fn by_provider(&self) -> String {
+    /// One group per provider — `local (qwen)`, `openrouter (flash, sonnet)` —
+    /// in catalog order, so each caller decides the layout for its own lines.
+    pub fn by_provider(&self) -> Vec<String> {
         // Built provider by provider, so equal names are already adjacent.
         let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
         for model in &self.models {
@@ -179,13 +180,15 @@ impl ModelRegistry {
         groups
             .iter()
             .map(|(provider, aliases)| format!("{provider} ({})", aliases.join(", ")))
-            .collect::<Vec<_>>()
-            .join(", ")
+            .collect()
     }
 
     fn unknown_alias(&self, alias: &str) -> String {
         // Grouped, because the next question is which provider had it.
-        format!("unknown model: {alias}. available: {}", self.by_provider())
+        format!(
+            "unknown model: {alias}. available: {}",
+            self.by_provider().join(", ")
+        )
     }
 
     /// Offer every configured model — what `/model` asks for.
@@ -370,6 +373,16 @@ mod tests {
         assert_eq!(registry.active().alias, "a");
         registry.set_active("b").unwrap();
         assert_eq!(registry.active().alias, "b");
+    }
+
+    #[test]
+    fn models_are_grouped_under_their_provider() {
+        let registry = registry(
+            r#"{"default":"a","providers":{
+                 "p":{"base_url":"http://u","models":{"a":{"id":"x"},"b":{"id":"y"}}},
+                 "q":{"base_url":"http://v","models":{"c":{"id":"z"}}}}}"#,
+        );
+        assert_eq!(registry.by_provider(), ["p (a, b)", "q (c)"]);
     }
 
     #[test]

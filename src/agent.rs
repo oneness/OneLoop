@@ -649,6 +649,8 @@ impl Agent {
     }
 
     pub fn summary(&self) -> String {
+        let model = self.models.active();
+        let available = packed(&self.models.by_provider());
         let message_count = self.session.messages().len();
         let tools = self.tool_registry.names().join(", ");
         let context = if self.config.prompt_sources.is_empty() {
@@ -662,18 +664,49 @@ impl Agent {
         } else {
             "new".to_string()
         };
-        let session_path = self.session.path().display();
+        let session_path = relative_to(self.cwd(), self.session.path()).display();
 
         format!(
-            "model    : {}\n\
-             available: {}\n\
+            "model    : {model}\n\
+             available: {available}\n\
              tools    : {tools}\n\
              session  : {session_path} ({session_state})\n\
-             context  : {context}",
-            self.models.active(),
-            self.models.by_provider()
+             context  : {context}"
         )
     }
+}
+
+/// Every summary label is a word, padding, and a colon, so each value starts in
+/// the same column; wrapped values keep it and the block stays square.
+const VALUE_COLUMN: usize = 11;
+
+/// Wider than a realistic model list, narrow enough to read on a laptop.
+const SUMMARY_WIDTH: usize = 80;
+
+/// A path named from the project root when it sits there. The session file
+/// always does, and its absolute form is almost all working directory.
+fn relative_to<'a>(cwd: &Path, path: &'a Path) -> &'a Path {
+    path.strip_prefix(cwd).unwrap_or(path)
+}
+
+/// Provider groups packed into as few lines as fit, each continuation indented
+/// to the value column and opened by a comma, so a break reads as "more
+/// follows". A group never splits: a provider keeps its aliases together.
+fn packed(groups: &[String]) -> String {
+    // One column is held back for the comma a wrapped line ends with.
+    let budget = SUMMARY_WIDTH - VALUE_COLUMN - 1;
+    let mut lines: Vec<String> = Vec::new();
+    for group in groups {
+        match lines.last_mut() {
+            Some(line) if line.len() + 2 + group.len() <= budget => {
+                line.push_str(", ");
+                line.push_str(group);
+            }
+            _ => lines.push(group.clone()),
+        }
+    }
+    let indent = format!("\n{}", " ".repeat(VALUE_COLUMN));
+    lines.join(&format!(",{indent}"))
 }
 
 #[cfg(test)]
@@ -689,6 +722,44 @@ mod tests {
         assert!(cap_notice(Stop::Resolved, 72).is_none());
         assert!(cap_notice(Stop::Failed, 72).is_none());
         assert!(cap_notice(Stop::Cap, 72).is_some_and(|notice| notice.contains("72")));
+    }
+
+    #[test]
+    fn a_session_file_is_named_from_the_project_root() {
+        let path = Path::new("/repo/.oneloop/sessions/2026-10-28-001.jsonl");
+        assert_eq!(
+            relative_to(Path::new("/repo"), path),
+            Path::new(".oneloop/sessions/2026-10-28-001.jsonl")
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_project_stays_absolute() {
+        let path = Path::new("/elsewhere/session.jsonl");
+        assert_eq!(relative_to(Path::new("/repo"), path), path);
+    }
+
+    #[test]
+    fn a_short_provider_list_stays_on_one_line() {
+        let groups = ["local (qwen)".to_string(), "openai (astra)".to_string()];
+        assert_eq!(packed(&groups), "local (qwen), openai (astra)");
+    }
+
+    #[test]
+    fn a_long_provider_list_wraps_under_the_value_column() {
+        let groups = [
+            "local (qwen)".to_string(),
+            "openai (astra, luna)".to_string(),
+            "opencode-go (deepseek-flash, meta-muse, mimo-flash)".to_string(),
+            "openrouter (laguna, ling, nvidia)".to_string(),
+        ];
+        let expected = [
+            "local (qwen), openai (astra, luna),",
+            "           opencode-go (deepseek-flash, meta-muse, mimo-flash),",
+            "           openrouter (laguna, ling, nvidia)",
+        ]
+        .join("\n");
+        assert_eq!(packed(&groups), expected);
     }
 
     fn edit_call(id: &str, path: &str, old: &str, new: &str) -> messages::ToolCall {
