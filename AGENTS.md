@@ -49,7 +49,7 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 ## Search
 
 Every repository question starts with OneSearch, not grep. Read
-`~/.oneloop/skills/onesearch.md` once per session for the invocation
+`~/.oneloop/skills/onesearch/SKILL.md` once per session for the invocation
 (`~/repos/OneSearch/target/debug/onesearch`).
 
 1. Ask by behavior, or name the symbol.

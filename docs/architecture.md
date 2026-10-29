@@ -143,15 +143,15 @@ that rewrote the config would make the next run's model a side effect.
 
 ## Skills
 
-Skill files are markdown files that contain task-specific instructions the agent loads on demand. They are not in the system prompt at startup — instead, the `skill` tool lists them by name and description so the model can pull one in when relevant.
+A skill is a directory holding a `SKILL.md` — the [Agent Skills](https://agentskills.io/specification) layout, which every other coding agent reads too. That file is markdown with YAML frontmatter, and anything the skill needs — a script, a reference — sits beside it in the same directory. Skills are not in the system prompt at startup; the `skill` tool lists them by name and description instead, so the model can pull one in when relevant.
 
 Scan order, which is also the order the model's menu lists them in:
-1. `.oneloop/skills/*.md` — project-local
-2. `~/.oneloop/skills/*.md` — global, shared across all projects, shadowed
+1. `.oneloop/skills/<name>/SKILL.md` — project-local
+2. `~/.oneloop/skills/<name>/SKILL.md` — global, shared across all projects, shadowed
 
-The first non-empty, non-heading line of each file is used as the skill's description in the tool listing. The full file content is returned as the tool result when the model calls `skill("name")`.
+The directory names the skill, so the menu entry, the file named in the trace and the frontmatter's own `name` cannot drift apart. The frontmatter's `description` is the line the menu shows, because that is what decides whether the model loads the skill at all; a file with no `description` falls back to its first non-empty, non-heading line so a half-written skill still says something. A flat `<name>.md` in either directory is not a skill. The full file content is returned as the tool result when the model calls `skill("name")`.
 
-If no skill files are found at startup, the `skill` tool is not registered.
+If no skill directories are found at startup, the `skill` tool is not registered.
 
 ## Context that no longer fits
 
@@ -393,7 +393,7 @@ src/
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
-    skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/)
+    skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md)
   bash_history.rs  The user's own history file ($HISTFILE): read for hints, appended on `!`
   status.rs         Turn state & model title reports via OSC 7501 (Program Status Protocol)
 docs/

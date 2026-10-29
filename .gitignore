@@ -5,7 +5,7 @@ result/
 !.oneloop/
 .oneloop/*
 !.oneloop/skills/
-!.oneloop/skills/*.md
+!.oneloop/skills/**
 .claude/
 *.o
 *.d

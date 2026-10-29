@@ -230,13 +230,14 @@ grows until the server refuses it, and the refusal names the fix: `/clear`, or a
 model with a larger window. A model may declare a `context_window`, in which
 case the prompt shows roughly how much is still free.
 
-Skills are markdown playbooks under `~/.oneloop/skills/` and
-`.oneloop/skills/` (project wins on a name collision). They are not in the
-system prompt — the model sees a name and description for each and calls
-`skill("name")` when the task matches. Anything that is a command plus
-instructions — a search client, a formatter, a house checklist — belongs here
-rather than in the core. If no skill files exist, the tool is not registered at
-all.
+A skill is a directory under `~/.oneloop/skills/` or `.oneloop/skills/` holding
+a `SKILL.md`, the [Agent Skills](https://agentskills.io/specification) layout
+other coding agents read too; the project wins on a name collision. That file's
+frontmatter `description` is what the model sees, and it is not in the system
+prompt — the model calls `skill("name")` when the task matches. Anything that
+is a command plus instructions — a search client, a formatter, a house
+checklist — belongs here rather than in the core. If no skills exist, the tool
+is not registered at all.
 
 ## Agent status (OSC 7501)
 

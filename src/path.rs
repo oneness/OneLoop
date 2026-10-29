@@ -247,18 +247,4 @@ mod tests {
         assert_eq!(shown("/repo"), ".");
         assert_eq!(shown("."), ".");
     }
-
-    /// A skill file is found on disk rather than named by the model, and is
-    /// shortened by the same rule.
-    #[test]
-    fn a_resolved_file_is_named_like_a_model_supplied_one() {
-        assert_eq!(
-            shorten(
-                Path::new("/repo"),
-                Path::new("/repo/.oneloop/skills/emacs.md"),
-                HOME
-            ),
-            ".oneloop/skills/emacs.md"
-        );
-    }
 }

@@ -364,12 +364,12 @@
     <h2>Skills</h2>
     <p class="big">Markdown playbooks the model loads on demand.<br>Not in the system prompt — pulled in only when needed.</p>
     <div class="mono" style="margin-top: 20px; font-size: 15px; text-align: left;">
-      ~/.oneloop/skills/code-review.md<br>
-      .oneloop/skills/changelog.md<br>
-      .oneloop/skills/migration.md
+      ~/.oneloop/skills/code-review/SKILL.md<br>
+      .oneloop/skills/changelog/SKILL.md<br>
+      .oneloop/skills/migration/SKILL.md
     </div>
     <p class="big" style="margin-top: 20px; font-size: 16px;">Project skills come first, then global ones — a project skill shadows a global skill of the same name, and listing order is search order.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">The model sees names + descriptions at startup.<br>It calls <code>skill("name")</code> when the task matches — no user action needed.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">The model sees names + each skill's own frontmatter description.<br>It calls <code>skill("name")</code> when the task matches — no user action needed.</p>
   </div>
 </section>
 
@@ -450,10 +450,10 @@
     <!-- Snapshot: git-tracked .rs/.html/.md files; physical lines including blanks and tests. HTML is this page. -->
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">32</td><td style="text-align:right;">10,825</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">32</td><td style="text-align:right;">11,037</td></tr>
       <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">515</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">8</td><td style="text-align:right;">1,488</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">41</td><td style="text-align:right;">12,828</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">7</td><td style="text-align:right;">1,351</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">40</td><td style="text-align:right;">12,903</td></tr>
     </table>
   </div>
 </section>

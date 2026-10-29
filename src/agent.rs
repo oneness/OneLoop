@@ -751,13 +751,13 @@ mod tests {
     #[test]
     fn skill_tool_call_shows_its_markdown_filename() {
         let dir = project_dir("skill-label");
-        fs::create_dir_all(dir.join(".oneloop").join("skills")).unwrap();
-        let file = dir.join(".oneloop").join("skills").join("emacs.md");
-        fs::write(&file, "how to reason").unwrap();
+        let skill = dir.join(".oneloop").join("skills").join("emacs");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "how to reason").unwrap();
 
         assert_eq!(
             format_tool_call("skill", &serde_json::json!({"name": "emacs"}), &dir),
-            "skill: .oneloop/skills/emacs.md"
+            "skill: .oneloop/skills/emacs/SKILL.md"
         );
         let _ = fs::remove_dir_all(&dir);
     }
