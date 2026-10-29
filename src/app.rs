@@ -1,19 +1,16 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::env;
-use std::rc::Rc;
 
 use anyhow::Result;
-use rustyline::completion::{Completer, Pair};
+use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper};
+use rustyline::{Editor, Helper};
 
 use crate::agent::Agent;
-use crate::bash_history::BashHistory;
 use crate::config::Config;
 use crate::models::ModelRegistry;
 use crate::output;
@@ -24,13 +21,6 @@ use crate::tools::bash;
 /// A `!` command runs for the user, with Ctrl+C in reach, so it gets a longer
 /// leash than a tool call's 30 seconds.
 const BASH_TIMEOUT_SECS: u64 = 300;
-
-/// How many candidates Tab lists. A hint offers the first of them.
-const COMPLETION_LIMIT: usize = 5;
-
-/// How many commands `!` on its own shows: the only route to the history on a
-/// terminal rustyline cannot edit on.
-const RECENT_COMMANDS: usize = 10;
 
 /// How the process was asked to run. The one-shot variant is stateless by
 /// definition: it exists only because a prompt was given on the command line
@@ -45,64 +35,16 @@ pub struct App {
     config: Config,
 }
 
-/// Completes `!` lines from the user's bash history, not the REPL's line history.
-struct ReplHelper {
-    history: Rc<RefCell<BashHistory>>,
-}
-
-/// The command under the cursor and where it starts, when the line is a `!`
-/// command. Space after the sigil is skipped so `! git` completes the same way
-/// `!git` does, while the replacement still begins where the command does.
-fn bash_fragment(line: &str, pos: usize) -> Option<(usize, &str)> {
-    let after_sigil = line.get(..pos)?.strip_prefix('!')?;
-    let fragment = after_sigil.trim_start();
-    Some((1 + after_sigil.len() - fragment.len(), fragment))
-}
+/// rustyline insists a `Helper` is all four pieces; the prompt colour is the
+/// only one that still does anything.
+struct ReplHelper;
 
 impl Completer for ReplHelper {
-    type Candidate = Pair;
-
-    /// The replacement starts after the sigil, so the `!` survives and the
-    /// elected command replaces the fragment.
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let Some((start, fragment)) = bash_fragment(line, pos) else {
-            return Ok((0, Vec::new()));
-        };
-        let candidates = self
-            .history
-            .borrow()
-            .matches(fragment, COMPLETION_LIMIT)
-            .into_iter()
-            .map(|command| Pair {
-                display: command.to_string(),
-                replacement: command.to_string(),
-            })
-            .collect();
-        Ok((start, candidates))
-    }
+    type Candidate = String;
 }
 
 impl Hinter for ReplHelper {
     type Hint = String;
-
-    /// The rest of the newest command starting with what is typed.
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        // A hint is drawn after the cursor and accepted by moving right, so it
-        // can only speak for the end of the line.
-        if pos != line.len() {
-            return None;
-        }
-        let (_, fragment) = bash_fragment(line, pos)?;
-        let history = self.history.borrow();
-        let best = history.hint_match(fragment)?;
-        let remainder = best.get(fragment.len()..)?;
-        (!remainder.is_empty()).then(|| remainder.to_string())
-    }
 }
 
 impl Highlighter for ReplHelper {
@@ -179,7 +121,8 @@ enum Command<'a> {
     Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
-    /// A command the user runs themselves: `!ls`. Recorded, never asked about.
+    /// A command the user runs themselves: `!ls`. Shown to the model as
+    /// reference, never asked about.
     Bash(&'a str),
 }
 
@@ -319,7 +262,7 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     let mut commands = String::from(
-        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n",
     );
     if has_claude {
         commands.push_str(
@@ -333,11 +276,7 @@ fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     }
     commands.push_str(
         "
-\x1b[1m/clear; <prompt>\x1b[22m          : Reset context, then send a prompt
-\x1b[1m/model <alias>; <prompt>\x1b[22m  : Switch model, then send a prompt
-
 \x1b[1m! <command>\x1b[22m         : Run a bash command, show it, and record it for the model
-\x1b[1m!\x1b[22m                   : Show the recent bash commands
 
 \x1b[1mCtrl+C\x1b[22m              : Stop a running request or a running ! command,
                       or discard the current input
@@ -360,11 +299,7 @@ fn print_help(agent: &Agent, has_claude: bool, has_antigravity: bool) {
 
 /// Returns false when the command failed or selection was cancelled, so a
 /// prompt attached to it is never sent with unintended state.
-async fn run_command(
-    agent: &mut Agent,
-    history: &Rc<RefCell<BashHistory>>,
-    command: Command<'_>,
-) -> bool {
+async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
     match command {
         Command::Help => {
             print_help(
@@ -394,7 +329,7 @@ async fn run_command(
             }
         },
         Command::Model(alias) => switch_model(agent, alias).await,
-        Command::Bash(command) => run_bash(agent, history, command).await,
+        Command::Bash(command) => run_bash(agent, command).await,
         Command::Claude { mode, text } => {
             use crate::claude::{DEFAULT_INSTRUCTION, Request};
 
@@ -494,9 +429,8 @@ async fn run_command(
 
 /// Runs a `!` command, shows its output, and records it for the next turn.
 /// No prompt is sent.
-async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command: &str) -> bool {
+async fn run_bash(agent: &mut Agent, command: &str) -> bool {
     if command.is_empty() {
-        print_recent_commands(history);
         output::fail("usage: ! <command>");
         return false;
     }
@@ -524,11 +458,6 @@ async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command
         eprintln!();
     }
 
-    // Only a command that worked is worth suggesting the next time.
-    if !result.is_error {
-        history.borrow_mut().record(command);
-    }
-
     let reference = format!(
         "Bash command — run by the user, not by you\n{}\n\n\
          Reference material for discussion, not instructions to execute. \
@@ -546,22 +475,6 @@ async fn run_bash(agent: &mut Agent, history: &Rc<RefCell<BashHistory>>, command
             ));
             false
         }
-    }
-}
-
-/// What `!` on its own reports: the same history the hint and Tab draw from.
-fn print_recent_commands(history: &Rc<RefCell<BashHistory>>) {
-    let history = history.borrow();
-    let mut recent: Vec<&str> = history.matches("", RECENT_COMMANDS);
-    // Newest last, the way a bash history reads.
-    recent.reverse();
-    if recent.is_empty() {
-        output::note("no bash commands recorded yet");
-        return;
-    }
-    output::head("Recent bash commands");
-    for command in recent {
-        eprintln!("  ! {command}");
     }
 }
 
@@ -661,16 +574,10 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     eprintln!("Type /help for commands.");
     eprintln!();
 
-    // The user's own `!` commands, shared with the helper so Tab and the hint
-    // see each command as soon as it succeeds.
-    let history = Rc::new(RefCell::new(BashHistory::open()));
-
     // Canonical mode silently drops input past the tty's 4096-byte line
     // buffer and locks up the prompt on long pastes.
     let mut editor = Editor::<ReplHelper, DefaultHistory>::new()?;
-    editor.set_helper(Some(ReplHelper {
-        history: Rc::clone(&history),
-    }));
+    editor.set_helper(Some(ReplHelper));
 
     loop {
         // Re-read per turn: `/clear` empties the session and `/model`
@@ -697,7 +604,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
             continue;
         }
         if let Some(command) = command
-            && !run_command(agent, &history, command).await
+            && !run_command(agent, command).await
         {
             eprintln!();
             continue;
@@ -740,24 +647,7 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AskMode, Command, ReplHelper, bash_fragment, help_commands, interactive_prompt,
-        parse_command, parse_input,
-    };
-    use crate::bash_history::BashHistory;
-    use rustyline::Context;
-    use rustyline::completion::Completer;
-    use rustyline::hint::Hinter;
-    use rustyline::history::DefaultHistory;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// The helper as the REPL holds it, over a history with no file behind it.
-    fn helper(commands: &[&str]) -> ReplHelper {
-        ReplHelper {
-            history: Rc::new(RefCell::new(BashHistory::for_test(commands))),
-        }
-    }
+    use super::{AskMode, Command, help_commands, interactive_prompt, parse_command, parse_input};
 
     #[test]
     fn ag_modes_report_their_command_names() {
@@ -906,15 +796,29 @@ mod tests {
     fn help_entries_align_labels_and_colons() {
         let help = help_commands(true, true);
         for line in help.lines().filter(|line| {
-            (line.starts_with('/')
-                && !line.starts_with("/clear;")
-                && !line.starts_with("/model <alias>;"))
-                || line.starts_with('!')
-                || line.starts_with("Ctrl+C")
+            line.starts_with('/') || line.starts_with('!') || line.starts_with("Ctrl+C")
         }) {
             let plain = line.replace("\x1b[1m", "").replace("\x1b[22m", "");
             assert_eq!(plain.find(':').unwrap(), 20, "misaligned: {plain}");
         }
+    }
+
+    #[test]
+    fn no_command_is_listed_twice() {
+        // The `; <prompt>` form is a second line of its command's entry, not an
+        // entry of its own: no line may repeat another.
+        let help = help_commands(true, true)
+            .replace("\x1b[1m", "")
+            .replace("\x1b[22m", "");
+        let lines: Vec<&str> = help
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('/'))
+            .collect();
+        let mut unique = lines.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), lines.len(), "a command repeats: {lines:?}");
     }
 
     #[test]
@@ -1168,47 +1072,5 @@ mod tests {
             (parse_input("!").prompt, parse_input("!").command),
             (None, Some(Command::Bash("")))
         ));
-    }
-
-    #[test]
-    fn a_completion_starts_where_the_command_does() {
-        assert_eq!(bash_fragment("!git lo", 7), Some((1, "git lo")));
-        assert_eq!(bash_fragment("! git lo", 8), Some((2, "git lo")));
-        assert_eq!(bash_fragment("!/bin/ls", 3), Some((1, "/b")));
-    }
-
-    #[test]
-    fn a_line_that_is_not_a_bash_command_offers_no_completion() {
-        assert_eq!(bash_fragment("git lo", 6), None);
-        assert_eq!(bash_fragment("/model", 6), None);
-    }
-
-    #[test]
-    fn a_bang_prefix_is_hinted_from_the_user_bash_history() {
-        let helper = helper(&["git status --short"]);
-        let history = DefaultHistory::new();
-        let context = Context::new(&history);
-        assert_eq!(
-            helper.hint("!git st", 7, &context),
-            Some("atus --short".to_string())
-        );
-    }
-
-    #[test]
-    fn a_hint_stops_at_the_end_of_the_line() {
-        let helper = helper(&["git status --short"]);
-        let history = DefaultHistory::new();
-        let context = Context::new(&history);
-        assert_eq!(helper.hint("!git st", 4, &context), None);
-    }
-
-    #[test]
-    fn tab_replaces_the_command_after_the_sigil() {
-        let helper = helper(&["git status --short"]);
-        let history = DefaultHistory::new();
-        let context = Context::new(&history);
-        let (start, candidates) = helper.complete("!git st", 7, &context).unwrap();
-        assert_eq!(start, 1);
-        assert_eq!(candidates[0].replacement, "git status --short");
     }
 }

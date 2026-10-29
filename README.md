@@ -16,8 +16,7 @@ One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscr
   with the cheap one, take a second opinion from a third.
 - **Your own commands count.** A line starting with `!` runs bash yourself, and
   its output is printed and then recorded in the session as reference material
-  without spending a request. Commands that succeed are appended to your own
-  shell history, so `!` completion offers back what you actually ran.
+  without spending a request.
 - **Subscriptions you already pay for.** Claude Code and Antigravity are driven
   through their own CLI binaries, so their answers spend quota you have already
   bought rather than metered tokens. ChatGPT Plus/Pro is signed in to directly
@@ -106,15 +105,6 @@ the `bash` tool would have shown, and records it as reference material. No
 request is made, so the model reads the output when you next write to it.
 Unlike a slash command, everything after the `!` is taken verbatim — a `;`
 there is a shell separator, not a prompt boundary.
-
-OneLoop keeps no history file of its own: a `!` command that succeeds is
-appended to your shell's history (`$HISTFILE`, else `~/.bash_history`), and
-completion reads that file — newest thousand unique commands, `#<epoch>`
-markers skipped, duplicates collapsed. So typing `!` and a few letters offers
-the command back: the rest appears dim at the cursor and `Right` accepts it, or
-`Tab` lists the matches, and `!` on its own lists the recent ones. The first
-two need a terminal rustyline can edit on — under Emacs comint or `TERM=dumb`
-it reads whole lines instead, so there `!` alone is the way to see the history.
 
 ## Providers and models
 
@@ -265,7 +255,6 @@ All optional:
 - `ONELOOP_MAX_ITERATIONS` — cap on agent-loop iterations per prompt (default: `100`)
 - `ONELOOP_MAX_RETRIES` — attempts before offering another model (default: `10`)
 - `ONELOOP_WEB_TOOLS` — override a provider's `web_tools` for this run
-- `ONELOOP_BASH_HISTORY` — read and append `!` commands in this file instead of `$HISTFILE`
 
 ## Development
 

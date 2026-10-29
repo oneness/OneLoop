@@ -2,7 +2,6 @@ mod agent;
 mod antigravity;
 mod app;
 mod auth;
-mod bash_history;
 mod catalog;
 mod claude;
 mod config;
