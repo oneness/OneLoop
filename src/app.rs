@@ -111,7 +111,11 @@ impl Highlighter for ReplHelper {
         prompt: &'p str,
         _default: bool,
     ) -> Cow<'b, str> {
-        Cow::Owned(format!("{}{prompt}{}", output::BOLD, output::RESET))
+        if output::comint() {
+            Cow::Borrowed(prompt)
+        } else {
+            Cow::Owned(format!("{}{prompt}{}", output::BOLD, output::RESET))
+        }
     }
 
     /// A hint is the command about to be accepted, not text already typed.
@@ -315,27 +319,27 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     let mut commands = String::from(
-        "  /help               Show this help\n  /model [alias]      Choose a model or switch directly to an alias\n  /reload             Reload configuration\n  /clear              Reset context and start a fresh session\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n",
     );
     if has_claude {
         commands.push_str(
-            "  /cc [focus]         Claude: critique the discussion\n  /ca <question>      Claude: about the discussion\n  /cn <prompt>        Claude: without discussion history\n",
+            "\x1b[1m/cc [focus]\x1b[22m         : Claude: critique the discussion\n\x1b[1m/ca <question>\x1b[22m      : Claude: about the discussion\n\x1b[1m/cn <prompt>\x1b[22m        : Claude: without discussion history\n",
         );
     }
     if has_antigravity {
         commands.push_str(
-            "  /ag [focus]         Antigravity: critique the discussion\n  /aga <question>     Antigravity: about the discussion\n  /agn <prompt>       Antigravity: without discussion history\n",
+            "\x1b[1m/ag [focus]\x1b[22m         : Antigravity: critique the discussion\n\x1b[1m/aga <question>\x1b[22m     : Antigravity: about the discussion\n\x1b[1m/agn <prompt>\x1b[22m       : Antigravity: without discussion history\n",
         );
     }
     commands.push_str(
         "
-  /clear; <prompt>          Reset context, then send a prompt
-  /model <alias>; <prompt>  Switch model, then send a prompt
+\x1b[1m/clear; <prompt>\x1b[22m          : Reset context, then send a prompt
+\x1b[1m/model <alias>; <prompt>\x1b[22m  : Switch model, then send a prompt
 
-  ! <command>         Run a bash command, show it, and record it for the model
-  !                   Show the recent bash commands
+\x1b[1m! <command>\x1b[22m         : Run a bash command, show it, and record it for the model
+\x1b[1m!\x1b[22m                   : Show the recent bash commands
 
-  Ctrl+C              Stop a running request or a running ! command,
+\x1b[1mCtrl+C\x1b[22m              : Stop a running request or a running ! command,
                       or discard the current input
 
   ****************************** Note ******************************
@@ -350,7 +354,7 @@ fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
 fn print_help(agent: &Agent, has_claude: bool, has_antigravity: bool) {
     output::head("Current session");
     eprintln!("{}\n", agent.summary());
-    output::head("Commands");
+    eprintln!("  ── Commands ──");
     eprintln!("{}", help_commands(has_claude, has_antigravity));
 }
 
@@ -881,22 +885,36 @@ mod tests {
 
     #[test]
     fn every_help_line_is_indented() {
-        // A `\` at the end of a string literal also eats the next line's
+        // A `\\` at the end of a string literal also eats the next line's
         // leading whitespace, which is what once left `! <command>` flush left.
         for line in help_commands(true, true)
             .lines()
             .filter(|line| !line.trim().is_empty())
         {
-            assert!(line.starts_with("  "), "not indented: {line}");
+            let plain = line.replace("\x1b[1m", "").replace("\x1b[22m", "");
+            assert!(
+                plain.starts_with('/')
+                    || plain.starts_with('!')
+                    || plain.starts_with("Ctrl+C")
+                    || plain.starts_with(' '),
+                "not aligned: {plain}"
+            );
         }
     }
 
     #[test]
-    fn bang_commands_follow_the_slash_commands() {
+    fn help_entries_align_labels_and_colons() {
         let help = help_commands(true, true);
-        let last_slash = help.find("  /model <alias>; <prompt>").unwrap();
-        let bang = help.find("  ! <command>").unwrap();
-        assert!(bang > last_slash);
+        for line in help.lines().filter(|line| {
+            (line.starts_with('/')
+                && !line.starts_with("/clear;")
+                && !line.starts_with("/model <alias>;"))
+                || line.starts_with('!')
+                || line.starts_with("Ctrl+C")
+        }) {
+            let plain = line.replace("\x1b[1m", "").replace("\x1b[22m", "");
+            assert_eq!(plain.find(':').unwrap(), 20, "misaligned: {plain}");
+        }
     }
 
     #[test]

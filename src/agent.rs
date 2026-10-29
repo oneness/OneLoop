@@ -52,9 +52,21 @@ fn first_line(argument: &str) -> String {
 }
 
 fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
-    match key_argument(name, arguments) {
-        Some(argument) => format!("{name}: {}", first_line(argument)),
-        None => name.to_string(),
+    match name {
+        "elisp" => arguments
+            .get("expression")
+            .and_then(serde_json::Value::as_str)
+            .map(|expression| format!("elisp: {}", first_line(expression)))
+            .unwrap_or_else(|| name.to_string()),
+        "skill" => arguments
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|skill| format!("skill: {skill}.md"))
+            .unwrap_or_else(|| name.to_string()),
+        _ => match key_argument(name, arguments) {
+            Some(argument) => format!("{name}: {}", first_line(argument)),
+            None => name.to_string(),
+        },
     }
 }
 
@@ -665,11 +677,11 @@ impl Agent {
         let session_path = relative_to(self.cwd(), self.session.path()).display();
 
         format!(
-            "model    : {model}\n\
-             available: {available}\n\
-             tools    : {tools}\n\
-             session  : {session_path} ({session_state})\n\
-             context  : {context}"
+            "\x1b[1mmodel\x1b[22m    : {model}\n\
+             \x1b[1mavailable\x1b[22m: {available}\n\
+             \x1b[1mtools\x1b[22m    : {tools}\n\
+             \x1b[1msession\x1b[22m  : {session_path} ({session_state})\n\
+             \x1b[1mcontext\x1b[22m  : {context}"
         )
     }
 }
@@ -712,6 +724,41 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn elisp_tool_call_shows_the_expression() {
+        assert_eq!(
+            format_tool_call("elisp", &serde_json::json!({"expression": "(+ 1 2)"})),
+            "elisp: (+ 1 2)"
+        );
+    }
+
+    #[test]
+    fn elisp_tool_call_shows_only_the_first_expression_line() {
+        assert_eq!(
+            format_tool_call(
+                "elisp",
+                &serde_json::json!({"expression": "(progn\n  (+ 1 2))"})
+            ),
+            "elisp: (progn …"
+        );
+    }
+
+    #[test]
+    fn skill_tool_call_shows_its_markdown_filename() {
+        assert_eq!(
+            format_tool_call("skill", &serde_json::json!({"name": "emacs"})),
+            "skill: emacs.md"
+        );
+    }
+
+    #[test]
+    fn other_tool_call_labels_remain_unchanged() {
+        assert_eq!(
+            format_tool_call("read", &serde_json::json!({"path": "src/main.rs"})),
+            "read: src/main.rs"
+        );
+    }
 
     /// Only the cap goes unreported by the loop itself, so only the cap gets a
     /// line — a resolved or failed run must not be told it ran out of budget.
