@@ -4,7 +4,7 @@ pub mod session;
 mod spinner;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -19,8 +19,9 @@ use crate::status::TurnStatus;
 use crate::{
     config::Config,
     models::ModelRegistry,
+    path::{display_file, display_path, normalize, resolve_path},
     providers::{ProviderRequest, is_context_overflow},
-    tools::{ToolRegistry, ToolResult, resolve_path},
+    tools::{ToolRegistry, ToolResult, skill::skill_candidates},
 };
 
 use spinner::SpinnerGuard;
@@ -30,16 +31,17 @@ pub struct AgentContext {
     pub cwd: PathBuf,
 }
 
-/// The most salient argument of a tool call for display — the command or
-/// path. `Some("?")` when the tool is known but the argument is missing;
-/// `None` when the tool itself is unknown.
-fn key_argument<'a>(name: &str, arguments: &'a serde_json::Value) -> Option<&'a str> {
-    let field = match name {
-        "bash" => "command",
-        "read" | "write" | "edit" => "path",
-        _ => return None,
-    };
-    Some(arguments.get(field).and_then(|v| v.as_str()).unwrap_or("?"))
+/// The argument that best names a tool call, and whether that argument is one
+/// file. Compositionally it is two rules: the trace spells a file with
+/// [`display_path`], and [`file_key`] keys the batch lock on it — so one table
+/// keeps the label a reader sees and the lock the batch takes agreeing. `None`
+/// for a tool that names no single argument.
+fn salient_field(name: &str) -> Option<(&'static str, bool)> {
+    match name {
+        "bash" => Some(("command", false)),
+        "read" | "write" | "edit" => Some(("path", true)),
+        _ => None,
+    }
 }
 
 /// One line, always: a multi-line argument would otherwise scroll the
@@ -51,23 +53,47 @@ fn first_line(argument: &str) -> String {
     }
 }
 
-fn format_tool_call(name: &str, arguments: &serde_json::Value) -> String {
+fn format_tool_call(name: &str, arguments: &Value, cwd: &Path) -> String {
     match name {
         "elisp" => arguments
             .get("expression")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .map(|expression| format!("elisp: {}", first_line(expression)))
             .unwrap_or_else(|| name.to_string()),
         "skill" => arguments
             .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(|skill| format!("skill: {skill}.md"))
+            .and_then(Value::as_str)
+            .map(|skill| format!("skill: {}", skill_file(skill, cwd)))
             .unwrap_or_else(|| name.to_string()),
-        _ => match key_argument(name, arguments) {
-            Some(argument) => format!("{name}: {}", first_line(argument)),
+        _ => match salient_field(name) {
+            Some((field, is_file)) => {
+                // A file is named the way every other tool names it; anything
+                // else is quoted as the model sent it. A known tool that forgot
+                // its argument says so rather than naming the working
+                // directory.
+                let shown = match arguments.get(field).and_then(Value::as_str) {
+                    Some(argument) if is_file => display_path(cwd, argument),
+                    Some(argument) => argument.to_string(),
+                    None => "?".to_string(),
+                };
+                format!("{name}: {}", first_line(&shown))
+            }
             None => name.to_string(),
         },
     }
+}
+
+/// The skill file `SkillTool` loads: the first candidate on disk in the order
+/// that tool searches, and a skill found nowhere says so rather than naming a
+/// file that does not exist.
+fn skill_file(name: &str, cwd: &Path) -> String {
+    skill_candidates(cwd, name)
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .map_or_else(
+            || format!("{name} (not found)"),
+            |path| display_file(cwd, path),
+        )
 }
 
 /// Runs one batch of tool calls. Calls that name the same file take turns —
@@ -133,37 +159,14 @@ async fn run_batch(
 /// The lock key for a tool call: the file it names, resolved and normalized,
 /// for the tools that operate on one path. `None` for the rest — bash and
 /// elisp can touch anything, so no single path stands for them.
-fn file_key(cwd: &Path, name: &str, arguments: &serde_json::Value) -> Option<PathBuf> {
-    let field = match name {
-        "read" | "write" | "edit" => "path",
-        _ => return None,
-    };
+fn file_key(cwd: &Path, name: &str, arguments: &Value) -> Option<PathBuf> {
+    // Only a tool whose whole argument is one path has a path to lock.
+    let (field, is_file) = salient_field(name)?;
+    if !is_file {
+        return None;
+    }
     let raw = arguments.get(field)?.as_str()?;
     Some(normalize(&resolve_path(cwd, raw)))
-}
-
-/// Collapse `.` and `..` lexically, without touching the filesystem, so two
-/// spellings of one path share a key — `sub/../note.txt` and `note.txt` must
-/// not look like two different files to the lock.
-fn normalize(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else {
-                    normalized.push("..");
-                }
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
 }
 
 /// Payloads a `read` has already put in the transcript, keyed by the file they
@@ -639,7 +642,7 @@ impl Agent {
         }
 
         for (tc, result) in tool_calls.iter().zip(results) {
-            let tool_label = format_tool_call(&tc.name, &tc.arguments);
+            let tool_label = format_tool_call(&tc.name, &tc.arguments, &self.config.cwd);
 
             self.session.push_tool_result(
                 tc.id.clone(),
@@ -674,7 +677,7 @@ impl Agent {
         } else {
             "new".to_string()
         };
-        let session_path = relative_to(self.cwd(), self.session.path()).display();
+        let session_path = display_file(self.cwd(), self.session.path());
 
         format!(
             "\x1b[1mmodel\x1b[22m    : {model}\n\
@@ -692,12 +695,6 @@ const VALUE_COLUMN: usize = 11;
 
 /// Wider than a realistic model list, narrow enough to read on a laptop.
 const SUMMARY_WIDTH: usize = 80;
-
-/// A path named from the project root when it sits there. The session file
-/// always does, and its absolute form is almost all working directory.
-fn relative_to<'a>(cwd: &Path, path: &'a Path) -> &'a Path {
-    path.strip_prefix(cwd).unwrap_or(path)
-}
 
 /// Provider groups packed into as few lines as fit, each continuation indented
 /// to the value column and opened by a comma, so a break reads as "more
@@ -728,7 +725,11 @@ mod tests {
     #[test]
     fn elisp_tool_call_shows_the_expression() {
         assert_eq!(
-            format_tool_call("elisp", &serde_json::json!({"expression": "(+ 1 2)"})),
+            format_tool_call(
+                "elisp",
+                &serde_json::json!({"expression": "(+ 1 2)"}),
+                Path::new("/repo")
+            ),
             "elisp: (+ 1 2)"
         );
     }
@@ -738,25 +739,84 @@ mod tests {
         assert_eq!(
             format_tool_call(
                 "elisp",
-                &serde_json::json!({"expression": "(progn\n  (+ 1 2))"})
+                &serde_json::json!({"expression": "(progn\n  (+ 1 2))"}),
+                Path::new("/repo")
             ),
             "elisp: (progn …"
         );
     }
 
+    /// A skill found inside the project is named the way every other file in
+    /// the trace is: from the project root, not by its absolute path.
     #[test]
     fn skill_tool_call_shows_its_markdown_filename() {
+        let dir = project_dir("skill-label");
+        fs::create_dir_all(dir.join(".oneloop").join("skills")).unwrap();
+        let file = dir.join(".oneloop").join("skills").join("emacs.md");
+        fs::write(&file, "how to reason").unwrap();
+
         assert_eq!(
-            format_tool_call("skill", &serde_json::json!({"name": "emacs"})),
-            "skill: emacs.md"
+            format_tool_call("skill", &serde_json::json!({"name": "emacs"}), &dir),
+            "skill: .oneloop/skills/emacs.md"
         );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn other_tool_call_labels_remain_unchanged() {
+    fn missing_skill_falls_back_to_a_visible_failure() {
+        let dir = project_dir("skill-missing");
         assert_eq!(
-            format_tool_call("read", &serde_json::json!({"path": "src/main.rs"})),
-            "read: src/main.rs"
+            format_tool_call("skill", &serde_json::json!({"name": "no-such-skill"}), &dir),
+            "skill: no-such-skill (not found)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The point of the rule: one file, one spelling. Five shapes of the same
+    /// path and three tools that touch it all print the same line.
+    #[test]
+    fn every_shape_of_one_path_is_spelled_the_same_way() {
+        for path in [
+            "src/main.rs",
+            "./src/main.rs",
+            "@src/main.rs",
+            "/repo/src/main.rs",
+            "src/../src/main.rs",
+        ] {
+            for tool in ["read", "write", "edit"] {
+                assert_eq!(
+                    format_tool_call(
+                        tool,
+                        &serde_json::json!({ "path": path }),
+                        Path::new("/repo")
+                    ),
+                    format!("{tool}: src/main.rs"),
+                    "{tool} was given {path}"
+                );
+            }
+        }
+    }
+
+    /// A command is not a path: bash keeps the model's words verbatim.
+    #[test]
+    fn a_command_is_never_treated_as_a_path() {
+        assert_eq!(
+            format_tool_call(
+                "bash",
+                &serde_json::json!({"command": "cargo test"}),
+                Path::new("/repo")
+            ),
+            "bash: cargo test"
+        );
+    }
+
+    /// A known tool that forgot its argument says so rather than naming the
+    /// working directory.
+    #[test]
+    fn a_missing_path_argument_stays_a_question_mark() {
+        assert_eq!(
+            format_tool_call("read", &serde_json::json!({}), Path::new("/repo")),
+            "read: ?"
         );
     }
 
@@ -767,21 +827,6 @@ mod tests {
         assert!(cap_notice(Stop::Resolved, 72).is_none());
         assert!(cap_notice(Stop::Failed, 72).is_none());
         assert!(cap_notice(Stop::Cap, 72).is_some_and(|notice| notice.contains("72")));
-    }
-
-    #[test]
-    fn a_session_file_is_named_from_the_project_root() {
-        let path = Path::new("/repo/.oneloop/sessions/2026-10-28-001.jsonl");
-        assert_eq!(
-            relative_to(Path::new("/repo"), path),
-            Path::new(".oneloop/sessions/2026-10-28-001.jsonl")
-        );
-    }
-
-    #[test]
-    fn a_path_outside_the_project_stays_absolute() {
-        let path = Path::new("/elsewhere/session.jsonl");
-        assert_eq!(relative_to(Path::new("/repo"), path), path);
     }
 
     #[test]

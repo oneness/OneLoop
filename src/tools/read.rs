@@ -6,9 +6,10 @@ use serde_json::{Value, json};
 use crate::{
     agent::AgentContext,
     output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_window},
+    path::resolve_path,
 };
 
-use super::{Tool, ToolResult, resolve_path};
+use super::{Tool, ToolResult};
 
 pub struct ReadTool;
 

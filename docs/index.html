@@ -353,6 +353,7 @@
       <div class="tool-item"><code>skill</code> <span>Load a playbook</span></div>
     </div>
     <p class="big" style="font-size: 16px; margin-top: 20px;"><code>elisp</code> evaluates bounded expressions in a running Emacs server, exposing unsaved buffers, windows, diagnostics, and process output. Load the bundled <code>emacs</code> skill before use.</p>
+    <p class="big" style="font-size: 16px; margin-top: 16px;">A file is named one way in the trace, whatever shape the model sent: relative to the project, <code>~/</code>-shortened inside your home, absolute otherwise. Calls that name the same file take turns, so a batch of edits applies one at a time.</p>
   </div>
 </section>
 
@@ -367,7 +368,8 @@
       .oneloop/skills/changelog.md<br>
       .oneloop/skills/migration.md
     </div>
-    <p class="big" style="margin-top: 20px; font-size: 16px;">The model sees names + descriptions at startup.<br>It calls <code>skill("name")</code> when the task matches — no user action needed.</p>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">Project skills come first, then global ones — a project skill shadows a global skill of the same name, and listing order is search order.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">The model sees names + descriptions at startup.<br>It calls <code>skill("name")</code> when the task matches — no user action needed.</p>
   </div>
 </section>
 
@@ -448,10 +450,10 @@
     <!-- Snapshot: git-tracked .rs/.html/.md files; physical lines including blanks and tests. HTML is this page. -->
     <table>
       <tr><th>Language</th><th style="text-align:right;">Files</th><th style="text-align:right;">Lines</th></tr>
-      <tr><td>Rust</td><td style="text-align:right;">31</td><td style="text-align:right;">10,365</td></tr>
-      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">516</td></tr>
-      <tr><td>Markdown</td><td style="text-align:right;">8</td><td style="text-align:right;">1,474</td></tr>
-      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">40</td><td style="text-align:right;">12,355</td></tr>
+      <tr><td>Rust</td><td style="text-align:right;">32</td><td style="text-align:right;">10,825</td></tr>
+      <tr><td>HTML</td><td style="text-align:right;">1</td><td style="text-align:right;">515</td></tr>
+      <tr><td>Markdown</td><td style="text-align:right;">8</td><td style="text-align:right;">1,488</td></tr>
+      <tr style="font-weight:700;"><td>Total</td><td style="text-align:right;">41</td><td style="text-align:right;">12,828</td></tr>
     </table>
   </div>
 </section>

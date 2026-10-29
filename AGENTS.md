@@ -27,7 +27,7 @@ The project has strict `[lints.clippy]` config in `Cargo.toml`. Run before commi
 
 ```sh
 
-nix develop --command bash -c 'cargo clippy -- -D warnings'
+nix develop --command bash -c 'cargo clippy --all-targets -- -D warnings'
 ```
 
 Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use `#[expect(clippy::lint_name)]` with a comment.
@@ -46,13 +46,26 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 - One assertion per test when practical.
 - `#[cfg(test)] mod tests {}` in the same file.
 
-## Code Search
+## Search
 
-Use the OneSearch skill (`onesearch.md`, loaded from `~/.oneloop/skills/` or `.oneloop/skills/`) for repository search. It documents invoking the local binary at `~/repos/OneSearch/target/debug/onesearch`, selecting `code`, `docs`, `all`, or `session` filters, and following result chunks. Prefer OneSearch over grep for semantic questions and symbol lookups; use literal grep only for exhaustive exact-string checks or when OneSearch is unavailable.
+Every repository question starts with OneSearch, not grep. Read
+`~/.oneloop/skills/onesearch.md` once per session for the invocation
+(`~/repos/OneSearch/target/debug/onesearch`).
 
-## Workflow
+1. Ask by behavior, or name the symbol.
+2. Pick the filter that holds the answer: `code` (default), `docs`, `config`,
+   `session`, or `all`.
+3. Read the returned chunks; open whole files only when they fall short.
 
-1. Start with a OneSearch query that describes behavior or names the symbol.
-2. Choose `code`, `docs`, `all`, or `session` based on the material needed.
-3. Inspect full files only when returned chunks lack sufficient context.
-4. Use grep only for exhaustive literal matches or when OneSearch is unavailable.
+Grep is for exhaustive literal checks, and for when OneSearch cannot run.
+Reaching for it first is a wasted step, not a shortcut.
+
+## Docs
+
+A change is not finished until the docs say the same thing.
+
+- [`docs/index.html`](docs/index.html) — the product deck: slides plus a codebase snapshot. Update the affected slide and the snapshot numbers in the same change.
+- [`docs/architecture.md`](docs/architecture.md) — source layout and mechanisms.
+
+When behavior, a tool, the module layout, or the shape of the loop moves, one
+of these is wrong until you fix it.

@@ -8,6 +8,7 @@ mod claude;
 mod config;
 mod models;
 mod output;
+mod path;
 mod prompt;
 mod providers;
 mod status;

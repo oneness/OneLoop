@@ -62,9 +62,9 @@ non-interactive and directs ordinary disk access back to `read`, `write`, and
 `edit`. A tool timeout stops `emacsclient`, but cannot stop Lisp already
 executing inside Emacs.
 
-`skill` is registered alongside them when `.oneloop/skills/*.md` files
-exist, but is not a tool in the same sense: it touches nothing and returns a
-markdown playbook for the model to follow. It is on-demand prompt
+`skill` is registered alongside them when a skill file exists in either
+directory, but it is not a tool in the same sense: it touches nothing and
+returns a markdown playbook for the model to follow. It is on-demand prompt
 engineering wearing a tool call, which is the only way to let the model
 decide when it needs one.
 
@@ -145,9 +145,9 @@ that rewrote the config would make the next run's model a side effect.
 
 Skill files are markdown files that contain task-specific instructions the agent loads on demand. They are not in the system prompt at startup — instead, the `skill` tool lists them by name and description so the model can pull one in when relevant.
 
-Scan order (project-local shadows global for the same name):
-1. `~/.oneloop/skills/*.md` — global, shared across all projects
-2. `.oneloop/skills/*.md` — project-local
+Scan order, which is also the order the model's menu lists them in:
+1. `.oneloop/skills/*.md` — project-local
+2. `~/.oneloop/skills/*.md` — global, shared across all projects, shadowed
 
 The first non-empty, non-heading line of each file is used as the skill's description in the tool listing. The full file content is returned as the tool result when the model calls `skill("name")`.
 
@@ -380,6 +380,7 @@ src/
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
+  path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
   prompt.rs         System prompt assembly (tool preamble + AGENTS.md + environment)
   providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response types
   providers/
