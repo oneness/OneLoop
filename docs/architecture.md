@@ -342,6 +342,13 @@ stay outside the module by design: the spinner's cursor manipulation, and the
 column-aligned model picker, which no general helper could serve without
 becoming one caller's shape.
 
+The trace line for a tool call is `agent.rs::format_tool_call`, and it is
+always one line: `name: argument`, with the argument's first line only and a
+bash command flattened from its line breaks and cut at `TRACE_WIDTH` (240)
+characters before `...` closes it. A command the model wrote as a whole
+here-document would otherwise scroll the trace away, and the line's job is to
+say that one ran.
+
 Not every terminal can take everything the module emits. `plain()` reports
 terminals that cannot take cursor addressing — comint runs its children with
 `TERM=dumb` and marks them in `INSIDE_EMACS` — and there the spinner stays

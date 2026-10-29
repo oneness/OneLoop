@@ -44,13 +44,41 @@ fn salient_field(name: &str) -> Option<(&'static str, bool)> {
     }
 }
 
+/// How much of a bash command the trace shows: enough of it to recognise what
+/// ran, not enough to fill the screen with a here-document.
+const TRACE_WIDTH: usize = 240;
+
+/// What a cut line ends with. One marker and one spelling, so a reader never
+/// has to tell an ellipsis from three dots.
+const ELISION: &str = "...";
+
 /// One line, always: a multi-line argument would otherwise scroll the
 /// spinner's line away mid-run.
 fn first_line(argument: &str) -> String {
     match argument.split_once('\n') {
-        Some((first, _)) => format!("{} …", first.trim_end()),
+        Some((first, _)) => format!("{}{ELISION}", first.trim_end()),
         None => argument.to_string(),
     }
+}
+
+/// A bash command as at most one line of [`TRACE_WIDTH`] characters. The trace
+/// records that a command ran, not the command itself — and the model's own
+/// words can be a 1,800-character here-document. Newlines become spaces so the
+/// budget measures the command rather than its first line, and whatever is
+/// dropped — trailing characters, or the line breaks that were flattened — ends
+/// the line with [`ELISION`].
+fn elide(command: &str) -> String {
+    let one_line = command
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shown: String = one_line.chars().take(TRACE_WIDTH).collect();
+    if shown == one_line && one_line == command.trim() {
+        return one_line;
+    }
+    format!("{}{ELISION}", shown.trim_end())
 }
 
 fn format_tool_call(name: &str, arguments: &Value, cwd: &Path) -> String {
@@ -68,15 +96,15 @@ fn format_tool_call(name: &str, arguments: &Value, cwd: &Path) -> String {
         _ => match salient_field(name) {
             Some((field, is_file)) => {
                 // A file is named the way every other tool names it; anything
-                // else is quoted as the model sent it. A known tool that forgot
-                // its argument says so rather than naming the working
-                // directory.
+                // else is quoted as the model sent it — a command cut to the
+                // width a trace line has. A known tool that forgot its argument
+                // says so rather than naming the working directory.
                 let shown = match arguments.get(field).and_then(Value::as_str) {
-                    Some(argument) if is_file => display_path(cwd, argument),
-                    Some(argument) => argument.to_string(),
+                    Some(argument) if is_file => first_line(&display_path(cwd, argument)),
+                    Some(argument) => elide(argument),
                     None => "?".to_string(),
                 };
-                format!("{name}: {}", first_line(&shown))
+                format!("{name}: {shown}")
             }
             None => name.to_string(),
         },
@@ -742,7 +770,7 @@ mod tests {
                 &serde_json::json!({"expression": "(progn\n  (+ 1 2))"}),
                 Path::new("/repo")
             ),
-            "elisp: (progn …"
+            "elisp: (progn..."
         );
     }
 
@@ -807,6 +835,80 @@ mod tests {
                 Path::new("/repo")
             ),
             "bash: cargo test"
+        );
+    }
+
+    /// A command the model wrote as a whole script is cut to one readable
+    /// trace line, and the cut says so.
+    #[test]
+    fn a_long_command_is_elided_at_the_trace_width() {
+        let command = "x".repeat(400);
+        assert_eq!(
+            format_tool_call(
+                "bash",
+                &serde_json::json!({ "command": command }),
+                Path::new("/repo")
+            ),
+            format!("bash: {}...", "x".repeat(TRACE_WIDTH))
+        );
+    }
+
+    /// The cut counts characters, not bytes: half a multi-byte character would
+    /// be mojibake on the terminal.
+    #[test]
+    fn elision_never_splits_a_character() {
+        let command = "é".repeat(TRACE_WIDTH + 10);
+        let label = format_tool_call(
+            "bash",
+            &serde_json::json!({ "command": command }),
+            Path::new("/repo"),
+        );
+        assert_eq!(label, format!("bash: {}...", "é".repeat(TRACE_WIDTH)));
+    }
+
+    /// A command that fits is printed whole — no marker, nothing removed.
+    #[test]
+    fn a_command_at_the_width_is_printed_whole() {
+        let command = "y".repeat(TRACE_WIDTH);
+        let label = format_tool_call(
+            "bash",
+            &serde_json::json!({ "command": command }),
+            Path::new("/repo"),
+        );
+        assert_eq!(label, format!("bash: {command}"));
+    }
+
+    /// A here-document is flattened into the one line the trace has, and the
+    /// budget spans the whole command rather than stopping at the first line
+    /// break: a script's opening line is not the command.
+    #[test]
+    fn a_multiline_command_spends_the_width_budget_across_its_lines() {
+        assert_eq!(
+            format_tool_call(
+                "bash",
+                &serde_json::json!({"command": "cd /repo && python3 - <<'PY'\np = 'x'\nPY"}),
+                Path::new("/repo")
+            ),
+            "bash: cd /repo && python3 - <<'PY' p = 'x' PY..."
+        );
+    }
+
+    /// The cut falls inside the command, not at its first line break, so the
+    /// line is as wide as the budget allows.
+    #[test]
+    fn a_long_multiline_command_is_cut_at_the_width() {
+        let command = format!("cd /repo && python3 - <<'PY'\n{}", "p = 'x'\n".repeat(40));
+        let label = format_tool_call(
+            "bash",
+            &serde_json::json!({ "command": command }),
+            Path::new("/repo"),
+        );
+        let shown = label.strip_prefix("bash: ").unwrap_or_default();
+        assert!(shown.ends_with("..."), "{label}");
+        assert_eq!(
+            shown.trim_end_matches('.').chars().count(),
+            TRACE_WIDTH,
+            "{label}"
         );
     }
 
