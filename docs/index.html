@@ -294,8 +294,6 @@
     <div class="label">models</div>
     <h2>Any Model</h2>
     <p class="big">One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus a local model when you want private.<br>Reach a hosted one only when you ask for it.</p>
-    <p class="big" style="font-size:16px; margin-top:20px;">A <strong>provider</strong> is an endpoint — one URL, one credential, one connection pool. Credentials may be absent, an API key, or a renewable subscription grant. Its models get short aliases: <code>qwen</code>, <code>luna</code>, <code>nvidia</code>. <code>/model</code> switches which one answers for the session.</p>
-    <p class="big" style="font-size:16px; margin-top:16px;">The same code serves llama-server, OpenRouter, and OpenCode Go over Chat Completions, plus ChatGPT's Codex backend and OpenCode Go Responses models over the Responses API.</p>
     <p class="big" style="font-size:16px; margin-top:20px;">Edit <code>~/.oneloop/config.json</code>, then use <code>/reload</code> to refresh providers and models without restarting or clearing the conversation. Your current model stays selected while its alias exists; changing <code>default</code> alone does not switch it. If reloading fails, the working configuration stays untouched.</p>
   </div>
 </section>
@@ -352,8 +350,6 @@
       <div class="tool-item"><code>elisp</code> <span>Live Emacs state</span></div>
       <div class="tool-item"><code>skill</code> <span>Load a playbook</span></div>
     </div>
-    <p class="big" style="font-size: 16px; margin-top: 20px;"><code>elisp</code> evaluates bounded expressions in a running Emacs server, exposing unsaved buffers, windows, diagnostics, and process output. Load the bundled <code>emacs</code> skill before use.</p>
-    <p class="big" style="font-size: 16px; margin-top: 16px;">A file is named one way in the trace, whatever shape the model sent: relative to the project, <code>~/</code>-shortened inside your home, absolute otherwise. Calls that name the same file take turns, so a batch of edits applies one at a time.</p>
   </div>
 </section>
 

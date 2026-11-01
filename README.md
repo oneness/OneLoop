@@ -37,7 +37,8 @@ cargo check
 
 # Contributing
 
-Pull requests not accepted. I recommend you build your own coding agent.
+Pull requests not accepted. I recommend you build your own coding agent —
+[here is why I use mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
 
 # License
 
