@@ -26,11 +26,11 @@ set -euo pipefail
 #
 # The OpenCode Go plan is a third source, reporting on a different population:
 # the models OpenCode's own users can run on its subscription rather than
-# OpenRouter's traffic. Its table lives at https://opencode.ai/go and lists,
-# per model, the estimated requests per 5 hours and the monthly usage limit,
-# for the Go plan and for the Go Plus plan. The free models report no limit at
-# all. That page has no documented API, but it is server rendered, so the
-# table is read straight out of the HTML.
+# OpenRouter's traffic. Its table lives at https://opencode.ai/console/go and
+# lists, per model, the estimated requests per 5 hours and the monthly usage
+# limit, for the Go plan and for the Go Plus plan. The free models report no
+# limit at all. That page has no documented API, but it is server rendered, so
+# the table is read straight out of the HTML.
 #
 # Only the free models and the three paid models with the most requests per 5
 # hours are shown: the free ones because they cost nothing, the paid ones
@@ -164,7 +164,7 @@ fetch_opencode_go() {
   curl --fail --silent --show-error --location \
     --header "Accept: text/html" \
     --header "User-Agent: OneLoop-model-trends" \
-    "https://opencode.ai/go"
+    "https://opencode.ai/console/go"
 }
 
 # Trending: join the usage ranking against the price catalogue and emit one
@@ -319,13 +319,10 @@ build_most_popular_rows() {
 }
 
 # The OpenCode Go plan table is read out of the server rendered page. Each row
-# holds the model name and two number cells: the requests per 5 hours and the
-# monthly usage limit, each for the Go plan and then for the Go Plus plan. A
-# value the page strikes through is a superseded one, and only the current
-# value counts.
-#
-# The Go plan is the one reported, because it is the plan anyone can buy, and
-# the free models report no limit at all.
+# holds the model name and two allowance cells: the requests per 5 hours and the
+# monthly usage limit, each carrying a value for the Go plan and then for the Go
+# Plus plan. The Go plan is the one reported, because it is the plan anyone can
+# buy, and a free model reports no limit at all.
 #
 # The rows come out as TSV: name, requests per 5 hours, monthly usage, free
 # flag, and the request count as a number for ranking.
@@ -333,22 +330,24 @@ parse_go_rows() {
   local page=$1
 
   awk '
-    # The text of one number cell. A struck through value is dropped, the
-    # hydration markers carry no text, and the remaining tags separate the
-    # values from each other.
-    function cell_values(cell,   text, count, parts, out, i) {
-      text = cell
-      gsub(/<s[^>]*>[^<]*<\/s>/, "", text)
-      gsub(/<!--[^>]*-->/, "", text)
-      gsub(/<[^>]*>/, " ", text)
+    # The Go plan value in one allowance cell. The cell carries a span per plan,
+    # each with its own current value, so this takes the first value after the
+    # Go marker and stops before the Go Plus span: a Go value that cannot be
+    # read must read as missing rather than fall through to the other plan.
+    function go_value(cell,   start, tail, plus, value) {
+      start = index(cell, "data-plan=\"go\"")
+      if (start == 0) return ""
 
-      count = split(text, parts, /[ \t]+/)
-      out = ""
-      for (i = 1; i <= count; i++) {
-        if (parts[i] == "") continue
-        out = out (out == "" ? "" : "\t") parts[i]
-      }
-      return out
+      tail = substr(cell, start)
+      plus = index(tail, "data-plan=\"go-plus\"")
+      if (plus > 0) tail = substr(tail, 1, plus - 1)
+
+      if (match(tail, /data-layer="current-value"[^>]*>[^<]*</) == 0) return ""
+
+      value = substr(tail, RSTART, RLENGTH)
+      sub(/^[^>]*>/, "", value)
+      sub(/<$/, "", value)
+      return value
     }
 
     # A row starts at <tr, which is rare enough in the page to be a safe
@@ -356,33 +355,41 @@ parse_go_rows() {
     BEGIN { RS = "<tr" }
 
     {
-      # The header row and the axis row carry no numbers, and the page holds
-      # only this one table.
-      if (index($0, "data-slot=\"number\"") == 0) next
+      # The header row and the rows of any other table carry no model.
+      if (index($0, "data-layer=\"model-row\"") == 0) next
 
-      if (match($0, /<bdi>[^<]*<\/bdi>/) == 0) next
-      name = substr($0, RSTART + 5, RLENGTH - 11)
+      if (match($0, /class="console-go-models-model-name"[^>]*>[^<]*</) == 0) next
+      name = substr($0, RSTART, RLENGTH)
+      sub(/^[^>]*>/, "", name)
+      sub(/<$/, "", name)
       if (name == "") next
 
-      split($0, cells, /<td data-slot="number">/)
-      if (length(cells) < 3) next
-
-      split(cell_values(cells[2]), requests, "\t")
-      split(cell_values(cells[3]), monthly, "\t")
-      if (length(requests) < 2 || length(monthly) < 2) next
+      # The two allowance cells are told apart by the allowance each reports
+      # rather than by position, so a column added ahead of them does not shift
+      # the read.
+      split($0, cells, /<td /)
+      requests = ""
+      monthly = ""
+      for (i = 2; i <= length(cells); i++) {
+        if (requests == "" && index(cells[i], "data-allowance-type=\"requests\"") > 0)
+          requests = go_value(cells[i])
+        else if (monthly == "" && index(cells[i], "data-allowance-type=\"usage\"") > 0)
+          monthly = go_value(cells[i])
+      }
+      if (requests == "" || monthly == "") next
 
       # A model is free when its name says so, or when it reports no limit at
       # all: the page writes an infinity rather than a number for those, and
       # the two markers always agree.
-      free = (tolower(name) ~ /free/ || requests[1] !~ /^[0-9,]+$/) ? 1 : 0
+      free = (tolower(name) ~ /free/ || requests !~ /^[0-9,]+$/) ? 1 : 0
 
       # The page groups thousands with a comma, and a free model reports an
       # infinity, which reads as zero here because the free models are picked
       # out before anything is ranked.
-      count = requests[1]
+      count = requests
       gsub(/,/, "", count)
 
-      print name "\t" requests[1] "\t" monthly[1] "\t" free "\t" (count + 0)
+      print name "\t" requests "\t" monthly "\t" free "\t" (count + 0)
     }
   ' "$page"
 }
@@ -596,10 +603,10 @@ print_table "OpenCode Go plan (free models, top $paid_limit paid)" \
   "$(build_go_rows "$go_rows")"
 
 if [ -z "$go_rows" ]; then
-  echo "note: the Go plan table could not be read from https://opencode.ai/go"
+  echo "note: the Go plan table could not be read from https://opencode.ai/console/go"
   echo
 fi
 
-echo "note: the Go Plus plan raises these limits; see https://opencode.ai/go"
+echo "note: the Go Plus plan raises these limits; see https://opencode.ai/console/go"
 echo
-echo "Sources: https://openrouter.ai/rankings, https://openrouter.ai/models and https://opencode.ai/go"
+echo "Sources: https://openrouter.ai/rankings, https://openrouter.ai/models and https://opencode.ai/console/go"
