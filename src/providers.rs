@@ -128,8 +128,10 @@ pub struct ProviderRequest {
     /// Where a refusal is recorded — the project's `.oneloop/errors.log`.
     /// Carried on the request because the provider layer is what decides a
     /// response counts as a refusal, and it is the only thing that knows
-    /// which project the request belongs to.
-    pub errors_log: PathBuf,
+    /// which project the request belongs to. None for a one-shot, which
+    /// writes nothing: recording a refusal would mean creating `.oneloop/`
+    /// in whatever directory the prompt happened to run in.
+    pub errors_log: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +271,7 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 async fn send_and_read(
     request: reqwest::RequestBuilder,
     provider: &str,
-    errors_log: &Path,
+    errors_log: Option<&Path>,
 ) -> Result<(reqwest::StatusCode, String)> {
     tokio::time::timeout(
         CHAT_TIMEOUT,
@@ -282,7 +284,7 @@ async fn send_and_read(
 async fn send_and_read_inner(
     request: reqwest::RequestBuilder,
     provider: &str,
-    errors_log: &Path,
+    errors_log: Option<&Path>,
 ) -> Result<(reqwest::StatusCode, String)> {
     let response = request
         .send()
@@ -318,11 +320,21 @@ async fn send_and_read_inner(
 /// A log that cannot be written must not replace the failure it was meant to
 /// explain, so the write error is a warning and the caller's error is
 /// untouched.
-pub(super) fn log_provider_failure(errors_log: &Path, alias: &str, status: StatusCode, body: &str) {
-    if let Err(e) = append_record(errors_log, alias, status, body) {
+pub(super) fn log_provider_failure(
+    errors_log: Option<&Path>,
+    alias: &str,
+    status: StatusCode,
+    body: &str,
+) {
+    // A one-shot carries no path rather than create `.oneloop/` in whatever
+    // directory its prompt ran in; the refusal is still reported on stderr.
+    let Some(path) = errors_log else {
+        return;
+    };
+    if let Err(e) = append_record(path, alias, status, body) {
         crate::output::warn(&format!(
             "could not record the provider failure in {}: {e:#}",
-            errors_log.display()
+            path.display()
         ));
     }
 }

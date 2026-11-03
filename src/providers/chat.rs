@@ -261,7 +261,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
         post
     }
     .json(&body);
-    let (status, text) = send_and_read(post, &model.alias, &request.errors_log).await?;
+    let (status, text) = send_and_read(post, &model.alias, request.errors_log.as_deref()).await?;
 
     // Some providers (e.g., OpenRouter) wrap upstream errors in HTTP 200
     // with an `error` object instead of `choices`. Detect that first so we
@@ -269,7 +269,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     if let Some(provider_msg) = extract_provider_error(&text) {
         // A 200 is not a success here, and the body is the only place the
         // reason exists.
-        log_provider_failure(&request.errors_log, &model.alias, status, &text);
+        log_provider_failure(request.errors_log.as_deref(), &model.alias, status, &text);
         return Err(anyhow::anyhow!(
             "{} upstream error: {}",
             model.alias,
@@ -280,7 +280,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     let parsed: ChatResponse = match serde_json::from_str(&text) {
         Ok(parsed) => parsed,
         Err(error) => {
-            log_provider_failure(&request.errors_log, &model.alias, status, &text);
+            log_provider_failure(request.errors_log.as_deref(), &model.alias, status, &text);
             return Err(error)
                 .with_context(|| format!("failed to parse {} response JSON", model.alias));
         }

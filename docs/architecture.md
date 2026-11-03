@@ -115,7 +115,9 @@ Every refusal is recorded in the project's `.oneloop/errors.log`, one JSON
 object per line: the model alias, the status, and the body as it arrived. It
 sits beside the sessions it explains rather than in the home directory — a
 refusal belongs to the work it interrupted, and one global file merged every
-project into a single history. The line printed to the console is a summary,
+project into a single history. A one-shot records nowhere: it persists
+nothing, so a refusal there is reported on stderr and written to no file.
+The line printed to the console is a summary,
 and the reason is usually only in the body — OpenRouter answers a gated model
 with a 403 whose `failed_routing_step` names the routing gate, and nothing
 else surfaces that. All three shapes go through `log_provider_failure`: a
@@ -248,8 +250,8 @@ Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
 
 A one-shot — `ol "…"`, or a prompt piped in — is stateless: it opens no
-session file, reads no `AGENTS.md`, and records no metrics, so it neither
-inherits nor disturbs the conversation on disk.
+session file, reads no `AGENTS.md`, and records no metrics or error log, so
+it neither inherits nor disturbs the conversation on disk.
 
 On open (and after a Ctrl+C-cancelled run), any tool call left without a matching
 result is closed out with a synthetic error result — providers reject conversations

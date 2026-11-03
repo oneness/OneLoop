@@ -356,6 +356,10 @@ pub struct Agent {
     /// reported any. Cleared on `/clear`; until a turn runs the gauge falls
     /// back to `estimate_tokens`.
     last_input_tokens: Option<u64>,
+    /// Where refusals are recorded — the project's `.oneloop/errors.log`.
+    /// None for a one-shot, which writes nothing: a refusal there would mean
+    /// creating `.oneloop/` in whatever directory the prompt ran in.
+    errors_log: Option<PathBuf>,
 }
 
 impl Agent {
@@ -370,6 +374,7 @@ impl Agent {
             ));
         }
         let metrics = metrics::Metrics::from_session_path(session.path())?;
+        let errors_log = Some(errors_log_path(&config.cwd));
         Ok(Self {
             config,
             models: Arc::new(models),
@@ -377,11 +382,13 @@ impl Agent {
             session,
             metrics,
             last_input_tokens: None,
+            errors_log,
         })
     }
 
     /// A one-shot run: no session file is opened, read, or written, and no
-    /// metrics are recorded. The conversation exists only for this turn.
+    /// metrics or file-based error log are recorded. The conversation exists
+    /// only for this turn.
     pub fn ephemeral(config: Config, models: ModelRegistry, tool_registry: ToolRegistry) -> Self {
         let session = session::Session::in_memory(&config.cwd);
         Self {
@@ -391,6 +398,7 @@ impl Agent {
             session,
             metrics: metrics::Metrics::disabled(),
             last_input_tokens: None,
+            errors_log: None,
         }
     }
 
@@ -496,7 +504,7 @@ impl Agent {
                 session_id: self.session.id(),
                 messages: self.session.messages().to_vec(),
                 tools: self.tool_registry.definitions(),
-                errors_log: errors_log_path(&self.config.cwd),
+                errors_log: self.errors_log.clone(),
             };
 
             let response = match self

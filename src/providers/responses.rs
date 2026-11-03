@@ -260,7 +260,8 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     }
     let post = post.header("accept", "text/event-stream").json(&body);
 
-    let (output, input_tokens) = read_turn(post, &model.alias, &request.errors_log).await?;
+    let (output, input_tokens) =
+        read_turn(post, &model.alias, request.errors_log.as_deref()).await?;
     let (content, tool_calls) = split_output(output);
     Ok(ProviderResponse {
         content,
@@ -280,7 +281,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 async fn read_turn(
     request: reqwest::RequestBuilder,
     alias: &str,
-    errors_log: &Path,
+    errors_log: Option<&Path>,
 ) -> Result<(Vec<OutputItem>, Option<u64>)> {
     let mut response = tokio::time::timeout(STREAM_IDLE_TIMEOUT, request.send())
         .await
