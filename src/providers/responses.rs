@@ -1,6 +1,8 @@
 //! The shared Responses API implementation. It serves ChatGPT's Codex backend
 //! and API-key providers that expose a compatible Responses endpoint.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -258,7 +260,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     }
     let post = post.header("accept", "text/event-stream").json(&body);
 
-    let (output, input_tokens) = read_turn(post, &model.alias).await?;
+    let (output, input_tokens) = read_turn(post, &model.alias, &request.errors_log).await?;
     let (content, tool_calls) = split_output(output);
     Ok(ProviderResponse {
         content,
@@ -278,6 +280,7 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
 async fn read_turn(
     request: reqwest::RequestBuilder,
     alias: &str,
+    errors_log: &Path,
 ) -> Result<(Vec<OutputItem>, Option<u64>)> {
     let mut response = tokio::time::timeout(STREAM_IDLE_TIMEOUT, request.send())
         .await
@@ -299,7 +302,7 @@ async fn read_turn(
                 )
             })?
             .with_context(|| format!("failed to read the {alias} error response"))?;
-        log_provider_failure(alias, status, &body);
+        log_provider_failure(errors_log, alias, status, &body);
         return Err(ProviderHttpError {
             status,
             message: extract_error_message(&body),

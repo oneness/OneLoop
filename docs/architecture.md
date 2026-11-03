@@ -111,15 +111,17 @@ is progressing, but must begin responding within 90 seconds and each later
 chunk resets the same 90-second idle deadline. That avoids killing a long,
 active generation while still closing a connection that has stalled.
 
-Every refusal is recorded in `~/.oneloop/oneloop.log`, one JSON object per
-line: the model alias, the status, and the body as it arrived. The line
-printed to the console is a summary, and the reason is usually only in the
-body — OpenRouter answers a gated model with a 403 whose `failed_routing_step`
-names the routing gate, and nothing else surfaces that. All three shapes go
-through `log_provider_failure`: a non-2xx status, a 200 carrying an `error`
-object instead of `choices`, and a body that parses as neither. A log that
-cannot be written is a warning, never a replacement for the error it was
-meant to explain.
+Every refusal is recorded in the project's `.oneloop/errors.log`, one JSON
+object per line: the model alias, the status, and the body as it arrived. It
+sits beside the sessions it explains rather than in the home directory — a
+refusal belongs to the work it interrupted, and one global file merged every
+project into a single history. The line printed to the console is a summary,
+and the reason is usually only in the body — OpenRouter answers a gated model
+with a 403 whose `failed_routing_step` names the routing gate, and nothing
+else surfaces that. All three shapes go through `log_provider_failure`: a
+non-2xx status, a 200 carrying an `error` object instead of `choices`, and a
+body that parses as neither. A log that cannot be written is a warning, never
+a replacement for the error it was meant to explain.
 
 A provider is a place: base URL, what it is let in with, and one HTTP
 client. A model is one thing that place will run, carrying a short alias
@@ -371,7 +373,8 @@ src/
   output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
   path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
   prompt.rs         System prompt assembly (tool preamble + AGENTS.md + environment)
-  providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response types
+  providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response
+                    types, `.oneloop/errors.log`
   providers/
     chat.rs         The Chat Completions wire format
     responses.rs    The shared Responses API implementation

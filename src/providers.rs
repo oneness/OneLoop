@@ -125,6 +125,11 @@ pub struct ProviderRequest {
     pub session_id: String,
     pub messages: Vec<crate::agent::messages::Message>,
     pub tools: Vec<crate::tools::ToolDefinition>,
+    /// Where a refusal is recorded — the project's `.oneloop/errors.log`.
+    /// Carried on the request because the provider layer is what decides a
+    /// response counts as a refusal, and it is the only thing that knows
+    /// which project the request belongs to.
+    pub errors_log: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -264,15 +269,20 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
 async fn send_and_read(
     request: reqwest::RequestBuilder,
     provider: &str,
+    errors_log: &Path,
 ) -> Result<(reqwest::StatusCode, String)> {
-    tokio::time::timeout(CHAT_TIMEOUT, send_and_read_inner(request, provider))
-        .await
-        .with_context(|| format!("{provider} request timed out after 15 minutes"))?
+    tokio::time::timeout(
+        CHAT_TIMEOUT,
+        send_and_read_inner(request, provider, errors_log),
+    )
+    .await
+    .with_context(|| format!("{provider} request timed out after 15 minutes"))?
 }
 
 async fn send_and_read_inner(
     request: reqwest::RequestBuilder,
     provider: &str,
+    errors_log: &Path,
 ) -> Result<(reqwest::StatusCode, String)> {
     let response = request
         .send()
@@ -284,7 +294,7 @@ async fn send_and_read_inner(
         .await
         .with_context(|| format!("failed to read {provider} response body"))?;
     if !status.is_success() {
-        log_provider_failure(provider, status, &text);
+        log_provider_failure(errors_log, provider, status, &text);
         return Err(ProviderHttpError {
             status,
             message: extract_error_message(&text),
@@ -296,7 +306,7 @@ async fn send_and_read_inner(
 }
 
 /// Records a failed exchange with a provider, one JSON object per line, in
-/// `~/.oneloop/oneloop.log`.
+/// the project's `.oneloop/errors.log`.
 ///
 /// The console line is a summary, and the reason a request was refused is
 /// usually only in the body: OpenRouter answers a gated model with a 403
@@ -308,21 +318,25 @@ async fn send_and_read_inner(
 /// A log that cannot be written must not replace the failure it was meant to
 /// explain, so the write error is a warning and the caller's error is
 /// untouched.
-pub(super) fn log_provider_failure(alias: &str, status: StatusCode, body: &str) {
-    if let Err(e) = append_failure(alias, status, body) {
+pub(super) fn log_provider_failure(errors_log: &Path, alias: &str, status: StatusCode, body: &str) {
+    if let Err(e) = append_record(errors_log, alias, status, body) {
         crate::output::warn(&format!(
-            "could not record the provider failure in ~/.oneloop/oneloop.log: {e:#}"
+            "could not record the provider failure in {}: {e:#}",
+            errors_log.display()
         ));
     }
 }
 
-fn append_failure(alias: &str, status: StatusCode, body: &str) -> Result<()> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
-    let path = PathBuf::from(home).join(".oneloop").join("oneloop.log");
-    append_record(&path, alias, status, body)
+/// The project's error log, beside the sessions and the metrics it explains.
+///
+/// Per project rather than under the home directory: a refusal belongs to the
+/// work it interrupted, and one file for every project merged unrelated
+/// histories into a single one.
+pub fn errors_log_path(cwd: &Path) -> PathBuf {
+    cwd.join(".oneloop").join("errors.log")
 }
 
-/// Takes the path so a test can write somewhere other than the user's log.
+/// Takes the path so a test can write somewhere other than the project.
 fn append_record(path: &Path, alias: &str, status: StatusCode, body: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -374,7 +388,7 @@ fn extract_error_message(raw: &str) -> String {
 mod tests {
     use super::{
         Credentials, OauthEntry, Provider, ProviderHttpError, append_record, decode_tool_arguments,
-        extract_error_message, is_context_overflow, is_retryable,
+        errors_log_path, extract_error_message, is_context_overflow, is_retryable,
     };
     use reqwest::StatusCode;
     use serde_json::{Value, json};
@@ -385,7 +399,7 @@ mod tests {
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("oneloop-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        dir.join("oneloop.log")
+        dir.join("errors.log")
     }
 
     /// Reads the log and clears the scratch directory. Parsing every line is
@@ -614,6 +628,16 @@ mod tests {
         // Connection resets really can succeed on a second attempt; only a
         // recognised status downgrades that assumption.
         assert!(is_retryable(&anyhow::anyhow!("connection reset")));
+    }
+
+    /// The log belongs to the project it explains, not to the home
+    /// directory: one file for every project merged unrelated histories.
+    #[test]
+    fn the_error_log_is_filed_under_the_project() {
+        assert_eq!(
+            errors_log_path(std::path::Path::new("/repo")),
+            std::path::PathBuf::from("/repo/.oneloop/errors.log")
+        );
     }
 
     /// The line the console prints is a summary; the reason — OpenRouter's

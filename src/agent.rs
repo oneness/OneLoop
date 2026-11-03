@@ -20,7 +20,7 @@ use crate::{
     config::Config,
     models::ModelRegistry,
     path::{display_file, display_path, normalize, resolve_path},
-    providers::{ProviderRequest, is_context_overflow},
+    providers::{ProviderRequest, errors_log_path, is_context_overflow},
     tools::{ToolRegistry, ToolResult, skill::skill_candidates},
 };
 
@@ -496,6 +496,7 @@ impl Agent {
                 session_id: self.session.id(),
                 messages: self.session.messages().to_vec(),
                 tools: self.tool_registry.definitions(),
+                errors_log: errors_log_path(&self.config.cwd),
             };
 
             let response = match self
