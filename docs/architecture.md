@@ -111,6 +111,16 @@ is progressing, but must begin responding within 90 seconds and each later
 chunk resets the same 90-second idle deadline. That avoids killing a long,
 active generation while still closing a connection that has stalled.
 
+Every refusal is recorded in `~/.oneloop/oneloop.log`, one JSON object per
+line: the model alias, the status, and the body as it arrived. The line
+printed to the console is a summary, and the reason is usually only in the
+body — OpenRouter answers a gated model with a 403 whose `failed_routing_step`
+names the routing gate, and nothing else surfaces that. All three shapes go
+through `log_provider_failure`: a non-2xx status, a 200 carrying an `error`
+object instead of `choices`, and a body that parses as neither. A log that
+cannot be written is a warning, never a replacement for the error it was
+meant to explain.
+
 A provider is a place: base URL, what it is let in with, and one HTTP
 client. A model is one thing that place will run, carrying a short alias
 used everywhere else. Every `Model` holds an `Arc<Provider>`, so two models

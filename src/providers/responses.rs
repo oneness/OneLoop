@@ -12,7 +12,7 @@ use crate::models::Model;
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
-    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_message,
+    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_message, log_provider_failure,
 };
 
 // ── Request ───────────────────────────────────────────────────────────
@@ -299,6 +299,7 @@ async fn read_turn(
                 )
             })?
             .with_context(|| format!("failed to read the {alias} error response"))?;
+        log_provider_failure(alias, status, &body);
         return Err(ProviderHttpError {
             status,
             message: extract_error_message(&body),

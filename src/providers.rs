@@ -3,9 +3,14 @@
 //! What belongs to the place — URL, credentials, connection pool — lives
 //! here; what varies per model lives on the model.
 
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::Local;
+use reqwest::StatusCode;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -279,6 +284,7 @@ async fn send_and_read_inner(
         .await
         .with_context(|| format!("failed to read {provider} response body"))?;
     if !status.is_success() {
+        log_provider_failure(provider, status, &text);
         return Err(ProviderHttpError {
             status,
             message: extract_error_message(&text),
@@ -287,6 +293,60 @@ async fn send_and_read_inner(
         .into());
     }
     Ok((status, text))
+}
+
+/// Records a failed exchange with a provider, one JSON object per line, in
+/// `~/.oneloop/oneloop.log`.
+///
+/// The console line is a summary, and the reason a request was refused is
+/// usually only in the body: OpenRouter answers a gated model with a 403
+/// whose `failed_routing_step` names the gate, and none of that metadata
+/// reaches the message the user sees. Shared rather than written per call
+/// site because every refusal — a status, a 200 carrying an `error` object, a
+/// body that parses as neither — is the same event with the same fields.
+///
+/// A log that cannot be written must not replace the failure it was meant to
+/// explain, so the write error is a warning and the caller's error is
+/// untouched.
+pub(super) fn log_provider_failure(alias: &str, status: StatusCode, body: &str) {
+    if let Err(e) = append_failure(alias, status, body) {
+        crate::output::warn(&format!(
+            "could not record the provider failure in ~/.oneloop/oneloop.log: {e:#}"
+        ));
+    }
+}
+
+fn append_failure(alias: &str, status: StatusCode, body: &str) -> Result<()> {
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let path = PathBuf::from(home).join(".oneloop").join("oneloop.log");
+    append_record(&path, alias, status, body)
+}
+
+/// Takes the path so a test can write somewhere other than the user's log.
+fn append_record(path: &Path, alias: &str, status: StatusCode, body: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{}", failure_record(alias, status, body)?)
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// One line, whatever the body held: newlines and quotes in it are escaped
+/// rather than allowed to split the record.
+fn failure_record(alias: &str, status: StatusCode, body: &str) -> Result<String> {
+    Ok(format!(
+        "{{\"ts\":{},\"event\":\"provider_error\",\"model\":{},\"status\":{},\"body\":{}}}",
+        serde_json::to_string(&Local::now().to_rfc3339())?,
+        serde_json::to_string(alias)?,
+        status.as_u16(),
+        serde_json::to_string(body)?,
+    ))
 }
 
 /// Falls back to truncating the raw text at 200 characters.
@@ -313,12 +373,30 @@ fn extract_error_message(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Credentials, OauthEntry, Provider, ProviderHttpError, decode_tool_arguments,
+        Credentials, OauthEntry, Provider, ProviderHttpError, append_record, decode_tool_arguments,
         extract_error_message, is_context_overflow, is_retryable,
     };
     use reqwest::StatusCode;
     use serde_json::{Value, json};
     use tokio::sync::Mutex;
+
+    /// A directory of its own per test, so two of these can run at once and
+    /// neither writes into the other's log.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("oneloop-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("oneloop.log")
+    }
+
+    /// Reads the log and clears the scratch directory. Parsing every line is
+    /// itself the assertion that nothing split a record.
+    fn read_records(path: &std::path::Path) -> Vec<Value> {
+        let text = std::fs::read_to_string(path).expect("the log must exist");
+        let _ = std::fs::remove_dir_all(path.parent().expect("scratch path has a parent"));
+        text.lines()
+            .map(|line| serde_json::from_str(line).expect("every line must be one JSON object"))
+            .collect()
+    }
 
     fn http_error(status: StatusCode) -> anyhow::Error {
         refusal(status, "boom")
@@ -536,5 +614,73 @@ mod tests {
         // Connection resets really can succeed on a second attempt; only a
         // recognised status downgrades that assumption.
         assert!(is_retryable(&anyhow::anyhow!("connection reset")));
+    }
+
+    /// The line the console prints is a summary; the reason — OpenRouter's
+    /// `failed_routing_step`, an upstream provider's own words — exists only
+    /// in the body, so the record has to carry it.
+    #[test]
+    fn a_refusal_is_recorded_with_its_status_and_body() {
+        let path = scratch("refusal");
+        append_record(
+            &path,
+            "inkling",
+            StatusCode::FORBIDDEN,
+            r#"{"error":{"message":"only available on agentic harnesses"}}"#,
+        )
+        .expect("the log must be writable");
+        let records = read_records(&path);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["event"], "provider_error");
+        assert_eq!(records[0]["model"], "inkling");
+        assert_eq!(records[0]["status"], 403);
+        assert_eq!(
+            records[0]["body"],
+            r#"{"error":{"message":"only available on agentic harnesses"}}"#
+        );
+        assert!(records[0]["ts"].is_string());
+    }
+
+    /// A body is arbitrary bytes from someone else's server: a newline in it
+    /// must not look like the start of the next record.
+    #[test]
+    fn a_multiline_body_stays_one_record() {
+        let path = scratch("newline");
+        append_record(
+            &path,
+            "local",
+            StatusCode::BAD_REQUEST,
+            "line one\nline two\n",
+        )
+        .expect("the log must be writable");
+        let records = read_records(&path);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["body"], "line one\nline two\n");
+    }
+
+    /// The directory is created on the first failure, which is the first time
+    /// anything in a fresh home writes this file.
+    #[test]
+    fn a_log_directory_is_created_when_missing() {
+        let path = scratch("missing");
+        assert!(!path.exists());
+        append_record(&path, "local", StatusCode::BAD_GATEWAY, "boom")
+            .expect("the log must be writable");
+        assert_eq!(read_records(&path).len(), 1);
+    }
+
+    /// Append, not replace: the failures before this run are the history that
+    /// makes the log worth having.
+    #[test]
+    fn a_second_failure_keeps_the_first() {
+        let path = scratch("append");
+        append_record(&path, "local", StatusCode::BAD_GATEWAY, "first")
+            .expect("the log must be writable");
+        append_record(&path, "inkling", StatusCode::FORBIDDEN, "second")
+            .expect("the log must be writable");
+        let records = read_records(&path);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["body"], "first");
+        assert_eq!(records[1]["body"], "second");
     }
 }
