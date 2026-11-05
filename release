@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tag the current commit and push the tag. The tag is the publish button: it
+# starts the release workflow, which re-runs the checks before it builds.
+#
+#   ./release
+#
+# Nothing is bumped and nothing is committed here. Bump `version` in
+# Cargo.toml, commit, then run this.
+
+cd "$(dirname "$(readlink -f "$0")")"
+
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+tag="v${version}"
+
+if [[ -z "$version" ]]; then
+  echo "could not read version from Cargo.toml" >&2
+  exit 1
+fi
+
+# The workflow builds the tag, not the working tree, so anything uncommitted
+# would silently not be in the release.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "working tree is dirty; commit or stash first:" >&2
+  git status --short >&2
+  exit 1
+fi
+
+if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+  echo "tag ${tag} already exists locally" >&2
+  exit 1
+fi
+
+if [[ -n "$(git ls-remote --tags origin "refs/tags/${tag}")" ]]; then
+  echo "tag ${tag} already exists on origin" >&2
+  exit 1
+fi
+
+git tag --annotate "${tag}" --message "${tag}"
+git push origin "${tag}"
+
+echo "pushed ${tag} — the release workflow is building and publishing it"
+echo "watch: gh run list --workflow=release.yml"

@@ -1,0 +1,65 @@
+name: release
+
+# A tag publishes. `./release` tags and pushes; this workflow builds and
+# uploads the binary to the tag's release.
+on:
+  push:
+    tags: ["v*"]
+
+# Reading is enough for the checks; only the release job writes.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: release
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+
+      # The tag names the release; the manifest names the binary. A release
+      # whose tag and version disagree is wrong in a way nobody notices until
+      # someone has already downloaded it.
+      - name: tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
+
+      - name: build
+        run: nix develop --command cargo build --release --locked
+
+      - name: package
+        run: |
+          strip target/release/oneloop
+          mkdir -p dist/oneloop
+          cp target/release/oneloop LICENSE README.md dist/oneloop/
+          tar --create --gzip \
+            --file "dist/oneloop-${GITHUB_REF_NAME}-x86_64-linux.tar.gz" \
+            --directory dist oneloop
+
+      # Two steps rather than one, so a re-run after a packaging failure
+      # attaches to the existing release instead of failing on "already exists".
+      - name: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" \
+                 --title "${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz --clobber

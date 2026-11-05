@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "oneloop")]
 #[command(about = "A tiny, provider-neutral coding agent")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

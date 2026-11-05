@@ -446,17 +446,19 @@
     <div class="label">get started</div>
     <h2>Quick start</h2>
     <div class="mono" style="margin-top: 20px; font-size: 15px; line-height: 1.6; text-align: left;">
-      <span class="cm"># 1. Local model — no key, nothing leaves the box</span><br>
-      ./ols<br>
-      <span class="cm"># 2. Interactive REPL</span><br>
-      ./ol<br>
+      <span class="cm"># Install the release: oneloop plus the ol alias, into ~/.local/bin</span><br>
+      curl -fsSL https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh<br>
+      <span class="cm"># Interactive REPL</span><br>
+      ol<br>
       <span class="cm"># Hosted model, only if you want one</span><br>
-      ./ol login openrouter<br>
-      ./ol login opencode-go<br>
-      ./ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br>
+      ol login openrouter<br>
+      ol login opencode-go<br>
+      ol login openai&nbsp;&nbsp;<span class="cm"># ChatGPT Plus/Pro</span><br>
       <span class="cm"># One-shot, or piped</span><br>
-      ./ol "explain this codebase"<br>
-      git diff | ./ol "summarise these changes"
+      ol "explain this codebase"<br>
+      git diff | ol "summarise these changes"<br>
+      <span class="cm"># From a checkout: ./ols runs the pinned local model, ./ol runs the tree</span><br>
+      ./ols
     </div>
   </div>
 </section>

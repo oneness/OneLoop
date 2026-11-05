@@ -6,39 +6,30 @@ commercial and open source coding agents:
 1. Abstractions, features, and UI/UX that stand between coding agents and
    LLMs.
 2. Black box prompt engineering and vendor lock-in.
-3. Keeping my judgement of an LLM's reckoning grounded, by having full source
+3. Keeping judgement of an LLM's reckoning grounded, by having full source
    control over how I interact with coding models.
 
-# How
+I recommend you build your own coding agent — [here is why I use
+mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
 
-Just one simple REPL-style main loop with a minimal set of tools.
+**Curious?**
+[Overview](https://www.birkey.co/oneloop/) ·
+[Architecture](docs/architecture.md)
 
-# Want to try?
-
-1. Make sure you have a Rust toolchain or Nix installed.
-2. Run:
-
-   ```bash
-   ./ol login opencode-go  # recommended
-   ./ol
-   ```
-
-# Development
-
+**Want to try?**
 ```bash
-nix develop
-cargo check
+curl --fail --silent --show-error --location \
+  https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh
+ol
 ```
 
-**Deeper:**
-[Overview](https://www.birkey.co/oneloop/) ·
-[Architecture](docs/architecture.md) ·
-[Style guide](docs/style-guide.md)
+That installs `oneloop` and its `ol` alias into `~/.local/bin`, and says so if
+that directory is not on `PATH`. From a checkout, `./ol` builds and runs the
+working tree, and `./ols` starts the pinned local model server.
 
 # Contributing
 
-Pull requests not accepted. I recommend you build your own coding agent —
-[here is why I use mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
+Sorry. No pull requests.
 
 # License
 

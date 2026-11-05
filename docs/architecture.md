@@ -348,11 +348,36 @@ consumer for the **OSC 7501** (Program Status Protocol) reports that
 one when it ends (`state=idle`), carrying the model alias in a base64 `title`
 field.
 
+## Releases
+
+`version` in `Cargo.toml` is the release version, and nothing else stores one.
+Bumping it, committing, and running `./release` tags `v<version>` and pushes the
+tag — which is the only thing that publishes. The script refuses a dirty tree
+and an existing tag for the same reason the workflow re-checks the tag against
+`Cargo.toml`: a release is a claim about one specific commit.
+
+Two workflows, and the checks have one definition between them. `ci.yml` runs
+`cargo fmt --check`, clippy at `-D warnings`, and the tests on every branch push
+and pull request. `release.yml` calls that same workflow through
+`workflow_call`, so a release cannot skip a check a push would have caught, then
+builds `cargo build --release --locked` inside `nix develop`, strips the binary,
+and uploads `oneloop-v<version>-x86_64-linux.tar.gz` to the tag's release.
+
+The asset is built with the flake's toolchain rather than a runner-provided
+Rust, so the released binary and the development shell cannot drift apart. Only
+`x86_64-linux` is built, though the flake supports `aarch64-linux` too.
+
+`install.sh` is the user-facing half: it resolves the latest release through the
+GitHub API, downloads the tarball for the running platform, installs the binary
+into `${ONELOOP_BIN:-~/.local/bin}` and symlinks `ol` beside it. It writes
+nothing under `~/.oneloop`, so a fresh install starts on the local default
+model.
+
 ## Source layout
 
 ```
 src/
-  main.rs           CLI entry point, login command
+  main.rs           CLI entry point, login command, --version
   agent.rs          Agent struct, run_once, execute_tool_calls, session repair
   agent/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
