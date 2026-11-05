@@ -24,13 +24,38 @@ pub fn instructions(cwd: &Path) -> Vec<Instruction> {
 /// The system prompt for a run: what the model needs to call tools correctly,
 /// plus whatever instructions it was given.
 pub fn system_prompt(cwd: &Path, tool_names: &[&str], instructions: &[Instruction]) -> String {
-    let mut sections = vec![environment_block(cwd)];
+    let environment = environment_block(cwd);
+    let mut sections = vec![engineering_block(), environment.as_str()];
     sections.extend(
         instructions
             .iter()
-            .map(|instruction| instruction.body.clone()),
+            .map(|instruction| instruction.body.as_str()),
     );
     format!("{}\n\n{}", tool_preamble(tool_names), sections.join("\n\n"))
+}
+
+/// The standards that hold in any repository. A checkout without an `AGENTS.md`
+/// loads nothing else, so these are the only rules that travel with the binary.
+///
+/// They are deliberately the ones no check can enforce. Anything a lint, a test
+/// or a type can catch belongs there instead — that is what keeps this list
+/// short enough to be read rather than skimmed.
+fn engineering_block() -> &'static str {
+    "\
+## Engineering Tenets
+
+They hold on every task; where no check can, they decide.
+
+- **Choose correct over simple, and simple over fast.** Where they conflict,
+  that order holds.
+- **Look it up; don't recall it.** Use tools to read the API, the path, and the
+  behavior. Memory is the last resort — say so when you fall back on it.
+- **Show your work.** Verify before you claim success, and explain why rather
+  than what.
+- **Do each thing one way.** Take the smallest change that works; don't add a
+  second mechanism beside the first.
+- **Don't break what you don't own.** Understand existing code before changing
+  it, and never delete or overwrite work you cannot recover without asking."
 }
 
 fn load_instruction(name: &'static str, cwd: &Path) -> Option<Instruction> {
@@ -113,6 +138,28 @@ mod tests {
 
         assert!(prompt.contains("## Environment"));
         assert!(prompt.contains(&dir.display().to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompt_always_carries_the_engineering_tenets() {
+        let dir = temp_dir("tenets");
+
+        let prompt = system_prompt(&dir, &["read"], &[]);
+
+        assert!(prompt.contains("## Engineering Tenets"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn engineering_tenets_precede_the_environment() {
+        let dir = temp_dir("order");
+
+        let prompt = system_prompt(&dir, &["read"], &[]);
+
+        let tenets = prompt.find("## Engineering Tenets").unwrap();
+        let environment = prompt.find("## Environment").unwrap();
+        assert!(tenets < environment);
         let _ = fs::remove_dir_all(&dir);
     }
 

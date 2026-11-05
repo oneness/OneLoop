@@ -204,11 +204,13 @@ shortcuts. The summary is generated when requested, so it reflects session
 resets and model switches.
 
 The context line reports startup instruction sources, currently `AGENTS.md`
-when successfully loaded. It is not an inventory of files read through tools;
-`MEMORY.md` and other Markdown files are not automatically loaded. `/reload`
-reloads model configuration, not instruction files. Ctrl+C stops a running
-request or discards the draft at the terminal prompt. Editor frontends may
-intercept keys before they reach OneLoop.
+when successfully loaded. It is not an inventory of the prompt: the built-in
+sections — tool preamble, engineering tenets, environment — are always present
+and never listed. Nor is it an inventory of files read through tools; `MEMORY.md`
+and other Markdown files are not automatically loaded. `/reload` reloads model
+configuration, not instruction files. Ctrl+C stops a running request or discards
+the draft at the terminal prompt. Editor frontends may intercept keys before
+they reach OneLoop.
 
 Those frontends can go further than intercepting. rustyline treats `TERM` of
 `dumb`, `cons25`, or `emacs` as unsupported and reads whole lines instead of
@@ -374,7 +376,7 @@ src/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
   path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
-  prompt.rs         System prompt assembly (tool preamble + AGENTS.md + environment)
+  prompt.rs         System prompt assembly (tool preamble + engineering tenets + environment + AGENTS.md)
   providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response
                     types, `.oneloop/errors.log`
   providers/
