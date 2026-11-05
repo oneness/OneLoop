@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OneLoop — One Agent for Your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode Subscriptions</title>
-<meta name="description" content="One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus local when you want private. One loop, six tools, no framework.">
+<title>OneLoop — One Coding Agent for Your OpenRouter, OpenCode, ChatGPT, Claude Code, and Antigravity Subscriptions</title>
+<meta name="description" content="One coding agent for your OpenRouter, OpenCode, and ChatGPT subscriptions, Claude Code and Antigravity through their binaries, and a local model through llama.cpp.">
 <style>
   :root {
     --nav-height: 80px;
@@ -264,7 +264,7 @@
 <section class="slide">
   <div class="box">
     <h1>OneLoop</h1>
-    <p class="big" style="font-size:17px; margin-top:24px;">One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus local when you want private.<br>One loop, six tools, no framework.</p>
+    <p class="big" style="font-size:17px; margin-top:24px;">One coding agent for your OpenRouter, OpenCode, and ChatGPT subscriptions —<br>plus Claude Code and Antigravity through their binaries, and a local model through llama.cpp.</p>
   </div>
 </section>
 
@@ -289,16 +289,6 @@
   </div>
 </section>
 
-<!-- ═══ Models ═══ -->
-<section class="slide">
-  <div class="box">
-    <div class="label">models</div>
-    <h2>Any Model</h2>
-    <p class="big">One agent for your Claude, ChatGPT, Antigravity, OpenRouter, and OpenCode subscriptions — plus a local model when you want private.<br>Reach a hosted one only when you ask for it.</p>
-    <p class="big" style="font-size:16px; margin-top:20px;">Edit <code>~/.oneloop/config.json</code>, then use <code>/reload</code> to refresh providers and models without restarting or clearing the conversation. Your current model stays selected while its alias exists; changing <code>default</code> alone does not switch it. If reloading fails, the working configuration stays untouched.</p>
-  </div>
-</section>
-
 <!-- ═══ One session, many models ═══ -->
 <section class="slide">
   <div class="box">
@@ -310,7 +300,6 @@
       <span class="cm">(luna)&gt;</span> /model nvidia; implement step 1 of that plan<br>
       <span class="cm">(nvidia)&gt;</span> /ca is the plan still consistent with the code?
     </div>
-    <p class="big" style="font-size: 16px; margin-top: 20px;">A command can carry a prompt across the <code>;</code> boundary, so switching and asking is one line. Every answer is recorded in the same append-only session.</p>
   </div>
 </section>
 
@@ -334,7 +323,6 @@
       <span class="cm">(nvidia)&gt;</span> !cargo test 2&gt;&amp;1 | tail -20<br>
       <span class="cm">(nvidia)&gt;</span> those two failures are mine — fix them
     </div>
-    <p class="big" style="font-size: 16px; margin-top: 20px;">Everything after <code>!</code> goes to the shell verbatim, so a <code>;</code> there is a separator rather than a prompt boundary.</p>
   </div>
 </section>
 
@@ -351,6 +339,7 @@
       <div class="tool-item"><code>elisp</code> <span>Live Emacs state</span></div>
       <div class="tool-item"><code>skill</code> <span>Load a playbook</span></div>
     </div>
+    <p class="big" style="font-size:16px; margin-top:20px;">The <code>skill</code> tool joins the other five only when a skill file exists, so a repository with none runs with five.</p>
   </div>
 </section>
 
@@ -392,7 +381,6 @@
     <p class="big" style="margin-top: 16px; font-size: 16px;">Models may declare a context window — the prompt<br>then shows roughly how much of it is still free.</p>
     <p class="big" style="margin-top: 16px; font-size: 16px;">Nothing branches on the estimate. The server is the<br>authority on what fits, and it says so by saying no.</p>
     <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">When it stops fitting, OneLoop says so and names the fix:<br><strong>/clear</strong>, or a model with a larger window.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">Summarizing a thread to keep it alive trades accuracy for length<br>on your behalf. <code>/clear</code> is the same move, made deliberately.</p>
   </div>
 </section>
 
@@ -402,41 +390,14 @@
     <div class="label">reliability</div>
     <h2>Resilience</h2>
     <table>
-      <tr><td><strong>Retry with fallback</strong></td><td>Makes up to 5 attempts by default on transient failures, then offers another model. Your selection immediately becomes active for the session, without changing config; a rejected request fails at once</td></tr>
+      <tr><td><strong>Retry with fallback</strong></td><td>Makes up to 10 attempts by default on transient failures, then offers another model. The model you pick becomes active for the session once it answers, and config is never written; a rejected request fails at once</td></tr>
       <tr><td><strong>Bounded waits</strong></td><td>Connections and finite responses time out; an active stream may run long, but a stalled one cannot</td></tr>
       <tr><td><strong>Parallel tools</strong></td><td>Multiple calls execute concurrently</td></tr>
       <tr><td><strong>Output truncation</strong></td><td>Large outputs trimmed before re-entering context</td></tr>
       <tr><td><strong>Stop anywhere</strong></td><td>Ctrl+C stops cleanly; session preserved</td></tr>
       <tr><td><strong>AGENTS.md</strong></td><td>Loaded as system prompt if present</td></tr>
       <tr><td><strong>Engineering tenets</strong></td><td>Five built-in rules — correct, look it up, verify, one way, don't break — carried into every prompt, with or without an <code>AGENTS.md</code></td></tr>
-      <tr><td><strong>skills/</strong></td><td>Playbooks loaded on demand via the <code>skill</code> tool</td></tr>
     </table>
-  </div>
-</section>
-
-<!-- ═══ OSC 7501 Status ═══ -->
-<section class="slide">
-  <div class="box">
-    <div class="label">integration</div>
-    <h2>Agent Status via OSC 7501</h2>
-    <p class="big">OneLoop emits the active model and turn state as OSC 7501<br>when running under Emacs <code>comint</code>.</p>
-    <div class="mono" style="margin-top: 20px; font-size: 14px; line-height: 1.6;">
-      <span class="cm">ESC ] 7501 ; state=working|idle : app=oneloop : title=&lt;base64 model&gt; ESC \</span>
-    </div>
-    <p class="big" style="margin-top: 20px; font-size: 16px;">
-      <code>state</code> — <code>working</code> during a turn, <code>idle</code> between turns.
-    </p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">
-      <code>title</code> — model alias (base64 UTF-8), so the client always knows<br>
-      the current model even in idle.
-    </p>
-    <p class="big" style="margin-top: 20px; font-size: 16px;">
-      A small <code>oneloop.el</code> filter reads these and updates the mode line:<br>
-      <code>model: computing...</code> / <code>model: idle</code>.
-    </p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">
-      Any terminal, editor, or tooling can consume it — no prompt scraping needed.
-    </p>
   </div>
 </section>
 
@@ -447,7 +408,8 @@
     <h2>Quick start</h2>
     <div class="mono" style="margin-top: 20px; font-size: 15px; line-height: 1.6; text-align: left;">
       <span class="cm"># Install the release: oneloop plus the ol alias, into ~/.local/bin</span><br>
-      curl -fsSL https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh<br>
+      curl --fail --silent --show-error --location \<br>
+      &nbsp;&nbsp;https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh<br>
       <span class="cm"># Interactive REPL</span><br>
       ol<br>
       <span class="cm"># Hosted model, only if you want one</span><br>

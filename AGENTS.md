@@ -64,8 +64,9 @@ Reaching for it first is a wasted step, not a shortcut.
 
 A change is not finished until the docs say the same thing.
 
-- [`docs/index.html`](docs/index.html) — the product deck: slides plus a codebase snapshot. Update the affected slide and the snapshot numbers in the same change.
+- [`docs/index.html`](docs/index.html) — the product deck: one slide per mechanism. Update the slide a change touches in the same change.
 - [`docs/architecture.md`](docs/architecture.md) — source layout and mechanisms.
+- [`docs/style-guide.md`](docs/style-guide.md) — coding conventions, lint config, and the `ONELOOP_` variables.
 
 When behavior, a tool, the module layout, or the shape of the loop moves, one
 of these is wrong until you fix it.

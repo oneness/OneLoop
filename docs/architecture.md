@@ -68,14 +68,15 @@ returns a markdown playbook for the model to follow. It is on-demand prompt
 engineering wearing a tool call, which is the only way to let the model
 decide when it needs one.
 
-Web search and page fetching are deliberately not built-in tools. On
-OpenRouter, requests that carry tools also enable the server-side
-`openrouter:web_search` and `openrouter:web_fetch` tools: the model decides
-when to use them, OpenRouter executes them, and the results arrive inside the
-assistant message — no client-side handling, no HTML sanitization to
-maintain. Metered per use; `ONELOOP_WEB_TOOLS=false` turns them off. A
-request carrying no tools never includes them, so a background completion
-cannot trigger a paid search.
+Web search and page fetching are deliberately not built-in tools. A provider,
+or one model under it, opts into OpenRouter's server-side
+`openrouter:web_search` and `openrouter:web_fetch` with `web_tools: true`; the
+model then decides when to use them, OpenRouter executes them, and the results
+arrive inside the assistant message — no client-side handling, no HTML
+sanitization to maintain. It is metered per use, which is why it stays off
+until something asks for it; `ONELOOP_WEB_TOOLS` overrides the active model's
+setting for one run. A request carrying no tools never includes them, so a
+background completion cannot trigger a paid search.
 
 ## Providers and models
 
@@ -155,6 +156,25 @@ Setting a model, narrowest scope first: `/model` switches the session;
 last is persistent, and only it is edited by hand — a session-scoped command
 that rewrote the config would make the next run's model a side effect.
 
+## When a model won't answer
+
+`models/retry.rs` gives one model ten attempts by default (`ONELOOP_MAX_RETRIES`),
+waiting 500 ms times the attempt number in between. It sits beside the registry
+rather than in `providers` because the cure is a different model, which only the
+registry knows about.
+
+`is_retryable` decides whether a second attempt can plausibly differ: a 5xx, a
+429, a timeout, or a transport error can, while a 400 or a 401 is the same
+answer every time — a refused request fails at once. That refusal keeps its
+type, so the caller can still tell an overflow from any other rejection.
+
+When the attempts run out, an interactive run offers the other models. A pipe
+or a script gets the error instead, because nobody there can answer the picker.
+The picked model gets one attempt: it answers first and is switched to second,
+so it becomes the session's active model only once its response arrives, and a
+fallback that fails leaves the selection where it was. The config file is never
+written, and the next run starts on its `default`.
+
 ## Skills
 
 A skill is a directory holding a `SKILL.md` — the [Agent Skills](https://agentskills.io/specification) layout, which every other coding agent reads too. That file is markdown with YAML frontmatter, and anything the skill needs — a script, a reference — sits beside it in the same directory. Skills are not in the system prompt at startup; the `skill` tool lists them by name and description instead, so the model can pull one in when relevant.
@@ -180,12 +200,14 @@ question about the same error. It decides what the message says, not what
 the loop does: an overflow ends the turn like any other refusal.
 
 A model *may* declare a `context_window` in the config; the interactive
-prompt then shows roughly how much of it is still free, estimated by the
-same `estimate_tokens` that sizes the `tokens_estimated` metric. Nothing
-branches on it: an undersized declaration never drops a message, and an
-oversized one is only ever a gauge that reads too high. The server already
-knows what fits and says so. `estimate_tokens` therefore lives in
-`metrics.rs`, beside the one use of it that has always existed.
+prompt then shows roughly how much of it is still free — measured from the
+prompt-token count the server reported for the last turn, and from
+`estimate_tokens`, the same estimate that sizes the `tokens_estimated` metric,
+until a turn has run. Nothing branches on it: an undersized declaration never
+drops a message, and an oversized one is only ever a gauge that reads too
+high. The server already knows what fits and says so. `estimate_tokens`
+therefore lives in `metrics.rs`, beside the one use of it that has always
+existed.
 
 Summarizing a thread to keep it alive trades accuracy for length without
 being asked. `/clear` is the same move made deliberately: it costs one
@@ -251,6 +273,10 @@ Sessions are linear append-only JSONL files stored at:
 Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
 
+`.oneloop/metrics/` mirrors that naming, one file per session and one JSON line
+per `api_call` or `tool_exec` event, so a session and its costs are read
+together. A one-shot writes neither.
+
 A one-shot — `ol "…"`, or a prompt piped in — is stateless: it opens no
 session file, reads no `AGENTS.md`, and records no metrics or error log, so
 it neither inherits nor disturbs the conversation on disk.
@@ -315,8 +341,9 @@ it instead of a 401 later — and models that need no sign-in still load.
 
 `output.rs` owns both the ANSI escapes and the shape of a status line, so a
 colour change, a `--no-color` flag, or `NO_COLOR` support is one edit rather
-than thirty. Callers pick a meaning — `fail`, `warn`, `ok`, `tick`, `step`,
-`note`, `head` — and the module decides the glyph, the colour, and the stream.
+than thirty. Callers pick a meaning — `fail`, `warn`, `stopped`, `ok`, `tick`,
+`step`, `note`, `head` — and the module decides the glyph, the colour, and the
+stream.
 
 The streams are split by what the text *is*, not by how bad it is:
 
@@ -419,6 +446,5 @@ src/
 docs/
   architecture.md   This file
   index.html        Executive presentation (GitHub Pages, space-bar nav)
-  onesearch-use-case.md  A worked example: one search, its results, and the greps it beat
   style-guide.md    Coding conventions and lint config
 ```

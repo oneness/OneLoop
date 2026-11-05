@@ -19,7 +19,7 @@ mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
 **Want to try?**
 ```bash
 curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh ol
+  https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh
 ```
 
 That installs `oneloop` and its `ol` alias into `~/.local/bin`, and says so if
