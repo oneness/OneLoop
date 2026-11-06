@@ -377,7 +377,10 @@ field.
 
 ## Releases
 
-`version` in `Cargo.toml` is the release version, and nothing else stores one.
+`version` in `Cargo.toml` is the release version; nothing else stores one by
+hand. `Cargo.lock` carries a copy while the lockfile is committed, and the
+release builds with `--locked`, so a bump left unsynced fails the build step
+rather than shipping — the next plain `cargo build` rewrites that one line.
 Bumping it, committing, and running `./release` tags `v<version>` and pushes the
 tag — which is the only thing that publishes. The script refuses a dirty tree
 and an existing tag for the same reason the workflow re-checks the tag against

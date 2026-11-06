@@ -1,13 +1,7 @@
 # What
 
-My personal coding assistant, built to solve the following problems in
-commercial and open source coding agents:
-
-1. Abstractions, features, and UI/UX that stand between coding agents and
-   LLMs.
-2. Black box prompt engineering and vendor lock-in.
-3. Keeping judgement of an LLM's reckoning grounded, by having full source
-   control over how I interact with coding models.
+OneLoop is my personal coding assistant that is optimized for how I
+solve engineering problems.
 
 I recommend you build your own coding agent — [here is why I use
 mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
