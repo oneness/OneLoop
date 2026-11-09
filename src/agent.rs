@@ -18,30 +18,6 @@ use crate::{models::ModelRegistry, prompt, providers::errors_log_path};
 
 use spec::AgentSpec;
 
-/// Why the per-prompt loop returned. `Resolved` and `Failed` have already
-/// said their piece — an answer was given, or an error was printed — so the
-/// cap is the only exit that would otherwise end a run in silence.
-#[derive(Clone, Copy)]
-enum Stop {
-    /// The model answered without asking for more tools.
-    Resolved,
-    /// The provider refused; its error is already on the terminal.
-    Failed,
-    /// The iteration cap ran out with tool calls still coming.
-    Cap,
-}
-
-/// The one line a run the cap cut short prints. `None` for the exits that
-/// spoke for themselves.
-fn cap_notice(stop: Stop, max_iterations: usize) -> Option<String> {
-    matches!(stop, Stop::Cap).then(|| {
-        format!(
-            "iteration cap reached ({max_iterations}) — this run stopped mid-task; \
-             send another prompt to continue, or raise ONELOOP_MAX_ITERATIONS"
-        )
-    })
-}
-
 pub struct Agent {
     /// What this agent is: its working directory, its tools, its instructions
     /// and whose conversation it keeps.

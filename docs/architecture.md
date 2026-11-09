@@ -59,6 +59,15 @@ reported, not propagated.
 Neither `record` nor `continues` touches the terminal or the session, which is
 what makes them the first part of this loop a test can reach.
 
+There is no iteration cap. A turn ends when the model stops calling tools, or
+when the provider refuses, and both of those have already said their piece. A
+model that never converges cannot grind on for ever either: the transcript is
+append-only and never compacted, so the conversation outgrows the window and the
+server refuses with an error that says so, and a run in the REPL can always be
+stopped with Ctrl+C. What has no bound is an unattended run — `ol "…"` in a
+script or an editor command — which is what the wall-clock budget in `TODO.md`
+is for.
+
 ## Built-in tools
 
 - read
@@ -541,8 +550,7 @@ model.
 src/
   main.rs           CLI entry point, login command, --agent, --version
   messages.rs       Message types (User, Assistant, ToolCall, ToolResult) and ToolDefinition
-  agent.rs          Agent struct, from_spec, accessors, session repair, context gauge,
-                    Stop and cap_notice
+  agent.rs          Agent struct, from_spec, accessors, session repair, context gauge
   agent/
     spec.rs         AgentSpec, SessionPolicy, the coding and reviewer presets
     turn.rs         run_once*, request, record, continues, execute_tool_calls,
@@ -567,7 +575,7 @@ src/
   claude/
     mod.rs          Public entry points for Claude requests
     client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
-  config.rs         env_or, the per-prompt iteration cap, the working directory
+  config.rs         env_or, the working directory
   models.rs         The registry: the list, which one is active, switching
   models/
     retry.rs        Retry a request, then offer another model when one won't answer

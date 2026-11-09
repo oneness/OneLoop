@@ -11,12 +11,11 @@ use std::time::Instant;
 use anyhow::Result;
 use serde_json::json;
 
+use super::Agent;
 use super::duplicate_reads::suppress_duplicate_reads;
 use super::metrics::estimate_tokens;
 use super::spinner::SpinnerGuard;
 use super::trace::format_tool_call;
-use super::{Agent, Stop, cap_notice};
-use crate::config;
 use crate::messages::ToolCall;
 use crate::output;
 use crate::providers::{ProviderRequest, ProviderResponse, is_context_overflow};
@@ -86,38 +85,29 @@ impl Agent {
         let _turn_status = TurnStatus::new();
         self.session.push_user(prompt)?;
 
-        let max_iterations: usize =
-            config::env_or("ONELOOP_MAX_ITERATIONS", config::DEFAULT_MAX_ITERATIONS);
-
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
         let mut active_model: Option<String> = model.map(str::to_string);
 
-        // Pessimistic until a break says otherwise: falling off the end of the
-        // range means the cap ran out, and that is the exit with nothing else
-        // to announce it.
-        let mut stop = Stop::Cap;
-
-        for _iteration in 1..=max_iterations {
+        // Two exits and no fuse, and both of them have already said their
+        // piece. A run that never converges cannot grind on for ever either:
+        // the transcript is append-only, so it eventually outgrows the window
+        // and the server refuses, and a run in the REPL can always be stopped
+        // with Ctrl+C.
+        loop {
             let Some(response) = self.request(&mut active_model).await? else {
                 // The provider refused and said so; there is nothing to add and
                 // the run is over, but not in error.
-                stop = Stop::Failed;
                 break;
             };
 
             self.keep(&response)?;
 
             if !continues(&response) {
-                stop = Stop::Resolved;
                 break;
             }
 
             self.execute_tool_calls(response.tool_calls).await?;
-        }
-
-        if let Some(notice) = cap_notice(stop, max_iterations) {
-            output::warn(&notice);
         }
 
         Ok(())
@@ -378,14 +368,5 @@ mod tests {
         assert!(continues(&response("done", None, vec![call()])));
         assert!(!continues(&response("done", None, vec![])));
         assert!(!continues(&response("", Some("reasoning"), vec![])));
-    }
-
-    /// Only the cap goes unreported by the loop itself, so only the cap gets a
-    /// line — a resolved or failed run must not be told it ran out of budget.
-    #[test]
-    fn the_cap_is_the_only_stop_that_reports_itself() {
-        assert!(cap_notice(Stop::Resolved, 72).is_none());
-        assert!(cap_notice(Stop::Failed, 72).is_none());
-        assert!(cap_notice(Stop::Cap, 72).is_some_and(|notice| notice.contains("72")));
     }
 }

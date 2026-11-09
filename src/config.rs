@@ -13,9 +13,6 @@ pub fn working_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Cap on agent-loop iterations per prompt.
-pub const DEFAULT_MAX_ITERATIONS: usize = 100;
-
 /// Attempts one model gets before the user is offered another.
 pub const DEFAULT_MAX_RETRIES: usize = 10;
 
