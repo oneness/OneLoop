@@ -44,3 +44,13 @@ pub struct ToolResultMessage {
     pub content: String,
     pub is_error: bool,
 }
+
+/// The shape a tool is described to the model with. Not persisted — it rides
+/// in the request, while [`ToolCall`] and [`ToolResultMessage`] are what a
+/// session file stores.
+#[derive(Debug, Clone)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub schema: Value,
+}

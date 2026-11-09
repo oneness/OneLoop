@@ -5,7 +5,6 @@
 //! credentials. The list is flat because every lookup here is by alias.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::io::{self, Write as IoWrite};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,47 +14,10 @@ use anyhow::{Context, Result, bail};
 use crate::auth::{self, Auth};
 use crate::catalog::{self, Api, Catalog, ProviderEntry};
 use crate::output::{self, BOLD, DIM, RESET};
-use crate::providers::{Credentials, Provider, ProviderRequest, ProviderResponse, chat, responses};
+use crate::providers::{Credentials, Model, Provider};
 use crate::status;
 
 mod retry;
-
-/// One model, ready to answer.
-#[derive(Debug)]
-pub struct Model {
-    /// The short name used everywhere else — `/model`, `default`.
-    pub alias: String,
-    /// What goes on the wire.
-    pub id: String,
-    pub provider: Arc<Provider>,
-    /// The protocol its provider speaks, which is what decides which module
-    /// below gets the request.
-    pub api: Api,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
-    pub web_tools: bool,
-    pub reasoning_effort: Option<String>,
-    /// Approximate capacity, for the context gauge in the interactive
-    /// prompt. Nothing branches on it — the server is the authority on what
-    /// fits and refuses when it does not.
-    pub context_window: Option<u64>,
-}
-
-impl Model {
-    pub async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
-        match self.api {
-            Api::Chat => chat::complete(self, request).await,
-            Api::Codex | Api::Responses => responses::complete(self, request).await,
-        }
-    }
-}
-
-impl fmt::Display for Model {
-    /// `flash · openrouter (~deepseek/deepseek-v4-flash-latest)`
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} · {} ({})", self.alias, self.provider.name, self.id)
-    }
-}
 
 pub struct ModelRegistry {
     models: Vec<Model>,
@@ -70,6 +32,21 @@ impl ModelRegistry {
         let auth = auth::load();
         Self::build(&catalog, |name, api, entry| {
             credentials(&auth, name, api, entry)
+        })
+    }
+
+    /// A registry from config JSON with the credentials faked, so a test in
+    /// another module can build one without a home directory or a keyring.
+    #[cfg(test)]
+    pub(crate) fn for_test(json: &str) -> Result<Self> {
+        let file = serde_json::from_str(json).context("test config must parse")?;
+        let catalog = catalog::resolve(file, None)?;
+        Self::build(&catalog, |_, api, entry| match api {
+            Api::Codex => Credentials::Missing("ol login openai".to_string()),
+            Api::Chat | Api::Responses => match &entry.api_key_env {
+                Some(var) => Credentials::ApiKey(format!("key-for-{var}")),
+                None => Credentials::None,
+            },
         })
     }
 
@@ -297,16 +274,7 @@ mod tests {
     use super::*;
 
     fn registry(json: &str) -> ModelRegistry {
-        let file = serde_json::from_str(json).expect("test json must parse");
-        let catalog = catalog::resolve(file, None).expect("catalog must resolve");
-        ModelRegistry::build(&catalog, |_, api, entry| match api {
-            Api::Codex => Credentials::Missing("ol login openai".to_string()),
-            Api::Chat | Api::Responses => match &entry.api_key_env {
-                Some(var) => Credentials::ApiKey(format!("key-for-{var}")),
-                None => Credentials::None,
-            },
-        })
-        .expect("registry must build")
+        ModelRegistry::for_test(json).expect("test registry must build")
     }
 
     #[test]

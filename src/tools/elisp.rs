@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -11,8 +12,8 @@ use tokio::{
 };
 
 use crate::{
-    agent::AgentContext,
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_head},
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, first_line, truncate_head},
+    tools::AgentContext,
 };
 
 use super::{Tool, ToolResult};
@@ -80,6 +81,18 @@ impl Tool for ElispTool {
             },
             "required": ["expression"]
         })
+    }
+
+    /// The expression's first line: an elisp call is often a whole program,
+    /// and the trace has one line to say what it was about. An expression that
+    /// never arrived says so rather than tracing bare.
+    fn trace_label(&self, arguments: &Value, _cwd: &Path) -> Option<String> {
+        Some(
+            arguments
+                .get("expression")
+                .and_then(Value::as_str)
+                .map_or_else(|| "?".to_string(), first_line),
+        )
     }
 
     async fn execute(&self, input: Value, _ctx: &AgentContext) -> Result<ToolResult> {

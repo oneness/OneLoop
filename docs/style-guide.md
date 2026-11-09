@@ -34,8 +34,8 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 
-use crate::agent::messages::ToolCall;
-use crate::config::Config;
+use crate::messages::ToolCall;
+use crate::providers::{ProviderRequest, ProviderResponse};
 ```
 
 ## Ownership & Borrowing
@@ -165,4 +165,4 @@ modules, so the tests holding the suite together go unchecked.
 - `PascalCase` for types, traits, enums.
 - `SCREAMING_SNAKE_CASE` for constants and statics.
 - Booleans read as assertions: `is_empty`, `has_system`, `is_context_overflow`.
-- Builder / constructor methods: `new`, `open_or_create`, `with_builtin_tools`.
+- Builder / constructor methods: `new`, `open`, `from_spec`, `with_builtin_tools`.

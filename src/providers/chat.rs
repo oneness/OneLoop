@@ -7,8 +7,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::messages::{Message, ToolCall};
-use crate::models::Model;
+use super::Model;
+use crate::messages::{Message, ToolCall};
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderRequest, ProviderResponse, decode_tool_arguments,
@@ -406,7 +406,7 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::messages::{AssistantMessage, ToolResultMessage, UserMessage};
+    use crate::messages::{AssistantMessage, ToolResultMessage, UserMessage};
     use serde_json::json;
 
     fn user(text: &str) -> Message {

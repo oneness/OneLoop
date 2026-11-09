@@ -5,6 +5,7 @@ mod auth;
 mod catalog;
 mod claude;
 mod config;
+mod messages;
 mod models;
 mod output;
 mod path;
@@ -25,6 +26,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    /// Which agent to build: `main` (the default) or `reviewer`.
+    #[arg(long)]
+    agent: Option<String>,
 
     #[arg()]
     prompt: Vec<String>,
@@ -72,7 +77,7 @@ async fn main() -> Result<()> {
                 Some(prompt) => app::Run::OneShot(prompt),
                 None => app::Run::Interactive,
             };
-            let app = app::App::new(config::Config::default());
+            let app = app::App::new(cli.agent);
             app.run(run).await
         }
     }

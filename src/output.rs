@@ -333,6 +333,51 @@ fn with_notice(result: TruncationResult) -> String {
     content
 }
 
+// ── Trace lines ───────────────────────────────────────────────────────
+//
+// A tool names its own call — [`crate::tools::Tool::trace_label`] decides
+// what that call reads like — and these are the two shapes it can reach for:
+// a path stays whole, a command is cut. They live here because they are
+// rendering, and because a tool reaching into the agent for them would point
+// the dependency the wrong way.
+
+/// How much of a bash command the trace shows: enough of it to recognise what
+/// ran, not enough to fill the screen with a here-document.
+pub const TRACE_WIDTH: usize = 240;
+
+/// What a cut line ends with. One marker and one spelling, so a reader never
+/// has to tell an ellipsis from three dots.
+pub const ELISION: &str = "...";
+
+/// One line, always: a multi-line argument would otherwise scroll the
+/// spinner's line away mid-run.
+pub fn first_line(argument: &str) -> String {
+    match argument.split_once('\n') {
+        Some((first, _)) => format!("{}{ELISION}", first.trim_end()),
+        None => argument.to_string(),
+    }
+}
+
+/// A bash command as at most one line of [`TRACE_WIDTH`] characters. The trace
+/// records that a command ran, not the command itself — and the model's own
+/// words can be a 1,800-character here-document. Newlines become spaces so the
+/// budget measures the command rather than its first line, and whatever is
+/// dropped — trailing characters, or the line breaks that were flattened — ends
+/// the line with [`ELISION`].
+pub fn elide(command: &str) -> String {
+    let one_line = command
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shown: String = one_line.chars().take(TRACE_WIDTH).collect();
+    if shown == one_line && one_line == command.trim() {
+        return one_line;
+    }
+    format!("{}{ELISION}", shown.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,10 +22,21 @@ pub fn instructions(cwd: &Path) -> Vec<Instruction> {
 }
 
 /// The system prompt for a run: what the model needs to call tools correctly,
-/// plus whatever instructions it was given.
-pub fn system_prompt(cwd: &Path, tool_names: &[&str], instructions: &[Instruction]) -> String {
+/// then the standards that hold everywhere, then — for an agent that has one —
+/// what this particular agent is for, then whatever instructions it was given.
+///
+/// `persona` is `None` for the default agent, and `None` has to reproduce the
+/// prompt byte for byte: the coding agent's behavior is not allowed to move
+/// because a slot appeared beside it.
+pub fn system_prompt(
+    cwd: &Path,
+    tool_names: &[&str],
+    instructions: &[Instruction],
+    persona: Option<&str>,
+) -> String {
     let environment = environment_block(cwd);
     let mut sections = vec![engineering_block(), environment.as_str()];
+    sections.extend(persona);
     sections.extend(
         instructions
             .iter()
@@ -57,6 +68,30 @@ They hold on every task; where no check can, they decide.
 - **Don't break what you don't own.** Understand existing code before changing
   it, and never delete or overwrite work you cannot recover without asking."
 }
+
+/// What a reviewer is for. A domain agent's words live here, beside the tenets,
+/// for the same reason the tenets do: a prompt written inside a preset is a
+/// prompt nobody looks at twice.
+///
+/// It states the tool set as a limit rather than a preference — this agent has
+/// no write tool, so a model that promises to fix what it found has promised
+/// something it cannot do.
+pub const REVIEWER_PERSONA: &str = "\
+## Reviewing
+
+You review code; you do not change it. Read the diff and the files it touches,
+follow what they depend on, and run the check that settles a question rather
+than reasoning from the shape of the code.
+
+Report what is wrong and what it would take to fix, most serious first, naming
+the file and line for each finding. Say plainly when you find nothing worth
+changing.
+
+You have no tool that writes, edits or applies a patch, and your shell must not
+stand in for one: `sed -i`, `git checkout` and a redirect all change the tree you
+are asked to judge, and a review that changes the code under review is not a
+review. If something cannot be settled by reading, or by a command that only
+reads, say that you could not settle it.";
 
 fn load_instruction(name: &'static str, cwd: &Path) -> Option<Instruction> {
     Some(Instruction {
@@ -123,7 +158,7 @@ mod tests {
         let dir = temp_dir("preamble");
         fs::write(dir.join("AGENTS.md"), "Use `semble search` to find code.").unwrap();
 
-        let prompt = system_prompt(&dir, &["read", "bash"], &instructions(&dir));
+        let prompt = system_prompt(&dir, &["read", "bash"], &instructions(&dir), None);
 
         assert!(prompt.starts_with("Your only tools are: read, bash"));
         assert!(prompt.contains("semble search"));
@@ -134,7 +169,7 @@ mod tests {
     fn prompt_always_carries_environment() {
         let dir = temp_dir("empty");
 
-        let prompt = system_prompt(&dir, &["read"], &[]);
+        let prompt = system_prompt(&dir, &["read"], &[], None);
 
         assert!(prompt.contains("## Environment"));
         assert!(prompt.contains(&dir.display().to_string()));
@@ -145,7 +180,7 @@ mod tests {
     fn prompt_always_carries_the_engineering_tenets() {
         let dir = temp_dir("tenets");
 
-        let prompt = system_prompt(&dir, &["read"], &[]);
+        let prompt = system_prompt(&dir, &["read"], &[], None);
 
         assert!(prompt.contains("## Engineering Tenets"));
         let _ = fs::remove_dir_all(&dir);
@@ -155,7 +190,7 @@ mod tests {
     fn engineering_tenets_precede_the_environment() {
         let dir = temp_dir("order");
 
-        let prompt = system_prompt(&dir, &["read"], &[]);
+        let prompt = system_prompt(&dir, &["read"], &[], None);
 
         let tenets = prompt.find("## Engineering Tenets").unwrap();
         let environment = prompt.find("## Environment").unwrap();
@@ -168,9 +203,53 @@ mod tests {
         let dir = temp_dir("oneshot");
         fs::write(dir.join("AGENTS.md"), "Use `semble search` to find code.").unwrap();
 
-        let prompt = system_prompt(&dir, &["read"], &[]);
+        let prompt = system_prompt(&dir, &["read"], &[], None);
 
         assert!(!prompt.contains("semble search"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A persona is an agent's own words, and they sit after the standards that
+    /// hold everywhere and before the project's instructions — so a project can
+    /// still say what it needs without the agent's purpose being buried.
+    #[test]
+    fn a_persona_sits_between_the_tenets_and_the_instructions() {
+        let dir = temp_dir("persona-order");
+        fs::write(dir.join("AGENTS.md"), "project rules").unwrap();
+
+        let prompt = system_prompt(
+            &dir,
+            &["read"],
+            &instructions(&dir),
+            Some("## Reviewing\n\nRead the diff."),
+        );
+
+        let tenets = prompt.find("## Engineering Tenets").unwrap();
+        let persona = prompt.find("## Reviewing").unwrap();
+        let project = prompt.find("project rules").unwrap();
+        assert!(tenets < persona && persona < project, "{prompt}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The default agent has no persona, and having the slot must not change a
+    /// single byte of what it is told: every other test in this module, and the
+    /// model, read the same prompt as before the slot existed.
+    #[test]
+    fn no_persona_is_the_prompt_without_the_slot() {
+        let dir = temp_dir("no-persona");
+
+        let prompt = system_prompt(&dir, &["read"], &[], None);
+
+        let expected = format!(
+            "{}\n\n{}\n\n{}",
+            tool_preamble(&["read"]),
+            engineering_block(),
+            environment_block(&dir)
+        );
+        assert_eq!(prompt, expected);
+        // No section at all, rather than an empty one: a `Some`-shaped slot
+        // that renders as nothing would leave a doubled blank line behind.
+        assert!(!prompt.contains("\n\n\n"), "{prompt}");
         let _ = fs::remove_dir_all(&dir);
     }
 

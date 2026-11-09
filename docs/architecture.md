@@ -37,6 +37,28 @@ Both modes run this same loop. They differ only in what is set up before it
 starts: the interactive REPL opens the session file and loads project
 instructions, while a one-shot loads neither.
 
+The loop lives in `agent/turn.rs`, and it makes two decisions that are worth
+naming because they are the whole of what it decides:
+
+- `record(&ProviderResponse) -> Record` — what a response *is*, as far as
+  writing it down goes. `AsIs` when it has content (keep it with its reasoning,
+  print the content), `ReasoningOnly` when it has only reasoning (keep it, print
+  nothing), `ToolCallsOnly` when it has only tool calls (**keep nothing** — an
+  empty assistant message between a call and its results would change the
+  transcript the provider reads back), and `Fallback` when it has nothing at all
+  (keep and print the fallback sentence).
+- `continues(&ProviderResponse) -> bool` — `!tool_calls.is_empty()`, and nothing
+  else. A response with words but no calls ends the turn.
+
+`request(&mut self, active: &mut Option<String>)` is everything between those
+decisions: assembly, retry and fallback, the spinner, the overflow note, the
+`api_call` metric and `set_active`. It returns `Ok(None)` when the provider
+refused and said so, which ends the turn without ending the run — a refusal is
+reported, not propagated.
+
+Neither `record` nor `continues` touches the terminal or the session, which is
+what makes them the first part of this loop a test can reach.
+
 ## Built-in tools
 
 - read
@@ -112,12 +134,15 @@ is progressing, but must begin responding within 90 seconds and each later
 chunk resets the same 90-second idle deadline. That avoids killing a long,
 active generation while still closing a connection that has stalled.
 
-Every refusal is recorded in the project's `.oneloop/errors.log`, one JSON
-object per line: the model alias, the status, and the body as it arrived. It
-sits beside the sessions it explains rather than in the home directory — a
-refusal belongs to the work it interrupted, and one global file merged every
-project into a single history. A one-shot records nowhere: it persists
-nothing, so a refusal there is reported on stderr and written to no file.
+Every refusal is recorded in the `errors.log` of the conversation it
+interrupted, one JSON object per line: the model alias, the status, and the body
+as it arrived. It sits beside the session and the metrics it explains — in the
+conversation's root, which is `.oneloop/` for the project's own conversation and
+`.oneloop/agents/<name>/` for a named agent's — rather than in the home
+directory, because a refusal belongs to the work it interrupted and one global
+file merged every project into a single history. A one-shot records nowhere: it
+persists nothing, so a refusal there is reported on stderr and written to no
+file.
 The line printed to the console is a summary,
 and the reason is usually only in the body — OpenRouter answers a gated model
 with a 403 whose `failed_routing_step` names the routing gate, and nothing
@@ -273,9 +298,19 @@ Sessions are linear append-only JSONL files stored at:
 Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
 
-`.oneloop/metrics/` mirrors that naming, one file per session and one JSON line
-per `api_call` or `tool_exec` event, so a session and its costs are read
-together. A one-shot writes neither.
+`metrics/` mirrors that naming, one file per session and one JSON line per
+`api_call` or `tool_exec` event, so a session and its costs are read together.
+It is filed in the conversation's root — `.oneloop/metrics/` beside the
+project's own sessions, `.oneloop/agents/<name>/metrics/` beside a named
+agent's — and each of the three files a conversation leaves (its session, its
+ledger, its refusal log) derives from that one root rather than knowing the
+layout for itself.
+
+An agent that is not the default keeps its conversation under
+`.oneloop/agents/<name>/sessions/`, its ledger in `metrics/` beside it, its
+refusals in its own `errors.log`, and its own lock. That is what lets `ol` and
+`ol --agent reviewer` run in two terminals of one project without either
+refusing the other.
 
 A one-shot — `ol "…"`, or a prompt piped in — is stateless: it opens no
 session file, reads no `AGENTS.md`, and records no metrics or error log, so
@@ -290,6 +325,98 @@ time: `.oneloop/session.lock` is held (an advisory lock, released by the kernel
 when the process dies) for as long as a session is open, and a second `ol` in
 the same directory refuses to start rather than answering a tool call the first
 one is still running. A one-shot takes no lock, because it writes nothing.
+
+## Agents from specs
+
+An agent is a value. The loop, the session machinery, the message vocabulary and
+the `Tool` trait are shared; an `AgentSpec` decides *what* is shared — where the
+agent works, which tools it may call, which instructions it reads, and whose
+conversation it keeps. `Agent::from_spec` is the only constructor, and the
+default `ol` is just the first spec it is handed:
+
+```rust
+pub struct AgentSpec {
+    pub cwd: PathBuf,
+    pub instructions: Vec<Instruction>,
+    pub persona: Option<String>,
+    pub model: Option<String>,
+    pub tools: ToolRegistry,
+    pub session: SessionPolicy,
+}
+```
+
+That is the whole mechanism, and it is deliberately no more than that: no plugin
+registry, no trait objects over agents, no config file. A preset is a function
+returning a spec, and there are two — `AgentSpec::coding`, which is `ol`, and
+`AgentSpec::reviewer` — so a third agent is a third function.
+
+`SessionPolicy` is where the conversation lives:
+
+| policy | sessions | lock | id |
+|---|---|---|---|
+| `Project` | `.oneloop/sessions/` | `.oneloop/session.lock` | `{project}-{stem}` |
+| `Named(name)` | `.oneloop/agents/<name>/sessions/` | `.oneloop/agents/<name>/session.lock` | `{project}-{name}-{stem}` |
+| `Ephemeral { namespace }` | nothing on disk | none | `{project}[-{namespace}]-{stem}` |
+
+The root is the directory holding `sessions/`, `metrics/`, `errors.log` and
+`session.lock`, so a policy that names its own root takes its own lock: two
+agents in one project do not refuse each other, while two runs of the *same*
+agent still do. The namespace rides in the id the provider sees, so a
+conversation of one agent is never routed as another's.
+
+`ol --agent reviewer` is the second agent, and it is no more than a match arm
+and a preset. It reads and runs commands, and it has no tool that writes, edits
+or applies a patch — `bash` is the one way round that, and the persona is what
+closes it. Its persona is a const in `prompt.rs` beside the engineering tenets,
+and its conversation is its own:
+
+```rust
+pub fn reviewer(cwd: &Path) -> Result<Self> {
+    Ok(Self {
+        cwd: cwd.to_path_buf(),
+        instructions: prompt::instructions(cwd),
+        persona: Some(prompt::REVIEWER_PERSONA.to_string()),
+        model: None,
+        tools: ToolRegistry::from_tools(vec![Arc::new(ReadTool), Arc::new(BashTool)]),
+        session: SessionPolicy::Named("reviewer"),
+    })
+}
+```
+
+A third agent costs the same: one preset, one arm in `assemble`, and a line in
+the refusal that names what exists. If it ever needs a new module, a new field
+threaded through `Agent`, or a branch inside the loop, this is the abstraction to
+revisit rather than the agent to special-case.
+
+The run mode is applied *after* the agent is chosen, and it always wins on one
+field: `ol --agent reviewer "…"` forces `Ephemeral`, so it writes no session file
+exactly as `ol "…"` does. A spec says what the agent is; the run mode says
+whether the conversation persists.
+
+A `persona` is an agent's own words about what it is for, and it sits in the
+prompt after the engineering tenets and before the project's instructions. `None`
+is the default agent, and `None` is byte-for-byte the prompt the coding agent had
+before the slot existed — a test holds that, because composition must not move
+the agent it was carved out of.
+
+A `model` is the model the agent *works as*: `from_spec` makes it active in the
+registry once, and `None` leaves whatever the config made active, which is what
+the default agent always gets. It is deliberately not a second opinion held
+beside the registry — a per-turn preference would disagree with `/model` the
+moment the user typed it, and the mode line, the gauge and the next request must
+all read one answer. A spec that names a model the config does not have fails
+where it is built, naming the alias.
+
+One boundary to name, because it decides when this holds: the registry is
+process-wide, and `Arc` makes it shared. Two agents built in one process from the
+same registry would share this answer — whichever was built last would decide for
+both. That is why a second agent in one process is a deliberate step (the model
+moving onto the agent) and not something the two presets already give you.
+
+Everything a spec decides is resolved once, in `from_spec`: the system prompt is
+computed there from the spec's own tools, instructions and persona, and the
+metrics and refusal log follow the conversation's root — a run that writes
+nothing records nothing.
 
 ## Auth
 
@@ -357,12 +484,17 @@ stay outside the module by design: the spinner's cursor manipulation, and the
 column-aligned model picker, which no general helper could serve without
 becoming one caller's shape.
 
-The trace line for a tool call is `agent.rs::format_tool_call`, and it is
-always one line: `name: argument`, with the argument's first line only and a
-bash command flattened from its line breaks and cut at `TRACE_WIDTH` (240)
-characters before `...` closes it. A command the model wrote as a whole
-here-document would otherwise scroll the trace away, and the line's job is to
-say that one ran.
+The trace line for a tool call is `agent/trace.rs::format_tool_call`, and it is
+always one line: `name: argument`. Only the prefix is the agent's — the
+argument is the tool's own answer, `Tool::trace_label`, because only the tool
+knows how its argument should read: a bash command is flattened from its line
+breaks and cut at `TRACE_WIDTH` (240) characters before `...` closes it, a path
+is resolved and spelled the way every other tool spells it, an elisp expression
+keeps its first line, and a skill name is looked up on disk to name the file
+that would load. A command the model wrote as a whole here-document would
+otherwise scroll the trace away, and the line's job is to say that one ran.
+Those two shapes — `elide` and `first_line` — live in this module so a tool
+reaching for them does not reach into the agent.
 
 Not every terminal can take everything the module emits. `plain()` reports
 terminals that cannot take cursor addressing — comint runs its children with
@@ -407,12 +539,22 @@ model.
 
 ```
 src/
-  main.rs           CLI entry point, login command, --version
-  agent.rs          Agent struct, run_once, execute_tool_calls, session repair
+  main.rs           CLI entry point, login command, --agent, --version
+  messages.rs       Message types (User, Assistant, ToolCall, ToolResult) and ToolDefinition
+  agent.rs          Agent struct, from_spec, accessors, session repair, context gauge,
+                    Stop and cap_notice
   agent/
+    spec.rs         AgentSpec, SessionPolicy, the coding and reviewer presets
+    turn.rs         run_once*, request, record, continues, execute_tool_calls,
+                    log_api_call
+    trace.rs        format_tool_call: the name, a colon, and the tool's own label
+    banner.rs       the startup summary: summary, packed, the column it wraps on
+    duplicate_reads.rs
+                    answering a re-read with a pointer: read_payloads_in_context,
+                    payload_digest, suppress_duplicate_reads, duplicate_read_notice
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
-    messages.rs     Message types (User, Assistant, ToolCall, ToolResult)
-    session.rs      Session persistence, rotation, dangling-tool-call repair, project lock
+    session.rs      Session persistence, root, rotation, dangling-tool-call repair, the
+                    per-conversation lock
     metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
   antigravity/
     mod.rs          Public entry points for Antigravity requests
@@ -425,26 +567,32 @@ src/
   claude/
     mod.rs          Public entry points for Claude requests
     client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
-  config.rs         Config (cwd, instruction sources), env_or, the per-prompt iteration cap
-  models.rs         Model (alias + settings + its provider), registry, active-model switching
+  config.rs         env_or, the per-prompt iteration cap, the working directory
+  models.rs         The registry: the list, which one is active, switching
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
-  output.rs         Status lines (glyph, colour, stream), output truncation, ANSI constants
+  output.rs         Status lines (glyph, colour, stream), output truncation, trace-line
+                    rendering (elide, first_line), ANSI constants
   path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
-  prompt.rs         System prompt assembly (tool preamble + engineering tenets + environment + AGENTS.md)
-  providers.rs      Provider (endpoint: URL, credentials, one HTTP client), request/response
-                    types, `.oneloop/errors.log`
+  prompt.rs         System prompt assembly (tool preamble + engineering tenets + environment
+                    + an agent's persona + AGENTS.md), and a domain agent's persona text
+  providers.rs      Provider (endpoint: URL, credentials, one HTTP client), Model (alias +
+                    settings + its provider + how it completes), request/response types,
+                    the refusal log's name inside a conversation root
   providers/
     chat.rs         The Chat Completions wire format
     responses.rs    The shared Responses API implementation
-  tools.rs          Tool trait, ToolRegistry (Arc<dyn Tool>), ToolDefinition
+  tools.rs          Tool trait (incl. trace_label, lock_path), ToolRegistry (Arc<dyn Tool>),
+                    AgentContext
   tools/
+    batch.rs        One batch of tool calls, and the per-file locks that order it
     bash.rs         Bash command execution
     elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading
     write.rs        File writing
     edit.rs         Find-and-replace file editing
-    skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md)
+    skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md),
+                    skill_file
   status.rs         Turn state & model title reports via OSC 7501 (Program Status Protocol)
 docs/
   architecture.md   This file

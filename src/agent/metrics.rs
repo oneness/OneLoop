@@ -1,13 +1,15 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::output;
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde_json::Value;
 
-use super::messages::Message;
+use crate::messages::Message;
+
+use super::session::Session;
 
 /// Approximate bytes per token (conservative for mixed code/prose).
 /// Good enough to size a metric by; never good enough to decide on, which is
@@ -73,19 +75,19 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Metrics that record nothing.
-    pub fn disabled() -> Self {
-        Self { path: None }
-    }
+    /// The ledger that costs `session`: `<root>/metrics/<session file name>`,
+    /// beside the conversation it belongs to. The session's root decides, so a
+    /// project's own conversation and a named agent's are each costed where
+    /// they live rather than in one shared file.
+    ///
+    /// A run that writes no conversation has nothing to cost, and gets no
+    /// ledger.
+    pub fn for_session(session: &Session) -> Result<Self> {
+        let Some(root) = session.root() else {
+            return Ok(Self { path: None });
+        };
 
-    /// `.oneloop/sessions/2026-04-20.jsonl` → `.oneloop/metrics/2026-04-20.jsonl`
-    pub fn from_session_path(session_path: &Path) -> Result<Self> {
-        let project_dir = session_path
-            .parent() // sessions/
-            .and_then(|p| p.parent()) // .oneloop/
-            .context("session path is too shallow to derive metrics directory")?;
-
-        let metrics_dir = project_dir.join("metrics");
+        let metrics_dir = root.join("metrics");
         fs::create_dir_all(&metrics_dir).with_context(|| {
             format!(
                 "failed to create metrics directory: {}",
@@ -93,7 +95,8 @@ impl Metrics {
             )
         })?;
 
-        let filename = session_path
+        let filename = session
+            .path()
             .file_name()
             .context("session path has no filename")?;
 
@@ -142,7 +145,8 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::messages::{ToolResultMessage, UserMessage};
+    use crate::agent::spec::SessionPolicy;
+    use crate::messages::{ToolResultMessage, UserMessage};
 
     #[test]
     fn an_estimate_counts_the_prompt_and_every_message() {
@@ -204,12 +208,54 @@ mod tests {
         assert_eq!(remaining_context_from_tokens(2_000_000, 1_050_000), 0);
     }
 
+    /// A named agent's session lives under its own root, and the metrics file
+    /// follows it there: `.oneloop/agents/reviewer/sessions/x.jsonl` is costed
+    /// at `.oneloop/agents/reviewer/metrics/x.jsonl`, beside the conversation it
+    /// belongs to rather than in the project's own ledger.
     #[test]
-    fn a_disabled_metrics_records_nothing() {
-        assert!(
-            Metrics::disabled()
-                .try_log("api_call", serde_json::json!({}))
-                .is_ok()
-        );
+    fn a_named_agents_metrics_sit_beside_its_own_session() {
+        let cwd = project_dir("named-metrics");
+        let session = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
+
+        let metrics = Metrics::for_session(&session).unwrap();
+
+        let expected = cwd
+            .join(".oneloop")
+            .join("agents")
+            .join("reviewer")
+            .join("metrics")
+            .join(session.path().file_name().unwrap());
+        assert_eq!(metrics.path.as_deref(), Some(expected.as_path()));
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// A run that writes no conversation has nothing to cost, so it writes no
+    /// ledger either — the same rule the session follows.
+    #[test]
+    fn a_one_shot_has_no_ledger() {
+        let cwd = project_dir("oneshot-metrics");
+        let session = Session::open(&cwd, SessionPolicy::Ephemeral { namespace: None }).unwrap();
+
+        let metrics = Metrics::for_session(&session).unwrap();
+
+        assert!(metrics.path.is_none());
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    fn project_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oneloop-metrics-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn metrics_with_no_ledger_record_nothing() {
+        let metrics = Metrics { path: None };
+
+        assert!(metrics.try_log("api_call", serde_json::json!({})).is_ok());
     }
 }

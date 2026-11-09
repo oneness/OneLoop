@@ -7,10 +7,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::messages::{Message, ToolCall};
+use super::Model;
 use crate::auth::codex::ORIGINATOR;
 use crate::catalog::Api;
-use crate::models::Model;
+use crate::messages::{Message, ToolCall};
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
@@ -448,7 +448,7 @@ fn split_output(output: Vec<OutputItem>) -> (String, Vec<ToolCall>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::messages::{AssistantMessage, ToolResultMessage, UserMessage};
+    use crate::messages::{AssistantMessage, ToolResultMessage, UserMessage};
     use serde_json::json;
 
     fn items(messages: Vec<Message>) -> Value {

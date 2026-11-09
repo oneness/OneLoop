@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use super::{Model, ModelRegistry};
+use super::ModelRegistry;
 use crate::output;
-use crate::providers::{ProviderRequest, ProviderResponse, is_retryable};
+use crate::providers::{Model, ProviderRequest, ProviderResponse, is_retryable};
 
 impl ModelRegistry {
     /// Retries, then offers another model. Returns the alias that answered,

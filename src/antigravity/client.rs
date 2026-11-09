@@ -8,7 +8,7 @@ use tokio::{
     process::{ChildStdin, Command},
 };
 
-use crate::agent::messages::Message;
+use crate::messages::Message;
 use crate::status::TurnStatus;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -174,7 +174,7 @@ async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::messages::{AssistantMessage, ToolCall, ToolResultMessage, UserMessage};
+    use crate::messages::{AssistantMessage, ToolCall, ToolResultMessage, UserMessage};
 
     #[test]
     fn both_request_modes_allow_implementation_when_requested() {

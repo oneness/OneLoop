@@ -289,6 +289,20 @@
   </div>
 </section>
 
+<!-- ═══ Agents ═══ -->
+<section class="slide">
+  <div class="box">
+    <div class="label">agents</div>
+    <h2>An agent is a value</h2>
+    <p class="big">One loop, one session file format, one tool trait.<br>A spec decides what each agent gets: where it works, what it may call, what it is told, whose conversation it keeps.</p>
+    <table style="margin-top: 24px;">
+      <tr><td><strong><code>ol</code></strong></td><td>Every tool, the project's own conversation at <code>.oneloop/</code></td></tr>
+      <tr><td><strong><code>ol --agent reviewer</code></strong></td><td><code>read</code> and <code>bash</code> only, its own conversation at <code>.oneloop/agents/reviewer/</code></td></tr>
+    </table>
+    <p class="big" style="font-size:16px; margin-top:20px;">A second agent is a preset, not a second loop. Its session, ledger, refusal log and lock all live under its own root, so both run in one project at once.</p>
+  </div>
+</section>
+
 <!-- ═══ One session, many models ═══ -->
 <section class="slide">
   <div class="box">

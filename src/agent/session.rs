@@ -7,7 +7,8 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::messages::{AssistantMessage, Message, ToolCall, ToolResultMessage, UserMessage};
+use super::spec::SessionPolicy;
+use crate::messages::{AssistantMessage, Message, ToolCall, ToolResultMessage, UserMessage};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionEntry {
@@ -22,6 +23,10 @@ pub struct Session {
     /// name. Prefixed to the id sent to providers so two projects worked on
     /// the same day do not look like one conversation.
     project: String,
+    /// The agent this conversation belongs to, when it is not the project's
+    /// own. A named agent gets its own namespace in the id, so its conversation
+    /// is not routed as the coding agent's.
+    namespace: Option<&'static str>,
     /// Whether messages are written to `path`. A one-shot session keeps them
     /// in memory and touches no file.
     persist: bool,
@@ -32,15 +37,21 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn open_or_create(cwd: &Path) -> Result<Self> {
-        let sessions_dir = cwd.join(".oneloop").join("sessions");
+    /// The conversation `policy` names. An ephemeral one is built in memory and
+    /// touches no file; the rest take their namespace's root and its lock.
+    pub fn open(cwd: &Path, policy: SessionPolicy) -> Result<Self> {
+        let Some(root) = policy.root(cwd) else {
+            return Ok(Self::in_memory(cwd, policy.namespace()));
+        };
+
+        let sessions_dir = root.join("sessions");
         fs::create_dir_all(&sessions_dir).with_context(|| {
             format!(
                 "failed to create sessions directory: {}",
                 sessions_dir.display()
             )
         })?;
-        let lock = acquire_lock(cwd)?;
+        let lock = acquire_lock(&root)?;
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let path = find_latest_session(&sessions_dir, &today);
@@ -55,6 +66,7 @@ impl Session {
             messages,
             path,
             project: project_name(cwd),
+            namespace: policy.namespace(),
             persist: true,
             lock: Some(lock),
         })
@@ -63,7 +75,7 @@ impl Session {
     /// A session that lives only in memory: nothing is read on the way in,
     /// nothing is written on the way out. A one-shot run uses one so it
     /// neither inherits nor disturbs the conversation on disk.
-    pub fn in_memory(cwd: &Path) -> Self {
+    fn in_memory(cwd: &Path, namespace: Option<&'static str>) -> Self {
         let today = Local::now().format("%Y-%m-%d").to_string();
         Self {
             messages: Vec::new(),
@@ -73,6 +85,7 @@ impl Session {
                 .join("sessions")
                 .join(format!("{today}.jsonl")),
             project: project_name(cwd),
+            namespace,
             persist: false,
             lock: None,
         }
@@ -133,16 +146,39 @@ impl Session {
         &self.path
     }
 
+    /// The directory this conversation is filed under: the one holding
+    /// `sessions/`, the `metrics/` ledger that costs it, its `errors.log` and
+    /// the lock that guards it — the directory `SessionPolicy::root` named when
+    /// the session opened. Every file the conversation leaves derives from it.
+    ///
+    /// Re-derived from `path` rather than stored, on the strength of one
+    /// invariant: a written session lives at `<root>/sessions/<file>`, which is
+    /// what [`Session::open`] and [`Session::rotate`] build and nothing else
+    /// does.
+    ///
+    /// `None` for a conversation that is never written, whose path is only a
+    /// shape for [`Session::id`] to report.
+    pub fn root(&self) -> Option<&Path> {
+        if !self.persist {
+            return None;
+        }
+        self.path.parent()?.parent()
+    }
+
     /// Stable identifier for the conversation, shared across requests in this
-    /// session: the project name and the session file's stem. Never empty, so
-    /// it is always a valid header value.
+    /// session: the project name, the agent's namespace when it has one, and
+    /// the session file's stem. Never empty, so it is always a valid header
+    /// value.
     pub fn id(&self) -> String {
         let stem = self
             .path
             .file_stem()
             .and_then(|name| name.to_str())
             .unwrap_or("session");
-        format!("{}-{stem}", self.project)
+        match self.namespace {
+            Some(namespace) => format!("{}-{namespace}-{stem}", self.project),
+            None => format!("{}-{stem}", self.project),
+        }
     }
 
     /// The old file stays on disk. Suffixes derive from the base date:
@@ -180,6 +216,7 @@ impl Session {
             messages: Vec::new(),
             path: new_path,
             project: self.project.clone(),
+            namespace: self.namespace,
             persist: self.persist,
             lock,
         })
@@ -230,6 +267,7 @@ impl Session {
             messages,
             path,
             project: project.to_string(),
+            namespace: None,
             persist: false,
             lock: None,
         }
@@ -314,15 +352,15 @@ fn max_suffix(sessions_dir: &Path, prefix: &str) -> Option<u32> {
         .max()
 }
 
-/// The highest-suffixed file for the date, or the base one.
-/// Claims the project for this process.
+/// Claims a conversation for this process.
 ///
-/// Two OneLoop runs in one project would both append to the same session file,
-/// and neither can tell a tool call that is still running from one that died —
-/// the startup repair would answer a live call and leave two results for it.
-/// So the second run stops here instead.
-fn acquire_lock(cwd: &Path) -> Result<File> {
-    let path = cwd.join(".oneloop").join("session.lock");
+/// Two runs over one session file would both append to it, and neither can tell
+/// a tool call that is still running from one that died — the startup repair
+/// would answer a live call and leave two results for it. So the second run
+/// stops here instead. The lock lives beside the session it guards, so two
+/// agents in one project do not guard each other's.
+fn acquire_lock(root: &Path) -> Result<File> {
+    let path = root.join("session.lock");
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -332,8 +370,8 @@ fn acquire_lock(cwd: &Path) -> Result<File> {
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => bail!(
-            "another OneLoop is running in this project ({} is locked); its session file is \
-             append-only, so two would answer each other's tool calls",
+            "another OneLoop is running over this conversation ({} is locked); its session file \
+             is append-only, so two would answer each other's tool calls",
             path.display()
         ),
         Err(TryLockError::Error(error)) => {
@@ -342,6 +380,7 @@ fn acquire_lock(cwd: &Path) -> Result<File> {
     }
 }
 
+/// The highest-suffixed file for the date, or the base one.
 fn find_latest_session(sessions_dir: &Path, date: &str) -> PathBuf {
     match max_suffix(sessions_dir, date) {
         Some(n) => sessions_dir.join(format!("{date}-{n:03}.jsonl")),
@@ -366,17 +405,17 @@ mod tests {
     #[test]
     fn a_second_session_in_the_same_project_is_refused() {
         let cwd = project_dir("second-session");
-        let _first = Session::open_or_create(&cwd).unwrap();
+        let _first = Session::open(&cwd, SessionPolicy::Project).unwrap();
 
-        assert!(Session::open_or_create(&cwd).is_err());
+        assert!(Session::open(&cwd, SessionPolicy::Project).is_err());
     }
 
     #[test]
     fn the_refusal_names_the_other_run() {
         let cwd = project_dir("refusal-message");
-        let _first = Session::open_or_create(&cwd).unwrap();
+        let _first = Session::open(&cwd, SessionPolicy::Project).unwrap();
 
-        let error = Session::open_or_create(&cwd).unwrap_err();
+        let error = Session::open(&cwd, SessionPolicy::Project).unwrap_err();
 
         assert!(format!("{error:#}").contains("another OneLoop is running"));
     }
@@ -384,9 +423,9 @@ mod tests {
     #[test]
     fn a_finished_session_releases_the_project() {
         let cwd = project_dir("released-project");
-        drop(Session::open_or_create(&cwd).unwrap());
+        drop(Session::open(&cwd, SessionPolicy::Project).unwrap());
 
-        assert!(Session::open_or_create(&cwd).is_ok());
+        assert!(Session::open(&cwd, SessionPolicy::Project).is_ok());
     }
 
     #[test]
@@ -463,7 +502,7 @@ mod tests {
         let dir = project_dir("mem-read");
         fs::write(today_file(&dir), "prior\n").unwrap();
 
-        let session = Session::in_memory(&dir);
+        let session = Session::open(&dir, SessionPolicy::Ephemeral { namespace: None }).unwrap();
 
         assert!(session.messages().is_empty());
         let _ = fs::remove_dir_all(&dir);
@@ -475,11 +514,88 @@ mod tests {
         let dir = project_dir("mem-write");
         let file = today_file(&dir);
 
-        let mut session = Session::in_memory(&dir);
+        let mut session =
+            Session::open(&dir, SessionPolicy::Ephemeral { namespace: None }).unwrap();
         session.push_user("hello".to_string()).unwrap();
 
         assert!(!file.exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A named agent keeps its conversation under its own root, so it neither
+    /// reads nor disturbs the project's own session.
+    #[test]
+    fn a_named_agent_keeps_its_conversation_under_its_own_root() {
+        let cwd = project_dir("named-layout");
+
+        let session = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
+
+        let root = cwd.join(".oneloop").join("agents").join("reviewer");
+        assert!(
+            session.path().starts_with(root.join("sessions")),
+            "{:?}",
+            session.path()
+        );
+        assert_ne!(session.path(), today_file(&cwd));
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// The root is the one fact every file a conversation leaves derives from:
+    /// its sessions, its ledger, its refusal log and its lock. A one-shot has
+    /// none, which is what makes it leave no trace at all.
+    #[test]
+    fn a_conversations_root_is_where_all_its_files_live() {
+        let cwd = project_dir("root");
+        let project = Session::open(&cwd, SessionPolicy::Project).unwrap();
+        let named = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
+        let one_shot = Session::open(&cwd, SessionPolicy::Ephemeral { namespace: None }).unwrap();
+
+        let project_root = cwd.join(".oneloop");
+        let named_root = project_root.join("agents").join("reviewer");
+
+        assert_eq!(project.root(), Some(project_root.as_path()));
+        assert_eq!(named.root(), Some(named_root.as_path()));
+        assert!(one_shot.root().is_none());
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// The reason the lock is per conversation rather than per project: the
+    /// coding agent and a reviewer have nothing to say to each other, so one
+    /// must not refuse the other.
+    #[test]
+    fn two_agents_in_one_project_do_not_refuse_each_other() {
+        let cwd = project_dir("two-agents");
+        let _coding = Session::open(&cwd, SessionPolicy::Project).unwrap();
+
+        assert!(Session::open(&cwd, SessionPolicy::Named("reviewer")).is_ok());
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// Two runs of the *same* named agent still collide: one append-only file
+    /// cannot have two writers.
+    #[test]
+    fn a_second_run_of_one_named_agent_is_refused() {
+        let cwd = project_dir("named-second");
+        let _first = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
+
+        assert!(Session::open(&cwd, SessionPolicy::Named("reviewer")).is_err());
+        let _ = fs::remove_dir_all(&cwd);
+    }
+
+    /// The id travels to the provider, so a named agent's conversation must not
+    /// be routed as the coding agent's.
+    #[test]
+    fn a_named_agents_id_names_the_agent() {
+        let cwd = project_dir("named-id");
+        let coding = Session::open(&cwd, SessionPolicy::Project).unwrap();
+        let reviewer = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
+
+        // Both ids carry the same project and the same date, so the agent's
+        // namespace is the only thing that tells them apart.
+        assert!(reviewer.id().contains("-reviewer-"), "{}", reviewer.id());
+        assert!(!coding.id().contains("-reviewer-"), "{}", coding.id());
+        assert_ne!(coding.id(), reviewer.id());
+        let _ = fs::remove_dir_all(&cwd);
     }
 
     fn project_dir(name: &str) -> PathBuf {

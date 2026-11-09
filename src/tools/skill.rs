@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::agent::AgentContext;
+use crate::{path::display_file, tools::AgentContext};
 
 use super::{Tool, ToolResult};
 
@@ -47,6 +47,19 @@ pub fn skill_candidates(cwd: &Path, name: &str) -> Vec<PathBuf> {
 
 /// The file that makes a directory a skill.
 const SKILL_FILE: &str = "SKILL.md";
+
+/// The file a skill of this name loads: the first candidate on disk in the
+/// order [`skill_candidates`] searches. A skill found nowhere says so rather
+/// than naming a file that does not exist.
+pub fn skill_file(name: &str, cwd: &Path) -> String {
+    skill_candidates(cwd, name)
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .map_or_else(
+            || format!("{name} (not found)"),
+            |path| display_file(cwd, path),
+        )
+}
 
 impl SkillTool {
     /// Every skill found in [`skill_dirs`], first match winning, so a
@@ -215,6 +228,18 @@ impl Tool for SkillTool {
             },
             "required": ["name"]
         })
+    }
+
+    /// The file this skill *would* load, looked up on disk: the trace names
+    /// where the instructions come from, not the name they were asked for. A
+    /// name that never arrived says so rather than tracing bare.
+    fn trace_label(&self, arguments: &Value, cwd: &Path) -> Option<String> {
+        Some(
+            arguments
+                .get("name")
+                .and_then(Value::as_str)
+                .map_or_else(|| "?".to_string(), |name| skill_file(name, cwd)),
+        )
     }
 
     async fn execute(&self, input: Value, _ctx: &AgentContext) -> Result<ToolResult> {

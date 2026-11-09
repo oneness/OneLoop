@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::env;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -11,11 +13,10 @@ use rustyline::validate::Validator;
 use rustyline::{Editor, Helper};
 
 use crate::agent::Agent;
-use crate::config::Config;
+use crate::agent::spec::AgentSpec;
+use crate::config;
 use crate::models::ModelRegistry;
 use crate::output;
-use crate::prompt;
-use crate::tools::ToolRegistry;
 use crate::tools::bash;
 
 /// A `!` command runs for the user, with Ctrl+C in reach, so it gets a longer
@@ -32,7 +33,10 @@ pub enum Run {
 }
 
 pub struct App {
-    config: Config,
+    /// Where this run works, resolved once at startup.
+    cwd: PathBuf,
+    /// Which agent to build, from `--agent`. `None` is the default.
+    agent: Option<String>,
 }
 
 /// rustyline insists a `Helper` is all four pieces; the prompt colour is the
@@ -511,14 +515,17 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) -> bool {
 }
 
 impl App {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(agent: Option<String>) -> Self {
+        Self {
+            cwd: config::working_dir(),
+            agent,
+        }
     }
 
     pub async fn run(self, run: Run) -> Result<()> {
-        let models = ModelRegistry::new()?;
-        let tool_registry = ToolRegistry::with_builtin_tools(&self.config.cwd)?;
-        let mut agent = assemble(self.config, models, tool_registry, &run)?;
+        let models = Arc::new(ModelRegistry::new()?);
+        let spec = assemble(&self.cwd, self.agent.as_deref(), &run)?;
+        let mut agent = Agent::from_spec(spec, models)?;
 
         match run {
             Run::Interactive => run_interactive(&mut agent).await,
@@ -532,36 +539,24 @@ impl App {
     }
 }
 
-/// Builds the agent a run needs. This is the one place the two modes diverge:
-/// the REPL loads the session, project instructions, and metrics; a one-shot
-/// loads none of them.
-fn assemble(
-    mut config: Config,
-    models: ModelRegistry,
-    tool_registry: ToolRegistry,
-    run: &Run,
-) -> Result<Agent> {
-    match run {
-        Run::Interactive => {
-            let instructions = prompt::instructions(&config.cwd);
-            config.prompt_sources = instructions.iter().map(|i| i.name).collect();
-            config.system_prompt = Some(prompt::system_prompt(
-                &config.cwd,
-                &tool_registry.names(),
-                &instructions,
-            ));
-            Agent::new(config, models, tool_registry)
-        }
-        Run::OneShot(_) => {
-            config.prompt_sources = Vec::new();
-            config.system_prompt = Some(prompt::system_prompt(
-                &config.cwd,
-                &tool_registry.names(),
-                &[],
-            ));
-            Ok(Agent::ephemeral(config, models, tool_registry))
-        }
-    }
+/// The agent a run needs, and then what the run mode makes of it.
+///
+/// One arm per spec, and no registry: a third agent is an arm here and a preset
+/// beside the other two. The run mode is applied after the choice, because it is
+/// a statement about the run — `ol --agent reviewer "…"` writes no session file,
+/// exactly as `ol "…"` does.
+fn assemble(cwd: &Path, agent: Option<&str>, run: &Run) -> Result<AgentSpec> {
+    let spec = match agent {
+        // `main` is the default agent by name as well as by absence: both the
+        // help text and the refusal below call it known, so saying it must work.
+        None | Some("main") => AgentSpec::coding(cwd)?,
+        Some("reviewer") => AgentSpec::reviewer(cwd)?,
+        Some(name) => bail!("unknown agent: {name}; known: main, reviewer"),
+    };
+    Ok(match run {
+        Run::Interactive => spec,
+        Run::OneShot(_) => spec.one_shot(),
+    })
 }
 
 /// The interactive REPL: read a line, run it, repeat until input closes.
@@ -648,6 +643,40 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{AskMode, Command, help_commands, interactive_prompt, parse_command, parse_input};
+
+    /// One flag, and a name nothing answers to says which names do — the list
+    /// is the match arms, so it cannot drift from what is reachable.
+    #[test]
+    fn an_unknown_agent_names_the_ones_that_exist() {
+        let dir = std::env::temp_dir().join(format!("oneloop-app-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let error = super::assemble(&dir, Some("nonesuch"), &super::Run::Interactive)
+            .err()
+            .expect("an unknown agent must not resolve");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("unknown agent: nonesuch"), "{message}");
+        assert!(message.contains("reviewer"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `main` is reachable by name, because the help text and the refusal both
+    /// offer it.
+    #[test]
+    fn the_default_agent_can_be_named() {
+        let dir = std::env::temp_dir().join(format!("oneloop-app-main-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let named = super::assemble(&dir, Some("main"), &super::Run::Interactive)
+            .expect("main must resolve");
+        let unnamed = super::assemble(&dir, None, &super::Run::Interactive)
+            .expect("the default must resolve");
+
+        assert_eq!(named.session, unnamed.session);
+        assert_eq!(named.tools.names(), unnamed.tools.names());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ag_modes_report_their_command_names() {

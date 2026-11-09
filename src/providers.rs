@@ -1,11 +1,17 @@
-//! Providers: the endpoints OneLoop calls.
+//! Providers: the endpoints OneLoop calls, and the models that answer through
+//! them.
 //!
-//! What belongs to the place — URL, credentials, connection pool — lives
-//! here; what varies per model lives on the model.
+//! What belongs to the place — URL, credentials, connection pool — lives here;
+//! what varies per model lives on the model, and the model lives here because
+//! everything the wire reads is transport data. The one field the wire never
+//! reads, `context_window`, rides along: it is the gauge's, and a second
+//! descriptor for one `Option<u64>` would cost more than it explains.
 
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,12 +21,50 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::agent::messages::ToolCall;
 use crate::auth::{self, Credential, OauthEntry};
+use crate::catalog::Api;
+use crate::messages::ToolCall;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CHAT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(super) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// One model, ready to answer.
+#[derive(Debug)]
+pub struct Model {
+    /// The short name used everywhere else — `/model`, `default`.
+    pub alias: String,
+    /// What goes on the wire.
+    pub id: String,
+    pub provider: Arc<Provider>,
+    /// The protocol its provider speaks, which is what decides which module
+    /// below gets the request.
+    pub api: Api,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub web_tools: bool,
+    pub reasoning_effort: Option<String>,
+    /// Approximate capacity, for the context gauge in the interactive
+    /// prompt. Nothing branches on it — the server is the authority on what
+    /// fits and refuses when it does not.
+    pub context_window: Option<u64>,
+}
+
+impl Model {
+    pub async fn complete(&self, request: ProviderRequest) -> Result<ProviderResponse> {
+        match self.api {
+            Api::Chat => chat::complete(self, request).await,
+            Api::Codex | Api::Responses => responses::complete(self, request).await,
+        }
+    }
+}
+
+impl fmt::Display for Model {
+    /// `flash · openrouter (~deepseek/deepseek-v4-flash-latest)`
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} · {} ({})", self.alias, self.provider.name, self.id)
+    }
+}
 
 /// OpenCode Go requires a stable per-conversation ID to route and cache prompts.
 pub(super) const OPENCODE_GO: &str = "opencode-go";
@@ -123,8 +167,8 @@ pub struct ProviderRequest {
     pub system_prompt: Option<String>,
     /// Stable identity for provider-side conversation routing.
     pub session_id: String,
-    pub messages: Vec<crate::agent::messages::Message>,
-    pub tools: Vec<crate::tools::ToolDefinition>,
+    pub messages: Vec<crate::messages::Message>,
+    pub tools: Vec<crate::messages::ToolDefinition>,
     /// Where a refusal is recorded — the project's `.oneloop/errors.log`.
     /// Carried on the request because the provider layer is what decides a
     /// response counts as a refusal, and it is the only thing that knows
@@ -339,13 +383,14 @@ pub(super) fn log_provider_failure(
     }
 }
 
-/// The project's error log, beside the sessions and the metrics it explains.
+/// The refusal log filed in `root`: the directory a conversation keeps its
+/// session, its metrics and its lock in, so a refusal sits beside the
+/// conversation it interrupted.
 ///
-/// Per project rather than under the home directory: a refusal belongs to the
-/// work it interrupted, and one file for every project merged unrelated
-/// histories into a single one.
-pub fn errors_log_path(cwd: &Path) -> PathBuf {
-    cwd.join(".oneloop").join("errors.log")
+/// Per conversation rather than under the home directory: one file for every
+/// conversation merged unrelated histories into a single one.
+pub fn errors_log_path(root: &Path) -> PathBuf {
+    root.join("errors.log")
 }
 
 /// Takes the path so a test can write somewhere other than the project.
@@ -642,12 +687,12 @@ mod tests {
         assert!(is_retryable(&anyhow::anyhow!("connection reset")));
     }
 
-    /// The log belongs to the project it explains, not to the home
-    /// directory: one file for every project merged unrelated histories.
+    /// The log belongs to the conversation it explains, not to the home
+    /// directory: one file for every conversation merged unrelated histories.
     #[test]
-    fn the_error_log_is_filed_under_the_project() {
+    fn the_error_log_is_filed_beside_its_conversation() {
         assert_eq!(
-            errors_log_path(std::path::Path::new("/repo")),
+            errors_log_path(std::path::Path::new("/repo/.oneloop")),
             std::path::PathBuf::from("/repo/.oneloop/errors.log")
         );
     }

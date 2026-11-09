@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 
-use crate::agent::AgentContext;
-use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
+use crate::output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, elide, truncate_tail};
+use crate::tools::AgentContext;
 
 use super::{Tool, ToolResult};
 
@@ -106,6 +106,16 @@ impl Tool for BashTool {
             },
             "required": ["command"]
         })
+    }
+
+    /// The model's own command, cut to one readable line.
+    fn trace_label(&self, arguments: &Value, _cwd: &Path) -> Option<String> {
+        Some(
+            arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .map_or_else(|| "?".to_string(), elide),
+        )
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
