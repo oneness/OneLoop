@@ -21,14 +21,14 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "oneloop")]
-#[command(about = "A tiny, provider-neutral coding agent")]
+#[command(about = "One loop, few tools: a provider-neutral coding agent")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
     /// Which agent to build: `main` (the default) or `reviewer`.
-    #[arg(long)]
+    #[arg(short = 'A', long)]
     agent: Option<String>,
 
     #[arg()]
@@ -37,7 +37,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Login { provider: String },
+    /// Sign in to a provider: `openrouter`, `opencode-go`, or `openai`.
+    Login {
+        /// `openrouter` and `opencode-go` take an API key at the prompt;
+        /// `openai` is a ChatGPT Plus/Pro sign-in in the browser.
+        provider: String,
+    },
 }
 
 #[tokio::main]

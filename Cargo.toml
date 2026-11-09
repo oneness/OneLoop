@@ -3,7 +3,7 @@ name = "oneloop"
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.98"
-description = "A tiny, provider-neutral coding agent"
+description = "One loop, few tools: a provider-neutral coding agent"
 license = "MIT"
 
 [lints.clippy]

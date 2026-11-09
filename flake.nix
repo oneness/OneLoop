@@ -1,5 +1,5 @@
 {
-  description = "oneloop - a tiny, provider-neutral coding agent";
+  description = "oneloop - one loop, few tools: a provider-neutral coding agent";
 
   inputs = {
     # One nixpkgs instance for the whole flake. The toolchain and llama.cpp

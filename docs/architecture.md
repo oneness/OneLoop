@@ -548,7 +548,7 @@ model.
 
 ```
 src/
-  main.rs           CLI entry point, login command, --agent, --version
+  main.rs           CLI entry point, login command, -A/--agent, --version
   messages.rs       Message types (User, Assistant, ToolCall, ToolResult) and ToolDefinition
   agent.rs          Agent struct, from_spec, accessors, session repair, context gauge
   agent/
