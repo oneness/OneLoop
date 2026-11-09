@@ -19,7 +19,7 @@ use crate::tools::{AgentContext, ToolRegistry, ToolResult};
 /// file applies one at a time instead of each reading the original and
 /// overwriting the rest. Calls on different files, and tools that cannot be
 /// reasoned about by path (bash, elisp), still run together.
-pub async fn run_batch(
+pub async fn run(
     tool_registry: ToolRegistry,
     tool_calls: &[ToolCall],
     cwd: &Path,
@@ -131,7 +131,7 @@ mod tests {
             edit_call("call-2", "sub/../note.txt", "foo", "baz"),
         ];
 
-        let results = run_batch(registry, &calls, &dir).await;
+        let results = run(registry, &calls, &dir).await;
 
         let errors = results.iter().filter(|result| result.is_error).count();
         assert_eq!(errors, 1);

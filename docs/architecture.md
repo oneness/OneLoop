@@ -557,6 +557,7 @@ src/
                     log_api_call
     trace.rs        format_tool_call: the name, a colon, and the tool's own label
     banner.rs       the startup summary: summary, packed, the column it wraps on
+    batch.rs        One batch of tool calls, and the per-file locks that order it
     duplicate_reads.rs
                     answering a re-read with a pointer: read_payloads_in_context,
                     payload_digest, suppress_duplicate_reads, duplicate_read_notice
@@ -593,7 +594,6 @@ src/
   tools.rs          Tool trait (incl. trace_label, lock_path), ToolRegistry (Arc<dyn Tool>),
                     AgentContext
   tools/
-    batch.rs        One batch of tool calls, and the per-file locks that order it
     bash.rs         Bash command execution
     elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading

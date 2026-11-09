@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::batch::file_key;
 use crate::messages;
 use crate::output;
-use crate::tools::batch::file_key;
 use crate::tools::{ToolRegistry, ToolResult};
 
 /// Payloads a `read` has already put in the transcript, keyed by the file they

@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use super::Agent;
+use super::batch::run;
 use super::duplicate_reads::suppress_duplicate_reads;
 use super::metrics::estimate_tokens;
 use super::spinner::SpinnerGuard;
@@ -20,7 +21,6 @@ use crate::messages::ToolCall;
 use crate::output;
 use crate::providers::{ProviderRequest, ProviderResponse, is_context_overflow};
 use crate::status::TurnStatus;
-use crate::tools::batch::run_batch;
 
 /// The sentence a response with nothing in it is answered with. Printed and
 /// recorded, so a session that saw it can be read back.
@@ -246,7 +246,7 @@ impl Agent {
         }
 
         let spinner = SpinnerGuard::new("running tools...");
-        let mut results = run_batch(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
+        let mut results = run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
         spinner.stop();
 
         self.metrics.log(

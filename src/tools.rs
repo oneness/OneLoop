@@ -1,5 +1,4 @@
 pub mod bash;
-pub mod batch;
 pub mod edit;
 pub mod elisp;
 pub mod read;

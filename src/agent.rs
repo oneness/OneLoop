@@ -1,4 +1,5 @@
 mod banner;
+mod batch;
 mod duplicate_reads;
 pub mod metrics;
 pub mod session;
