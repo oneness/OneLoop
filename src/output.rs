@@ -337,12 +337,12 @@ fn with_notice(result: TruncationResult) -> String {
 //
 // A tool names its own call — [`crate::tools::Tool::trace_label`] decides
 // what that call reads like — and these are the two shapes it can reach for:
-// a path stays whole, a command is cut. They live here because they are
-// rendering, and because a tool reaching into the agent for them would point
-// the dependency the wrong way.
+// a path stays whole, a command or an expression is cut. They live here
+// because they are rendering, and because a tool reaching into the agent for
+// them would point the dependency the wrong way.
 
-/// How much of a bash command the trace shows: enough of it to recognise what
-/// ran, not enough to fill the screen with a here-document.
+/// How much of a command or expression the trace shows: enough of it to
+/// recognise what ran, not enough to fill the screen with a here-document.
 pub const TRACE_WIDTH: usize = 240;
 
 /// What a cut line ends with. One marker and one spelling, so a reader never
@@ -358,12 +358,12 @@ pub fn first_line(argument: &str) -> String {
     }
 }
 
-/// A bash command as at most one line of [`TRACE_WIDTH`] characters. The trace
-/// records that a command ran, not the command itself — and the model's own
-/// words can be a 1,800-character here-document. Newlines become spaces so the
-/// budget measures the command rather than its first line, and whatever is
-/// dropped — trailing characters, or the line breaks that were flattened — ends
-/// the line with [`ELISION`].
+/// A command or an expression as at most one line of [`TRACE_WIDTH`]
+/// characters. The trace records that a call ran, not the call itself — and
+/// the model's own words can be a 1,800-character here-document or a whole
+/// elisp program. Newlines become spaces so the budget measures the argument
+/// rather than its first line, and whatever is dropped — trailing characters,
+/// or the line breaks that were flattened — ends the line with [`ELISION`].
 pub fn elide(command: &str) -> String {
     let one_line = command
         .lines()

@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, first_line, truncate_head},
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, elide, truncate_head},
     tools::AgentContext,
 };
 
@@ -83,15 +83,17 @@ impl Tool for ElispTool {
         })
     }
 
-    /// The expression's first line: an elisp call is often a whole program,
-    /// and the trace has one line to say what it was about. An expression that
-    /// never arrived says so rather than tracing bare.
+    /// The expression flattened and cut the way a bash command is: an elisp
+    /// call is often a whole program, and reading only its opening line said
+    /// nothing about what it did — `(progn` for every `progn`, `(let*` for
+    /// every `let*`. An expression that never arrived says so rather than
+    /// tracing bare.
     fn trace_label(&self, arguments: &Value, _cwd: &Path) -> Option<String> {
         Some(
             arguments
                 .get("expression")
                 .and_then(Value::as_str)
-                .map_or_else(|| "?".to_string(), first_line),
+                .map_or_else(|| "?".to_string(), elide),
         )
     }
 

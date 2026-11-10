@@ -496,14 +496,17 @@ becoming one caller's shape.
 The trace line for a tool call is `agent/trace.rs::format_tool_call`, and it is
 always one line: `name: argument`. Only the prefix is the agent's — the
 argument is the tool's own answer, `Tool::trace_label`, because only the tool
-knows how its argument should read: a bash command is flattened from its line
-breaks and cut at `TRACE_WIDTH` (240) characters before `...` closes it, a path
-is resolved and spelled the way every other tool spells it, an elisp expression
-keeps its first line, and a skill name is looked up on disk to name the file
-that would load. A command the model wrote as a whole here-document would
-otherwise scroll the trace away, and the line's job is to say that one ran.
-Those two shapes — `elide` and `first_line` — live in this module so a tool
-reaching for them does not reach into the agent.
+knows how its argument should read: a bash command and an elisp expression are
+flattened from their line breaks and cut at `TRACE_WIDTH` (240) characters
+before `...` closes them, a path is resolved and spelled the way every other
+tool spells it, and a skill name is looked up on disk to name the file that
+would load. A command the model wrote as a whole here-document, or an
+expression written as a whole program, would otherwise scroll the trace away,
+and the line's job is to say that one ran — an opening `(progn` alone says
+nothing about what the `progn` did. Those two shapes — `elide` and
+`first_line` — live in this module so a tool reaching for them does not reach
+into the agent; `first_line` is left to the path tools, whose arguments are one
+line by nature.
 
 Not every terminal can take everything the module emits. `plain()` reports
 terminals that cannot take cursor addressing — comint runs its children with

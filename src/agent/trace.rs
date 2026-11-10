@@ -44,15 +44,38 @@ mod tests {
         );
     }
 
+    /// An elisp call is often a whole program across several lines, and only
+    /// its opening line said nothing: `(progn` reads the same for every
+    /// `progn`. The expression spends the trace budget on one flattened line,
+    /// exactly as a bash command does.
     #[test]
-    fn elisp_tool_call_shows_only_the_first_expression_line() {
+    fn elisp_tool_call_shows_the_expression_on_one_flattened_line() {
         assert_eq!(
             format_tool_call(
                 &ElispTool,
                 &serde_json::json!({"expression": "(progn\n  (+ 1 2))"}),
                 Path::new("/repo")
             ),
-            "elisp: (progn..."
+            "elisp: (progn (+ 1 2))..."
+        );
+    }
+
+    /// The other half of the same rule: an expression the model wrote on one
+    /// line is cut at the trace width, not printed whole and uncapped.
+    #[test]
+    fn a_long_expression_is_elided_at_the_trace_width() {
+        let expression = format!("(setq x \"{}\")", "x".repeat(400));
+        let label = format_tool_call(
+            &ElispTool,
+            &serde_json::json!({ "expression": expression }),
+            Path::new("/repo"),
+        );
+        let shown = label.strip_prefix("elisp: ").unwrap_or_default();
+        assert!(shown.ends_with("..."), "{label}");
+        assert_eq!(
+            shown.trim_end_matches('.').chars().count(),
+            TRACE_WIDTH,
+            "{label}"
         );
     }
 
