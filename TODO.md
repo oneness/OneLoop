@@ -10,3 +10,4 @@
 - [ ] **OTel for Observability** ?
 - [ ] **Cross Platform Desktop App for teams** ?
 - [ ] **Memory - any OTel like data model out there** ? 
+- [ ] **https://github.com/GoogleChrome/modern-web-guidance** ?
