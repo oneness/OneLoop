@@ -22,21 +22,11 @@ pub fn instructions(cwd: &Path) -> Vec<Instruction> {
 }
 
 /// The system prompt for a run: what the model needs to call tools correctly,
-/// then the standards that hold everywhere, then — for an agent that has one —
-/// what this particular agent is for, then whatever instructions it was given.
-///
-/// `persona` is `None` for the default agent, and `None` has to reproduce the
-/// prompt byte for byte: the coding agent's behavior is not allowed to move
-/// because a slot appeared beside it.
-pub fn system_prompt(
-    cwd: &Path,
-    tool_names: &[&str],
-    instructions: &[Instruction],
-    persona: Option<&str>,
-) -> String {
+/// then the standards that hold everywhere, then whatever instructions the
+/// project was given.
+pub fn system_prompt(cwd: &Path, tool_names: &[&str], instructions: &[Instruction]) -> String {
     let environment = environment_block(cwd);
     let mut sections = vec![engineering_block(), environment.as_str()];
-    sections.extend(persona);
     sections.extend(
         instructions
             .iter()
@@ -69,29 +59,35 @@ They hold on every task; where no check can, they decide.
   it, and never delete or overwrite work you cannot recover without asking."
 }
 
-/// What a reviewer is for. A domain agent's words live here, beside the tenets,
-/// for the same reason the tenets do: a prompt written inside a preset is a
-/// prompt nobody looks at twice.
+/// What a conversation is compressed into, for the agent that continues it.
 ///
-/// It states the tool set as a limit rather than a preference — this agent has
-/// no write tool, so a model that promises to fix what it found has promised
-/// something it cannot do.
-pub const REVIEWER_PERSONA: &str = "\
-## Reviewing
+/// This is a whole system prompt, not a section of the coding agent's: a
+/// summarizer is not an agent with tenets and an environment to obey, it is a
+/// transformation, and everything it is told is about the transformation. It
+/// says the tool set is nonexistent rather than limited — there is no registry
+/// behind this prompt at all — so a model that decides it should go and read
+/// the repository has been told, in the only place that can tell it, that it
+/// cannot.
+pub const SUMMARIZER: &str = "\
+You compress a conversation between a user and a coding agent into a briefing
+for an agent that will continue the work with none of the history.
 
-You review code; you do not change it. Read the diff and the files it touches,
-follow what they depend on, and run the check that settles a question rather
-than reasoning from the shape of the code.
+Write it in this order, and stop:
 
-Report what is wrong and what it would take to fix, most serious first, naming
-the file and line for each finding. Say plainly when you find nothing worth
-changing.
+## What we are working on
+## Decisions, and why
+## What remains
+## Open questions
 
-You have no tool that writes, edits or applies a patch, and your shell must not
-stand in for one: `sed -i`, `git checkout` and a redirect all change the tree you
-are asked to judge, and a review that changes the code under review is not a
-review. If something cannot be settled by reading, or by a command that only
-reads, say that you could not settle it.";
+- Name files and symbols exactly as the conversation did. Never invent a path.
+- Say what was tried and failed. A repetition is worse than a gap.
+- Leave out what was read and not concluded: a tool result that changed nothing
+  is not part of the state.
+- Prefer short lines to paragraphs. The whole briefing is one screen.
+- If the conversation disagrees with itself, say so rather than picking a side.
+
+You have no tools and no access to the repository. If the conversation does not
+contain something, it is not there — say it is unknown rather than guessing.";
 
 fn load_instruction(name: &'static str, cwd: &Path) -> Option<Instruction> {
     Some(Instruction {
@@ -158,7 +154,7 @@ mod tests {
         let dir = temp_dir("preamble");
         fs::write(dir.join("AGENTS.md"), "Use `semble search` to find code.").unwrap();
 
-        let prompt = system_prompt(&dir, &["read", "bash"], &instructions(&dir), None);
+        let prompt = system_prompt(&dir, &["read", "bash"], &instructions(&dir));
 
         assert!(prompt.starts_with("Your only tools are: read, bash"));
         assert!(prompt.contains("semble search"));
@@ -169,7 +165,7 @@ mod tests {
     fn prompt_always_carries_environment() {
         let dir = temp_dir("empty");
 
-        let prompt = system_prompt(&dir, &["read"], &[], None);
+        let prompt = system_prompt(&dir, &["read"], &[]);
 
         assert!(prompt.contains("## Environment"));
         assert!(prompt.contains(&dir.display().to_string()));
@@ -180,7 +176,7 @@ mod tests {
     fn prompt_always_carries_the_engineering_tenets() {
         let dir = temp_dir("tenets");
 
-        let prompt = system_prompt(&dir, &["read"], &[], None);
+        let prompt = system_prompt(&dir, &["read"], &[]);
 
         assert!(prompt.contains("## Engineering Tenets"));
         let _ = fs::remove_dir_all(&dir);
@@ -190,7 +186,7 @@ mod tests {
     fn engineering_tenets_precede_the_environment() {
         let dir = temp_dir("order");
 
-        let prompt = system_prompt(&dir, &["read"], &[], None);
+        let prompt = system_prompt(&dir, &["read"], &[]);
 
         let tenets = prompt.find("## Engineering Tenets").unwrap();
         let environment = prompt.find("## Environment").unwrap();
@@ -203,42 +199,19 @@ mod tests {
         let dir = temp_dir("oneshot");
         fs::write(dir.join("AGENTS.md"), "Use `semble search` to find code.").unwrap();
 
-        let prompt = system_prompt(&dir, &["read"], &[], None);
+        let prompt = system_prompt(&dir, &["read"], &[]);
 
         assert!(!prompt.contains("semble search"));
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A persona is an agent's own words, and they sit after the standards that
-    /// hold everywhere and before the project's instructions — so a project can
-    /// still say what it needs without the agent's purpose being buried.
+    /// Three sections and two separators: a prompt with an emptied slot would
+    /// carry a doubled blank line where nothing was written.
     #[test]
-    fn a_persona_sits_between_the_tenets_and_the_instructions() {
-        let dir = temp_dir("persona-order");
-        fs::write(dir.join("AGENTS.md"), "project rules").unwrap();
+    fn the_prompt_has_no_emptied_section() {
+        let dir = temp_dir("no-slot");
 
-        let prompt = system_prompt(
-            &dir,
-            &["read"],
-            &instructions(&dir),
-            Some("## Reviewing\n\nRead the diff."),
-        );
-
-        let tenets = prompt.find("## Engineering Tenets").unwrap();
-        let persona = prompt.find("## Reviewing").unwrap();
-        let project = prompt.find("project rules").unwrap();
-        assert!(tenets < persona && persona < project, "{prompt}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// The default agent has no persona, and having the slot must not change a
-    /// single byte of what it is told: every other test in this module, and the
-    /// model, read the same prompt as before the slot existed.
-    #[test]
-    fn no_persona_is_the_prompt_without_the_slot() {
-        let dir = temp_dir("no-persona");
-
-        let prompt = system_prompt(&dir, &["read"], &[], None);
+        let prompt = system_prompt(&dir, &["read"], &[]);
 
         let expected = format!(
             "{}\n\n{}\n\n{}",
@@ -247,10 +220,34 @@ mod tests {
             environment_block(&dir)
         );
         assert_eq!(prompt, expected);
-        // No section at all, rather than an empty one: a `Some`-shaped slot
-        // that renders as nothing would leave a doubled blank line behind.
         assert!(!prompt.contains("\n\n\n"), "{prompt}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The summarizer is handed text and nothing else, so the prompt has to say
+    /// so: a model that believes it can go and check the repository will invent
+    /// what it finds there.
+    #[test]
+    fn the_summarizer_is_told_it_cannot_reach_the_repository() {
+        assert!(SUMMARIZER.contains("no tools"), "{SUMMARIZER}");
+        assert!(
+            SUMMARIZER.contains("no access to the repository"),
+            "{SUMMARIZER}"
+        );
+    }
+
+    /// It produces a briefing, not a review and not a reply: the four headings
+    /// are what the agent that continues the work reads first.
+    #[test]
+    fn the_summarizer_asks_for_the_four_sections() {
+        for section in [
+            "## What we are working on",
+            "## Decisions, and why",
+            "## What remains",
+            "## Open questions",
+        ] {
+            assert!(SUMMARIZER.contains(section), "missing {section}");
+        }
     }
 
     #[test]

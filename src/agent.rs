@@ -1,5 +1,6 @@
 mod banner;
 mod batch;
+mod compact;
 mod duplicate_reads;
 pub mod metrics;
 pub mod session;
@@ -10,8 +11,10 @@ mod turn;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
+use serde_json::json;
 
 use crate::messages;
 use crate::output;
@@ -38,6 +41,11 @@ pub struct Agent {
     /// there would mean creating `.oneloop/` in whatever directory the prompt
     /// ran in.
     errors_log: Option<PathBuf>,
+    /// What the agent was last waiting on — `a response`, or the trace label of
+    /// the calls in flight. Nothing inside the future Ctrl+C drops gets to log,
+    /// so this is the only thing that can say afterwards whether the wait was
+    /// the model or a tool, and which tool.
+    waiting_on: String,
 }
 
 impl Agent {
@@ -52,12 +60,8 @@ impl Agent {
             models.set_active(alias)?;
         }
 
-        let system_prompt = prompt::system_prompt(
-            &spec.cwd,
-            &spec.tools.names(),
-            &spec.instructions,
-            spec.persona.as_deref(),
-        );
+        let system_prompt =
+            prompt::system_prompt(&spec.cwd, &spec.tools.names(), &spec.instructions);
         let mut session = session::Session::open(&spec.cwd, spec.session)?;
 
         // A previous process may have been killed mid-run, leaving tool calls
@@ -79,6 +83,7 @@ impl Agent {
             system_prompt,
             last_input_tokens: None,
             errors_log,
+            waiting_on: "nothing".to_string(),
         })
     }
 
@@ -140,17 +145,30 @@ impl Agent {
         Self::close_interrupted_calls(&mut self.session, "in this run")
     }
 
-    /// Rotates to a new file; the old one stays on disk.
-    pub fn clear_session(&mut self) -> Result<()> {
+    /// Rotates to a new file; the old one stays on disk. Returns the new
+    /// session's path, so the caller can say which one it got: `/clear` cleared
+    /// and `/compact` summarized, and only the caller knows which word is true.
+    pub fn clear_session(&mut self) -> Result<PathBuf> {
         self.session = self.session.rotate()?;
         self.metrics = metrics::Metrics::for_session(&self.session)?;
         // The measured count belonged to the conversation just rotated away.
         self.last_input_tokens = None;
-        output::step(&format!(
-            "cleared context, new session: {}",
-            self.session.path().display()
-        ));
-        Ok(())
+        Ok(self.session.path().to_path_buf())
+    }
+
+    /// Writes down a turn the user stopped. Everything that would normally log
+    /// — the request, the tool batch — is inside the future Ctrl+C drops, so a
+    /// cancelled turn is otherwise invisible in the ledger: the one event worth
+    /// reading is the one that never gets written.
+    pub fn log_cancelled_turn(&self, started: Instant) {
+        self.metrics.log(
+            "turn_cancelled",
+            json!({
+                "duration_ms": started.elapsed().as_millis(),
+                "model": self.models.active().alias,
+                "waiting_on": &self.waiting_on,
+            }),
+        );
     }
 
     fn system_prompt_chars(&self) -> usize {
@@ -172,5 +190,46 @@ impl Agent {
                 window,
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn project_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("oneloop-agent-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn registry() -> ModelRegistry {
+        ModelRegistry::for_test(
+            r#"{"default":"main","providers":{"p":{"base_url":"http://u",
+                 "api_key_env":"P_KEY","models":{"main":{"id":"main-model"}}}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// A turn the user stops writes nothing else: the request that was in
+    /// flight is dropped with the future, so this line is the only record of
+    /// how long it ran and what it was waiting for — including which call.
+    #[test]
+    fn a_cancelled_turn_names_the_call_it_was_waiting_on() {
+        let dir = project_dir("cancelled");
+        let mut agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+        agent.waiting_on = "bash: sed -n '1,40p' src/main.rs".to_string();
+
+        agent.log_cancelled_turn(Instant::now());
+
+        let metrics_dir = dir.join(".oneloop").join("metrics");
+        let entry = fs::read_dir(&metrics_dir).unwrap().next().unwrap().unwrap();
+        let body = fs::read_to_string(entry.path()).unwrap();
+        assert!(body.contains("bash: sed -n '1,40p' src/main.rs"), "{body}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

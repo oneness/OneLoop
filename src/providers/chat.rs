@@ -21,6 +21,10 @@ use super::{
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
+    /// Omitted when empty, like every request the Responses API builds: "no
+    /// tools" has one spelling across both wire formats, and it is the absence
+    /// of the key rather than an empty array, which some backends reject.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
@@ -155,7 +159,7 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatChoiceMessage {
     content: Option<String>,
-    /// Reasoning models served locally put their thinking here and leave
+    /// Reasoning models served locally put their reasoning here and leave
     /// `content` null. Not part of the OpenAI schema; absent from the hosted
     /// providers, hence the default.
     #[serde(default)]
@@ -335,9 +339,9 @@ fn replayed_reasoning(reasoning: Option<String>, replaying: bool) -> Option<Stri
 
 fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
     // Once a provider has returned reasoning for any turn, it requires the
-    // reasoning of every assistant turn to be passed back — DeepSeek's
-    // thinking mode rejects the request otherwise, even for turns the model
-    // answered without reasoning. So the field is replayed on all of them.
+    // reasoning of every assistant turn to be passed back — DeepSeek rejects
+    // the request otherwise, even for turns the model answered without
+    // reasoning. So the field is replayed on all of them.
     let replaying = messages
         .iter()
         .any(|message| matches!(message, Message::Assistant(assistant) if assistant.reasoning_content.is_some()));
@@ -451,11 +455,11 @@ mod tests {
     fn reasoning_content_is_replayed_on_the_assistant_message() {
         let result = to_chat_messages(vec![Message::Assistant(AssistantMessage {
             content: "answer".into(),
-            reasoning_content: Some("thinking trace".into()),
+            reasoning_content: Some("reasoning trace".into()),
         })]);
         let json = serde_json::to_value(&result[0]).unwrap();
         assert_eq!(json["content"], "answer");
-        assert_eq!(json["reasoning_content"], "thinking trace");
+        assert_eq!(json["reasoning_content"], "reasoning trace");
     }
 
     #[test]
@@ -476,13 +480,12 @@ mod tests {
     }
 
     /// The bug this fixes: the model answered one turn without reasoning, and
-    /// the field was dropped on the way back. DeepSeek's thinking mode then
-    /// refuses the whole request — every assistant turn has to carry it once
-    /// any turn does.
+    /// the field was dropped on the way back. DeepSeek then refuses the whole
+    /// request — every assistant turn has to carry it once any turn does.
     #[test]
     fn a_turn_without_reasoning_carries_an_empty_field_when_the_conversation_has_reasoning() {
         let result = to_chat_messages(vec![
-            assistant_with_reasoning("first", "thinking"),
+            assistant_with_reasoning("first", "reasoning"),
             user("again"),
             assistant("second"),
         ]);
@@ -496,7 +499,7 @@ mod tests {
     #[test]
     fn a_tool_call_frame_carries_an_empty_field_when_the_conversation_has_reasoning() {
         let result = to_chat_messages(vec![
-            assistant_with_reasoning("plan", "thinking"),
+            assistant_with_reasoning("plan", "reasoning"),
             tool_result("t0"),
             tool_call("t1"),
         ]);
@@ -528,10 +531,10 @@ mod tests {
     fn tool_call_merges_into_preceding_assistant_message() {
         // Chat Completions APIs reject two consecutive assistant messages:
         // text and tool_calls must share one frame.
-        let result = to_chat_messages(vec![assistant("thinking"), tool_call("t1")]);
+        let result = to_chat_messages(vec![assistant("plan"), tool_call("t1")]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].role, "assistant");
-        assert_eq!(result[0].content.as_deref(), Some("thinking"));
+        assert_eq!(result[0].content.as_deref(), Some("plan"));
         assert_eq!(result[0].tool_calls.as_ref().unwrap().len(), 1);
     }
 
@@ -706,27 +709,27 @@ mod tests {
 
     #[test]
     fn content_is_used_when_present() {
-        let text = assistant_content(Some("answer".into()), Some("thinking".into()), false);
+        let text = assistant_content(Some("answer".into()), Some("reasoning".into()), false);
         assert_eq!(text, "answer");
     }
 
     #[test]
     fn reasoning_content_is_used_when_content_is_null() {
-        let text = assistant_content(None, Some("thinking".into()), false);
-        assert_eq!(text, "thinking");
+        let text = assistant_content(None, Some("reasoning".into()), false);
+        assert_eq!(text, "reasoning");
     }
 
     #[test]
     fn reasoning_content_is_used_when_content_is_blank() {
-        let text = assistant_content(Some("   ".into()), Some("thinking".into()), false);
-        assert_eq!(text, "thinking");
+        let text = assistant_content(Some("   ".into()), Some("reasoning".into()), false);
+        assert_eq!(text, "reasoning");
     }
 
-    /// The call is the message on a tool-calling turn; the thinking behind it
-    /// is not something to record as if the model had said it.
+    /// The call is the message on a tool-calling turn; the reasoning behind
+    /// it is not something to record as if the model had said it.
     #[test]
     fn reasoning_content_is_not_used_when_the_turn_has_tool_calls() {
-        let text = assistant_content(None, Some("thinking".into()), true);
+        let text = assistant_content(None, Some("reasoning".into()), true);
         assert_eq!(text, "");
     }
 
@@ -775,5 +778,22 @@ mod tests {
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["max_tokens"], serde_json::json!(4096));
+    }
+
+    /// The summarizer is the one request that carries no tools at all, and it
+    /// says so by omitting the key — an empty array is a schema some backends
+    /// refuse, and the Responses API already spells "none" this way.
+    #[test]
+    fn a_request_with_no_tools_sends_no_tools_field() {
+        let body = ChatRequest {
+            model: "m".to_string(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("tools").is_none(), "{json}");
     }
 }

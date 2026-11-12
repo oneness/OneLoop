@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::Agent;
@@ -63,6 +63,14 @@ fn continues(response: &ProviderResponse) -> bool {
     !response.tool_calls.is_empty()
 }
 
+/// What one request came back with. A refusal is not an answer, and a
+/// conversation that outgrew its window is the one refusal the loop can cure.
+enum Attempt {
+    Answered(ProviderResponse),
+    Overflow,
+    Refused,
+}
+
 impl Agent {
     pub async fn run_once(&mut self, prompt: String) -> Result<()> {
         self.run_once_with_model(prompt, None).await
@@ -83,22 +91,65 @@ impl Agent {
         // A single busy→idle pulse for the buffer's mode line, held for the
         // whole turn loop including tools. Drop covers every exit path.
         let _turn_status = TurnStatus::new();
-        self.session.push_user(prompt)?;
+        // Kept for a compaction: the request that ran into the limit is the one
+        // the conversation has to be handed back to, and rotating the session
+        // takes it off the transcript.
+        self.session.push_user(prompt.clone())?;
 
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
         let mut active_model: Option<String> = model.map(str::to_string);
+        // One compaction per turn. A second overflow is one whose own shortest
+        // form does not fit, and a summary of a summary is not smaller.
+        let mut compacted = false;
 
-        // Two exits and no fuse, and both of them have already said their
-        // piece. A run that never converges cannot grind on for ever either:
-        // the transcript is append-only, so it eventually outgrows the window
-        // and the server refuses, and a run in the REPL can always be stopped
-        // with Ctrl+C.
+        // Exits and no fuse, and each has already said its piece. A run that
+        // never converges cannot grind on for ever either: the transcript is
+        // append-only, so it eventually outgrows the window and the server
+        // refuses, and a run in the REPL can always be stopped with Ctrl+C.
         loop {
-            let Some(response) = self.request(&mut active_model).await? else {
-                // The provider refused and said so; there is nothing to add and
-                // the run is over, but not in error.
-                break;
+            let response = match self.request(&mut active_model).await? {
+                Attempt::Answered(response) => response,
+
+                Attempt::Overflow if !compacted => {
+                    compacted = true;
+                    self.compact()
+                        .await
+                        .context("the conversation overflowed and could not be compacted")?;
+                    // The summary cleared the history, not the request that ran
+                    // into the limit: without it the turn would end having
+                    // answered nothing.
+                    self.session.push_user(prompt.clone())?;
+
+                    // The summary is short and the prompt is not, so if the pair
+                    // still does not fit, the prompt alone is over the window.
+                    // Asking again would spend a request to be told the same
+                    // thing — and the estimate is why this says "does not
+                    // appear to": it is a gauge, not the server's answer.
+                    if self.remaining_context() == Some(0) {
+                        output::note(
+                            "this message does not appear to fit the model's window on its \
+                             own — shorten it, or switch to a model with a larger one",
+                        );
+                        break;
+                    }
+                    continue;
+                }
+
+                // A compaction has already run: this is the second overflow, and
+                // `/compact` is not offered because it is the thing that just
+                // did not help — a summary of a summary is not smaller. What is
+                // left is a fresh conversation or a bigger window.
+                Attempt::Overflow => {
+                    output::note(
+                        "the conversation still does not fit after a compaction — \
+                         use /clear to start fresh, or switch to a model with a larger \
+                         context window",
+                    );
+                    break;
+                }
+
+                Attempt::Refused => break,
             };
 
             self.keep(&response)?;
@@ -114,10 +165,20 @@ impl Agent {
     }
 
     /// One request: assembly, retry and fallback, and the metric that records
-    /// what it cost. `Ok(None)` means the provider refused and said so.
-    async fn request(&mut self, active: &mut Option<String>) -> Result<Option<ProviderResponse>> {
-        let spinner = SpinnerGuard::new("thinking...");
+    /// what it cost.
+    async fn request(&mut self, active: &mut Option<String>) -> Result<Attempt> {
+        let spinner = SpinnerGuard::new("computing...");
         let tokens_estimated = estimate_tokens(self.session.messages(), self.system_prompt_chars());
+        // The spinner is the signal in a terminal. Where it is silent the screen
+        // would show nothing at all for the length of the request, and a request
+        // can run for minutes — so it is spelled out once instead.
+        if spinner.is_silent() {
+            output::running(&format!(
+                "computing... · ~{}k tokens in current context",
+                tokens_estimated / 1000
+            ));
+        }
+        self.waiting_on = "a response".to_string();
         let api_start = Instant::now();
         // For metrics: the model this request is aimed at, which the registry's
         // active one only approximates after a fallback.
@@ -138,7 +199,7 @@ impl Agent {
                 active.as_deref(),
                 request,
                 Some(spinner.stop_callback()),
-                Some(spinner.start_callback("thinking...")),
+                Some(spinner.start_callback("computing...")),
             )
             .await
         {
@@ -153,16 +214,13 @@ impl Agent {
                 spinner.stop();
                 self.log_api_call(&requested_model, api_start, tokens_estimated, None, false);
                 output::fail(&format!("provider error: {e:#}"));
-                // Nothing the loop can do about this one, but the cure is one
-                // command away and worth naming: the server is the authority on
-                // what fits, and it just said no.
-                if is_context_overflow(&e) {
-                    output::note(
-                        "the conversation no longer fits — use /clear to start fresh, \
-                         or switch to a model with a larger context window",
-                    );
-                }
-                return Ok(None);
+                // Whether the loop can cure this one is the loop's decision, so
+                // the refusal is classified here and acted on there.
+                return Ok(if is_context_overflow(&e) {
+                    Attempt::Overflow
+                } else {
+                    Attempt::Refused
+                });
             }
         };
         spinner.stop();
@@ -181,7 +239,7 @@ impl Agent {
         // prefers it over the estimate until the session moves on.
         self.last_input_tokens = response.input_tokens;
 
-        Ok(Some(response))
+        Ok(Attempt::Answered(response))
     }
 
     /// Writes one response into the transcript and, when it has words, onto
@@ -246,6 +304,28 @@ impl Agent {
         }
 
         let spinner = SpinnerGuard::new("running tools...");
+        // Named before it runs, not after: the label is the only thing about a
+        // call that is knowable in advance, and a command that takes a minute
+        // has to say what it is while it takes it. Printed only where the
+        // spinner is silent — a spinner is one line rewritten in place, and it
+        // says "running tools", not which one.
+        let labels: Vec<String> = tool_calls
+            .iter()
+            .map(|tc| match self.spec.tools.get(&tc.name) {
+                Some(tool) => format_tool_call(tool, &tc.arguments, &self.spec.cwd),
+                None => tc.name.clone(),
+            })
+            .collect();
+        if spinner.is_silent() {
+            for label in &labels {
+                output::running(label);
+            }
+        }
+        // The same label the screen showed, where it showed one: a stop
+        // explained afterwards should name the thing that was running, not the
+        // category it fell in.
+        self.waiting_on = labels.join(" · ");
+
         let mut results = run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
         spinner.stop();
 
@@ -276,14 +356,7 @@ impl Agent {
             ));
         }
 
-        for (tc, result) in tool_calls.iter().zip(results) {
-            let tool_label = match self.spec.tools.get(&tc.name) {
-                Some(tool) => format_tool_call(tool, &tc.arguments, &self.spec.cwd),
-                // A name no tool answers to: the call has already failed, and
-                // the failure line names the call as the model sent it.
-                None => tc.name.clone(),
-            };
-
+        for ((tc, result), tool_label) in tool_calls.iter().zip(results).zip(labels) {
             self.session.push_tool_result(
                 tc.id.clone(),
                 tc.name.clone(),

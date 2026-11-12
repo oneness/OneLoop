@@ -5,9 +5,9 @@ pub const DEFAULT_MAX_LINES: usize = 1000;
 
 // ── Terminal output ───────────────────────────────────────────────────
 //
-// The single home for ANSI escapes and for the shape of a status line: a
-// color-scheme change, a `--no-color` flag, or `NO_COLOR` support only ever
-// touches this block.
+// The single home for ANSI escapes — CSI and OSC — and for the shape of a
+// status line: a color-scheme change, a `--no-color` flag, or `NO_COLOR`
+// support only ever touches this block.
 //
 // The streams are split by what the text *is*, not by how bad it is:
 // **stdout carries the model's answer and nothing else**, so
@@ -20,6 +20,15 @@ pub const BOLD: &str = "\x1b[1m";
 pub const DIM: &str = "\x1b[90m";
 /// Erase the current line (spinner redraws over it).
 pub const CLEAR_LINE: &str = "\x1b[2K";
+
+/// An OSC string — `ESC ] n ; body ST`. The framing every non-CSI escape this
+/// project writes shares, and the one thing about an OSC that is terminal
+/// syntax rather than protocol: what a sequence number *means* belongs to
+/// whoever speaks it, as [`crate::status`] does for 7501, but how one is
+/// opened and terminated belongs here beside the CSI escapes above.
+pub fn osc(sequence: u16, body: &str) -> String {
+    format!("\x1b]{sequence};{body}\x1b\\")
+}
 
 // Private: what an alarm looks like is this module's to decide, and a call
 // site that could reach for red is a call site that can drift.
@@ -97,6 +106,12 @@ pub fn ok(message: &str) {
 /// which is what separates this from [`ok`].
 pub fn tick(message: &str) {
     eprintln!("{}", line(DIM, "✓", message));
+}
+
+/// A step that has started and has not finished, named while it is still
+/// running: the request being made, or the call being executed. Dim `▸`.
+pub fn running(message: &str) {
+    eprintln!("{}", line(DIM, "▸", message));
 }
 
 /// Something happened that is worth mentioning in passing. Dim `→`.
@@ -519,6 +534,13 @@ mod tests {
         for style in [RED, GREEN, YELLOW, DIM, BOLD] {
             assert!(line(style, "✓", "x").ends_with(RESET));
         }
+    }
+
+    /// An OSC string is opened by its sequence number and closed by ST, so a
+    /// report cannot run on into the next thing the buffer shows.
+    #[test]
+    fn an_osc_string_is_framed_by_its_number_and_closed() {
+        assert_eq!(osc(7501, "state=idle"), "\x1b]7501;state=idle\x1b\\");
     }
 
     /// A comint child announces itself in `INSIDE_EMACS` regardless of what

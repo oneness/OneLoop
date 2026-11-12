@@ -3,7 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -35,8 +35,6 @@ pub enum Run {
 pub struct App {
     /// Where this run works, resolved once at startup.
     cwd: PathBuf,
-    /// Which agent to build, from `--agent`. `None` is the default.
-    agent: Option<String>,
 }
 
 /// rustyline insists a `Helper` is all four pieces; the prompt colour is the
@@ -114,6 +112,7 @@ impl AskMode {
 enum Command<'a> {
     Help,
     Clear,
+    Compact,
     Claude {
         mode: AskMode,
         text: Option<&'a str>,
@@ -148,6 +147,7 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     match name {
         "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
+        "compact" if argument.is_none() => Some(Command::Compact),
         "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
         "cc" => Some(Command::Claude {
@@ -230,6 +230,12 @@ fn parse_prefixed_command(input: &str) -> Option<(&str, Command<'_>)> {
         .and_then(prompt_after_separator)
         .map(|prompt| (prompt, Command::Clear))
         .or_else(|| {
+            input
+                .strip_prefix("/compact")
+                .and_then(prompt_after_separator)
+                .map(|prompt| (prompt, Command::Compact))
+        })
+        .or_else(|| {
             let remainder = input.strip_prefix("/model")?;
             let remainder = remainder.strip_prefix(char::is_whitespace)?.trim_start();
             let (alias, prompt) = remainder.split_once(';')?;
@@ -266,7 +272,7 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     let mut commands = String::from(
-        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
     );
     if has_claude {
         commands.push_str(
@@ -314,6 +320,16 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
             true
         }
         Command::Clear => match agent.clear_session() {
+            Ok(path) => {
+                output::step(&format!("cleared context, new session: {}", path.display()));
+                true
+            }
+            Err(e) => {
+                output::fail(&format!("{e:#}"));
+                false
+            }
+        },
+        Command::Compact => match agent.compact().await {
             Ok(()) => true,
             Err(e) => {
                 output::fail(&format!("{e:#}"));
@@ -515,16 +531,15 @@ async fn switch_model(agent: &Agent, requested: Option<&str>) -> bool {
 }
 
 impl App {
-    pub fn new(agent: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             cwd: config::working_dir(),
-            agent,
         }
     }
 
     pub async fn run(self, run: Run) -> Result<()> {
         let models = Arc::new(ModelRegistry::new()?);
-        let spec = assemble(&self.cwd, self.agent.as_deref(), &run)?;
+        let spec = assemble(&self.cwd, &run)?;
         let mut agent = Agent::from_spec(spec, models)?;
 
         match run {
@@ -541,18 +556,11 @@ impl App {
 
 /// The agent a run needs, and then what the run mode makes of it.
 ///
-/// One arm per spec, and no registry: a third agent is an arm here and a preset
-/// beside the other two. The run mode is applied after the choice, because it is
-/// a statement about the run — `ol --agent reviewer "…"` writes no session file,
-/// exactly as `ol "…"` does.
-fn assemble(cwd: &Path, agent: Option<&str>, run: &Run) -> Result<AgentSpec> {
-    let spec = match agent {
-        // `main` is the default agent by name as well as by absence: both the
-        // help text and the refusal below call it known, so saying it must work.
-        None | Some("main") => AgentSpec::coding(cwd)?,
-        Some("reviewer") => AgentSpec::reviewer(cwd)?,
-        Some(name) => bail!("unknown agent: {name}; known: main, reviewer"),
-    };
+/// The run mode is applied after the spec is built, because it is a statement
+/// about the run and not about the agent: `ol "…"` writes no session file,
+/// exactly as `ol` with no prompt writes one.
+fn assemble(cwd: &Path, run: &Run) -> Result<AgentSpec> {
+    let spec = AgentSpec::coding(cwd)?;
     Ok(match run {
         Run::Interactive => spec,
         Run::OneShot(_) => spec.one_shot(),
@@ -621,6 +629,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>) {
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
+    let turn_start = std::time::Instant::now();
     tokio::select! {
         result = agent.run_once_with_model(line.to_string(), model) => {
             if let Err(e) = result {
@@ -633,6 +642,13 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
         }
     }
 
+    // After the select, because the branch that would log has been dropped
+    // with the future — and the duration is the number worth having when a
+    // turn that looked stuck is finally stopped.
+    if interrupted {
+        agent.log_cancelled_turn(turn_start);
+    }
+
     // A dropped run leaves tool calls without results, which providers
     // reject on every later request in this session.
     if interrupted && let Err(e) = agent.repair_dangling_tool_calls() {
@@ -643,38 +659,20 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{AskMode, Command, help_commands, interactive_prompt, parse_command, parse_input};
+    use crate::agent::spec::SessionPolicy;
 
-    /// One flag, and a name nothing answers to says which names do — the list
-    /// is the match arms, so it cannot drift from what is reachable.
+    /// The run mode is the only thing that decides whether a conversation is
+    /// written, and a prompt on the command line is not part of one.
     #[test]
-    fn an_unknown_agent_names_the_ones_that_exist() {
+    fn a_one_shot_run_holds_its_conversation_in_memory() {
         let dir = std::env::temp_dir().join(format!("oneloop-app-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let error = super::assemble(&dir, Some("nonesuch"), &super::Run::Interactive)
-            .err()
-            .expect("an unknown agent must not resolve");
+        let spec = super::assemble(&dir, &super::Run::OneShot("hi".to_string()))
+            .expect("a one-shot must resolve");
 
-        let message = format!("{error:#}");
-        assert!(message.contains("unknown agent: nonesuch"), "{message}");
-        assert!(message.contains("reviewer"), "{message}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// `main` is reachable by name, because the help text and the refusal both
-    /// offer it.
-    #[test]
-    fn the_default_agent_can_be_named() {
-        let dir = std::env::temp_dir().join(format!("oneloop-app-main-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let named = super::assemble(&dir, Some("main"), &super::Run::Interactive)
-            .expect("main must resolve");
-        let unnamed = super::assemble(&dir, None, &super::Run::Interactive)
-            .expect("the default must resolve");
-
-        assert_eq!(named.session, unnamed.session);
-        assert_eq!(named.tools.names(), unnamed.tools.names());
+        assert_eq!(spec.session, SessionPolicy::Ephemeral);
+        assert!(spec.instructions.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -872,6 +870,20 @@ mod tests {
     #[test]
     fn clear_is_a_command() {
         assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
+    }
+
+    #[test]
+    fn compact_is_a_command_without_arguments() {
+        assert!(matches!(parse_command("/compact"), Some(Command::Compact)));
+        assert!(parse_command("/compact now").is_none());
+    }
+
+    #[test]
+    fn prefixed_compact_carries_the_prompt_it_was_given() {
+        let parsed = parse_input("/compact; explain the parser");
+
+        assert!(matches!(parsed.command, Some(Command::Compact)));
+        assert_eq!(parsed.prompt, Some("explain the parser"));
     }
 
     #[test]

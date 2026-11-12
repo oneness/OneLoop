@@ -41,6 +41,14 @@ impl SpinnerGuard {
         }
     }
 
+    /// Whether no animation is running. A caller that gets `true` is looking at
+    /// a blank screen for however long the work takes — comint, a pipe, a
+    /// terminal that asked for plain output — and can say something in the
+    /// spinner's place.
+    pub fn is_silent(&self) -> bool {
+        self.abort.is_none()
+    }
+
     pub fn stop(&self) {
         if let Some(abort) = &self.abort {
             if let Ok(abort) = abort.lock() {

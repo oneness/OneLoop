@@ -16,8 +16,9 @@ The initial core is intentionally small:
 - config loading
 - auth loading
 
-There is no summarization, no memory store, and no retrieval layer. A
-session is what was said, in order, until it is cleared.
+There is no memory store and no retrieval layer. A session is what was said, in
+order, until it is cleared or compacted — and compaction writes a shorter
+transcript, not a second one beside it.
 
 Built-in tools use the same core tool abstraction as future non-built-in tools.
 That keeps the core honest without forcing a full plugin runtime too early.
@@ -51,10 +52,19 @@ naming because they are the whole of what it decides:
   else. A response with words but no calls ends the turn.
 
 `request(&mut self, active: &mut Option<String>)` is everything between those
-decisions: assembly, retry and fallback, the spinner, the overflow note, the
-`api_call` metric and `set_active`. It returns `Ok(None)` when the provider
-refused and said so, which ends the turn without ending the run — a refusal is
-reported, not propagated.
+decisions: assembly, retry and fallback, the spinner, the `api_call` metric and
+`set_active`. It returns an `Attempt` — `Answered`, `Refused`, or `Overflow` —
+because the loop, not the request, decides whether a refusal is curable: a
+refusal ends the turn without ending the run, and an overflow is the one the
+loop can answer with a compaction.
+
+Where the spinner is silent — comint, a pipe, anything `output::plain()` — a
+request says so in one line instead, and each tool call is named with `▸` when
+it is dispatched as well as with `✓` when it returns: a command that takes a
+minute has to say what it is while it takes it. Both exist for the same reason:
+a wait with nothing on screen cannot be told from a hang. Where the spinner does
+run it is a single line rewritten in place, so `▸` is not printed there: the
+`✓` on the way out is what names the call.
 
 Neither `record` nor `continues` touches the terminal or the session, which is
 what makes them the first part of this loop a test can reach.
@@ -145,10 +155,9 @@ active generation while still closing a connection that has stalled.
 
 Every refusal is recorded in the `errors.log` of the conversation it
 interrupted, one JSON object per line: the model alias, the status, and the body
-as it arrived. It sits beside the session and the metrics it explains — in the
-conversation's root, which is `.oneloop/` for the project's own conversation and
-`.oneloop/agents/<name>/` for a named agent's — rather than in the home
-directory, because a refusal belongs to the work it interrupted and one global
+as it arrived. It sits beside the session and the metrics it explains, in the
+conversation's root — `.oneloop/` — rather than in the home directory, because a
+refusal belongs to the work it interrupted and one global
 file merged every project into a single history. A one-shot records nowhere: it
 persists nothing, so a refusal there is reported on stderr and written to no
 file.
@@ -223,28 +232,30 @@ If no skill directories are found at startup, the `skill` tool is not registered
 
 ## Context that no longer fits
 
-Nothing is summarized and nothing is silently dropped. A conversation grows
-until the server refuses it, and the refusal is reported — with the fix
-named, because "provider error: 400" does not suggest `/clear`.
+Nothing is silently dropped. A conversation that outgrows its window is either
+summarized (see [Compaction](#compaction)) or handed back with the fix named —
+never quietly trimmed.
 
 `is_context_overflow` in `providers.rs` classifies a 400/413 by the phrases
 every server words differently ("context length", "prompt is too long",
 "context size"), beside `is_retryable` and answering the same kind of
-question about the same error. It decides what the message says, not what
-the loop does: an overflow ends the turn like any other refusal.
+question about the same error. It classifies; it does not decide. The turn loop
+reads the answer as `Attempt::Overflow` and spends its one compaction on it,
+because that is the one refusal the loop can cure.
 
 A model *may* declare a `context_window` in the config; the interactive
 prompt then shows roughly how much of it is still free — measured from the
 prompt-token count the server reported for the last turn, and from
 `estimate_tokens`, the same estimate that sizes the `tokens_estimated` metric,
-until a turn has run. Nothing branches on it: an undersized declaration never
-drops a message, and an oversized one is only ever a gauge that reads too
-high. The server already knows what fits and says so. `estimate_tokens`
-therefore lives in `metrics.rs`, beside the one use of it that has always
-existed.
+until a turn has run.
 
-Summarizing a thread to keep it alive trades accuracy for length without
-being asked. `/clear` is the same move made deliberately: it costs one
+That estimate decides two things, and neither of them drops a message: it sizes
+the summarizer's chunk budget, and after a failed compaction it says whether a
+retry is worth spending. The second one is why that note says "does not appear
+to fit" rather than "does not fit" — a gauge is not the server. Everything else
+waits for the server, which already knows what fits and says so.
+
+`/clear` remains the deliberate version of the same move: it costs one
 keystroke, it happens when the user decides, and what is lost is what they
 chose to lose. An unrecognised refusal phrasing costs nothing extra — it
 stays an ordinary reported error.
@@ -309,17 +320,17 @@ On restart, the latest session file for today is opened automatically.
 
 `metrics/` mirrors that naming, one file per session and one JSON line per
 `api_call` or `tool_exec` event, so a session and its costs are read together.
+A turn the user stops with Ctrl+C writes a `turn_cancelled` event with its
+duration and what it was waiting on: the request and the tool batch are both
+inside the future the interrupt drops, so this is the only line that survives,
+and without it a cancelled turn leaves no trace at all.
 It is filed in the conversation's root — `.oneloop/metrics/` beside the
-project's own sessions, `.oneloop/agents/<name>/metrics/` beside a named
-agent's — and each of the three files a conversation leaves (its session, its
-ledger, its refusal log) derives from that one root rather than knowing the
-layout for itself.
+project's own sessions — and each of the three files a conversation leaves (its
+session, its ledger, its refusal log) derives from that one root rather than
+knowing the layout for itself.
 
-An agent that is not the default keeps its conversation under
-`.oneloop/agents/<name>/sessions/`, its ledger in `metrics/` beside it, its
-refusals in its own `errors.log`, and its own lock. That is what lets `ol` and
-`ol --agent reviewer` run in two terminals of one project without either
-refusing the other.
+An agent keeps its conversation at `.oneloop/sessions/`, with its ledger in
+`metrics/`, its refusals in `errors.log` and its lock beside it.
 
 A one-shot — `ol "…"`, or a prompt piped in — is stateless: it opens no
 session file, reads no `AGENTS.md`, and records no metrics or error log, so
@@ -347,7 +358,6 @@ default `ol` is just the first spec it is handed:
 pub struct AgentSpec {
     pub cwd: PathBuf,
     pub instructions: Vec<Instruction>,
-    pub persona: Option<String>,
     pub model: Option<String>,
     pub tools: ToolRegistry,
     pub session: SessionPolicy,
@@ -356,57 +366,24 @@ pub struct AgentSpec {
 
 That is the whole mechanism, and it is deliberately no more than that: no plugin
 registry, no trait objects over agents, no config file. A preset is a function
-returning a spec, and there are two — `AgentSpec::coding`, which is `ol`, and
-`AgentSpec::reviewer` — so a third agent is a third function.
+returning a spec, and there is one — `AgentSpec::coding`, which is `ol`. A second
+agent is a second function here, not a second branch in the loop.
 
 `SessionPolicy` is where the conversation lives:
 
 | policy | sessions | lock | id |
 |---|---|---|---|
 | `Project` | `.oneloop/sessions/` | `.oneloop/session.lock` | `{project}-{stem}` |
-| `Named(name)` | `.oneloop/agents/<name>/sessions/` | `.oneloop/agents/<name>/session.lock` | `{project}-{name}-{stem}` |
-| `Ephemeral { namespace }` | nothing on disk | none | `{project}[-{namespace}]-{stem}` |
+| `Ephemeral` | nothing on disk | none | `{project}-{stem}` |
 
 The root is the directory holding `sessions/`, `metrics/`, `errors.log` and
-`session.lock`, so a policy that names its own root takes its own lock: two
-agents in one project do not refuse each other, while two runs of the *same*
-agent still do. The namespace rides in the id the provider sees, so a
-conversation of one agent is never routed as another's.
+`session.lock`, so a policy that names no root takes no lock and leaves no
+trace.
 
-`ol --agent reviewer` is the second agent, and it is no more than a match arm
-and a preset. It reads and runs commands, and it has no tool that writes, edits
-or applies a patch — `bash` is the one way round that, and the persona is what
-closes it. Its persona is a const in `prompt.rs` beside the engineering tenets,
-and its conversation is its own:
-
-```rust
-pub fn reviewer(cwd: &Path) -> Result<Self> {
-    Ok(Self {
-        cwd: cwd.to_path_buf(),
-        instructions: prompt::instructions(cwd),
-        persona: Some(prompt::REVIEWER_PERSONA.to_string()),
-        model: None,
-        tools: ToolRegistry::from_tools(vec![Arc::new(ReadTool), Arc::new(BashTool)]),
-        session: SessionPolicy::Named("reviewer"),
-    })
-}
-```
-
-A third agent costs the same: one preset, one arm in `assemble`, and a line in
-the refusal that names what exists. If it ever needs a new module, a new field
-threaded through `Agent`, or a branch inside the loop, this is the abstraction to
-revisit rather than the agent to special-case.
-
-The run mode is applied *after* the agent is chosen, and it always wins on one
-field: `ol --agent reviewer "…"` forces `Ephemeral`, so it writes no session file
-exactly as `ol "…"` does. A spec says what the agent is; the run mode says
+The run mode is applied *after* the spec is built, and it always wins on one
+field: `ol "…"` forces `Ephemeral`, so it writes no session file exactly as `ol`
+with no prompt writes one. A spec says what the agent is; the run mode says
 whether the conversation persists.
-
-A `persona` is an agent's own words about what it is for, and it sits in the
-prompt after the engineering tenets and before the project's instructions. `None`
-is the default agent, and `None` is byte-for-byte the prompt the coding agent had
-before the slot existed — a test holds that, because composition must not move
-the agent it was carved out of.
 
 A `model` is the model the agent *works as*: `from_spec` makes it active in the
 registry once, and `None` leaves whatever the config made active, which is what
@@ -420,12 +397,64 @@ One boundary to name, because it decides when this holds: the registry is
 process-wide, and `Arc` makes it shared. Two agents built in one process from the
 same registry would share this answer — whichever was built last would decide for
 both. That is why a second agent in one process is a deliberate step (the model
-moving onto the agent) and not something the two presets already give you.
+moving onto the agent) and not something a preset already gives you.
 
 Everything a spec decides is resolved once, in `from_spec`: the system prompt is
-computed there from the spec's own tools, instructions and persona, and the
-metrics and refusal log follow the conversation's root — a run that writes
-nothing records nothing.
+computed there from the spec's own tools and instructions, and the metrics and
+refusal log follow the conversation's root — a run that writes nothing records
+nothing.
+
+## Compaction
+
+When the server refuses a request because the conversation no longer fits,
+OneLoop replaces that conversation with a briefing and retries the request that
+ran into the limit. A written transcript stays on disk and the briefing names
+it, so nothing is lost — only moved out of the window. A one-shot keeps no
+transcript, and its briefing says so instead of naming one.
+
+The summarizer is a function, not an agent: text in, summary out, no tools, no
+session, one request through the same retry and fallback every other request
+gets. That shape is what makes the rest decision-shaped rather than
+judgement-shaped, and `agent/compact.rs` is the whole of it:
+
+1. `render` turns the transcript into text, naming a tool result longer than
+   2 KB instead of quoting it, and cutting a tool call's arguments to the same
+   size with a marker that says so. This is where most of the compression
+   happens, before any model is called.
+2. `chunk` cuts that text at a budget of half the declared window, on line
+   boundaries. A rendered session usually fits in one piece; when it does not,
+   each piece is summarized and the summaries are summarized, up to three
+   rounds.
+3. `clear_session` rotates to a new file — the old one stays.
+4. `briefing` writes the summary and the path to the old transcript as the new
+   session's first message. In a turn, the prompt that ran into the limit
+   follows it, so the turn can answer. A one-shot has no transcript to name, and
+   its briefing says so rather than pointing at the project's own session.
+
+A compaction is a request, so it says when it starts — `compacting...` — and
+when it is done: `compacting done`, naming the new session's file unless the
+conversation was never written. Without the pair, a long compaction cannot be
+told from a hang, and where the spinner is silent there is nothing else on
+screen to tell it.
+
+The same pair reaches Emacs's mode line through the status report: `working`
+with `msg=compacting` while the summarizer runs, and the state the guard found
+when it began, once the summary is in hand. A comint buffer, where the spinner
+is silent, then says `compacting...` where it would otherwise say
+`computing...` — and an overflow, which compacts inside a turn, is back to
+`computing...` when the turn resumes.
+
+The refusals that are not an overflow change nothing: `Attempt` in `turn.rs` is
+what separates "the provider said no" from "it no longer fits", and only the
+second one has a cure. A turn gets one compaction. A second overflow is a
+conversation whose own shortest form does not fit — checked against the gauge
+before the retry is spent, so the answer names the message rather than the
+window. That exit names `/clear` and a larger window and stops there: `/compact`
+is the thing that just did not help, and a summary of a summary is not smaller,
+so offering it again would be advice that cannot work.
+
+`/compact` runs the same thing on demand, and `/compact; <prompt>` summarizes
+and then sends the prompt.
 
 ## Auth
 
@@ -475,9 +504,10 @@ it instead of a 401 later — and models that need no sign-in still load.
 
 ## Output
 
-`output.rs` owns both the ANSI escapes and the shape of a status line, so a
-colour change, a `--no-color` flag, or `NO_COLOR` support is one edit rather
-than thirty. Callers pick a meaning — `fail`, `warn`, `stopped`, `ok`, `tick`,
+`output.rs` owns both the ANSI escapes — CSI and OSC, the latter as `osc`,
+which is framing only — and the shape of a status line, so a colour change, a
+`--no-color` flag, or `NO_COLOR` support is one edit rather than thirty.
+Callers pick a meaning — `fail`, `warn`, `stopped`, `ok`, `tick`, `running`,
 `step`, `note`, `head` — and the module decides the glyph, the colour, and the
 stream.
 
@@ -519,6 +549,22 @@ consumer for the **OSC 7501** (Program Status Protocol) reports that
 one when it ends (`state=idle`), carrying the model alias in a base64 `title`
 field.
 
+A report says what a busy process is busy *with* in a base64 `msg`, because a
+mode line has no trace to read: the spec's five states are all the vocabulary
+there is, so the word `compacting` rides beside `state=working` rather than
+inventing a sixth. Only a stretch of work worth naming sends one — a turn's
+requests do not — and a report replaces its record whole, so the report that
+takes the name back is the one that ends the work, whether it finished or
+failed. A compaction that runs inside a turn belongs to a `Compacting` guard
+that remembers whose busy state it borrowed: an overflow leaves the turn
+working where `/compact` at the prompt leaves the process idle.
+
+The record's fields are `crate::status`'s to decide and the framing around them
+is `output::osc`'s — `ESC ] 7501 ;` and the ST terminator are terminal syntax,
+the same kind of fact as the CSI escapes in that module, and what a sequence
+number means belongs to whoever speaks it. A second OSC feature would reach
+for `output::osc` and need nothing from `status`.
+
 ## Releases
 
 `version` in `Cargo.toml` is the release version; nothing else stores one by
@@ -551,13 +597,16 @@ model.
 
 ```
 src/
-  main.rs           CLI entry point, login command, -A/--agent, --version
+  main.rs           CLI entry point, login command, --version
   messages.rs       Message types (User, Assistant, ToolCall, ToolResult) and ToolDefinition
-  agent.rs          Agent struct, from_spec, accessors, session repair, context gauge
+  agent.rs          Agent struct, from_spec, accessors, session repair, context gauge,
+                    log_cancelled_turn
   agent/
-    spec.rs         AgentSpec, SessionPolicy, the coding and reviewer presets
-    turn.rs         run_once*, request, record, continues, execute_tool_calls,
-                    log_api_call
+    spec.rs         AgentSpec, SessionPolicy, the coding preset
+    compact.rs      render, chunk, budget, the summarizer request and the briefing
+                    that replaces a conversation with a summary of itself
+    turn.rs         run_once*, request, Attempt, record, continues,
+                    execute_tool_calls, log_api_call
     trace.rs        format_tool_call: the name, a colon, and the tool's own label
     banner.rs       the startup summary: summary, packed, the column it wraps on
     batch.rs        One batch of tool calls, and the per-file locks that order it
@@ -567,7 +616,8 @@ src/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
     session.rs      Session persistence, root, rotation, dangling-tool-call repair, the
                     per-conversation lock
-    metrics.rs      Per-session JSONL metrics (api_call, tool_exec), token estimation
+    metrics.rs      Per-session JSONL metrics (api_call, tool_exec, turn_cancelled),
+                    token estimation
   antigravity/
     mod.rs          Public entry points for Antigravity requests
     client.rs       Stateless Antigravity CLI execution, discussion prompts, reference responses
@@ -584,10 +634,10 @@ src/
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, trace-line
-                    rendering (elide, first_line), ANSI constants
+                    rendering (elide, first_line), ANSI constants and OSC framing
   path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
   prompt.rs         System prompt assembly (tool preamble + engineering tenets + environment
-                    + an agent's persona + AGENTS.md), and a domain agent's persona text
+                    + AGENTS.md), and the summarizer's own system prompt
   providers.rs      Provider (endpoint: URL, credentials, one HTTP client), Model (alias +
                     settings + its provider + how it completes), request/response types,
                     the refusal log's name inside a conversation root
@@ -604,7 +654,8 @@ src/
     edit.rs         Find-and-replace file editing
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md),
                     skill_file
-  status.rs         Turn state & model title reports via OSC 7501 (Program Status Protocol)
+  status.rs         Turn state, model title, and named work via OSC 7501 (Program Status
+                    Protocol)
 docs/
   architecture.md   This file
   index.html        Executive presentation (GitHub Pages, space-bar nav)

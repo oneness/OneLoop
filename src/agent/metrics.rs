@@ -12,9 +12,10 @@ use crate::messages::Message;
 use super::session::Session;
 
 /// Approximate bytes per token (conservative for mixed code/prose).
-/// Good enough to size a metric by; never good enough to decide on, which is
-/// why nothing branches on it — the server is the authority on what fits.
-const BYTES_PER_TOKEN: usize = 3;
+/// Good enough to size a request, or to warn that one is close to the window.
+/// Never good enough to overrule the server, which is what decides that one
+/// does not fit.
+pub(super) const BYTES_PER_TOKEN: usize = 3;
 
 /// Roughly how many tokens a request will carry, for the `tokens_estimated`
 /// field of an `api_call` event. Approximate by construction: it exists to
@@ -67,8 +68,6 @@ fn percent_remaining(used: usize, context_window: u64) -> u8 {
 }
 
 /// Append-only metrics log, one JSON line per event.
-/// File lives at `.oneloop/metrics/<session-filename>.jsonl`,
-/// mirroring the session file naming for easy correlation.
 pub struct Metrics {
     /// `None` when metrics are off — a one-shot run leaves no trace.
     path: Option<PathBuf>,
@@ -76,9 +75,8 @@ pub struct Metrics {
 
 impl Metrics {
     /// The ledger that costs `session`: `<root>/metrics/<session file name>`,
-    /// beside the conversation it belongs to. The session's root decides, so a
-    /// project's own conversation and a named agent's are each costed where
-    /// they live rather than in one shared file.
+    /// beside the conversation it belongs to, so each conversation is costed
+    /// where it lives rather than in one shared file.
     ///
     /// A run that writes no conversation has nothing to cost, and gets no
     /// ledger.
@@ -208,33 +206,12 @@ mod tests {
         assert_eq!(remaining_context_from_tokens(2_000_000, 1_050_000), 0);
     }
 
-    /// A named agent's session lives under its own root, and the metrics file
-    /// follows it there: `.oneloop/agents/reviewer/sessions/x.jsonl` is costed
-    /// at `.oneloop/agents/reviewer/metrics/x.jsonl`, beside the conversation it
-    /// belongs to rather than in the project's own ledger.
-    #[test]
-    fn a_named_agents_metrics_sit_beside_its_own_session() {
-        let cwd = project_dir("named-metrics");
-        let session = Session::open(&cwd, SessionPolicy::Named("reviewer")).unwrap();
-
-        let metrics = Metrics::for_session(&session).unwrap();
-
-        let expected = cwd
-            .join(".oneloop")
-            .join("agents")
-            .join("reviewer")
-            .join("metrics")
-            .join(session.path().file_name().unwrap());
-        assert_eq!(metrics.path.as_deref(), Some(expected.as_path()));
-        let _ = fs::remove_dir_all(&cwd);
-    }
-
     /// A run that writes no conversation has nothing to cost, so it writes no
     /// ledger either — the same rule the session follows.
     #[test]
     fn a_one_shot_has_no_ledger() {
         let cwd = project_dir("oneshot-metrics");
-        let session = Session::open(&cwd, SessionPolicy::Ephemeral { namespace: None }).unwrap();
+        let session = Session::open(&cwd, SessionPolicy::Ephemeral).unwrap();
 
         let metrics = Metrics::for_session(&session).unwrap();
 

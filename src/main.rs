@@ -27,10 +27,6 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Which agent to build: `main` (the default) or `reviewer`.
-    #[arg(short = 'A', long)]
-    agent: Option<String>,
-
     #[arg()]
     prompt: Vec<String>,
 }
@@ -82,7 +78,7 @@ async fn main() -> Result<()> {
                 Some(prompt) => app::Run::OneShot(prompt),
                 None => app::Run::Interactive,
             };
-            let app = app::App::new(cli.agent);
+            let app = app::App::new();
             app.run(run).await
         }
     }

@@ -297,9 +297,9 @@
     <p class="big">One loop, one session file format, one tool trait.<br>A spec decides what each agent gets: where it works, what it may call, what it is told, whose conversation it keeps.</p>
     <table style="margin-top: 24px;">
       <tr><td><strong><code>ol</code></strong></td><td>Every tool, the project's own conversation at <code>.oneloop/</code></td></tr>
-      <tr><td><strong><code>ol --agent reviewer</code></strong></td><td><code>read</code> and <code>bash</code> only, its own conversation at <code>.oneloop/agents/reviewer/</code></td></tr>
+      <tr><td><strong><code>ol "…"</code></strong></td><td>The same agent, held in memory — no session file, no lock, no <code>AGENTS.md</code></td></tr>
     </table>
-    <p class="big" style="font-size:16px; margin-top:20px;">A second agent is a preset, not a second loop. Its session, ledger, refusal log and lock all live under its own root, so both run in one project at once.</p>
+    <p class="big" style="font-size:16px; margin-top:20px;">A second agent is a preset, not a second loop. The run mode is applied after the spec is built, because whether a conversation persists is a fact about the run.</p>
   </div>
 </section>
 
@@ -390,11 +390,17 @@
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
-    <h2>No compaction</h2>
-    <p class="big">Nothing is summarized. Nothing is silently dropped.<br>A session is what was said, in order, until you clear it.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">Models may declare a context window — the prompt<br>then shows roughly how much of it is still free.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">Nothing branches on the estimate. The server is the<br>authority on what fits, and it says so by saying no.</p>
-    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);">When it stops fitting, OneLoop says so and names the fix:<br><strong>/clear</strong>, or a model with a larger window.</p>
+    <h2>Compaction</h2>
+    <p class="big">When the conversation stops fitting, it is summarized<br>and the request that ran into the limit is retried.</p>
+    <div class="mono" style="margin-top: 24px; font-size: 15px; text-align: left;">
+      render    → tool results named, not quoted<br>
+      chunk     → half the window, on line boundaries<br>
+      summarize → text in, briefing out. No tools, no session<br>
+      replace   → a briefing, and the old transcript's path
+    </div>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">The transcript is never deleted — only moved out of the window.<br>The briefing names the file, and the agent can go back and read it.<br>A one-shot writes no transcript, and its briefing says so instead.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">A turn gets one compaction. A conversation whose own shortest<br>form does not fit is told so, rather than summarized again.</p>
+    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);"><strong>/compact</strong> runs the same thing on demand.</p>
   </div>
 </section>
 
