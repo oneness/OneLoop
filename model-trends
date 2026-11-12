@@ -32,9 +32,11 @@ set -euo pipefail
 # limit at all. That page has no documented API, but it is server rendered, so
 # the table is read straight out of the HTML.
 #
-# Only the free models and the three paid models with the most requests per 5
-# hours are shown: the free ones because they cost nothing, the paid ones
-# because the request count is what says how much traffic a model carries.
+# The ten busiest rows are shown: free rows first when the page has any, because
+# they cost nothing, then the rest in descending order of requests per 5 hours,
+# which is what says how much traffic a model carries. The title says how many
+# rows the page had as well as how many are shown, so a trimmed table cannot be
+# mistaken for the whole of it.
 #
 # The rankings return dated permaslugs such as
 # `openai/gpt-6-luna-20260922`, while the price catalogue keys on the bare
@@ -55,18 +57,19 @@ Prices and costs are US dollars.
   --limit N              how many models to show per list (default 15)
   --view day|week|month  window for the trending list (default week)
 
-The OpenCode table lists every free model of the Go plan and the three paid
-models with the most requests per 5 hours, each with a bar drawn from that
-request count.
+The OpenCode table lists the ten busiest models of the Go plan — free models
+first, then the rest by descending requests per 5 hours — each with a bar drawn
+from that request count, and the title says how many the page had.
 EOF
 }
 
 limit=15
 view=week
 
-# How many paid models the OpenCode table shows. The free ones are always
-# listed in full, so this only trims the paid end.
-paid_limit=3
+
+# How many rows the OpenCode table shows. A page with more models than this is
+# trimmed from the quiet end, so what is dropped is what nothing runs.
+go_limit=10
 
 # How wide the usage bar is, in cells.
 bar_width=20
@@ -394,14 +397,16 @@ parse_go_rows() {
   ' "$page"
 }
 
-# The free models are listed in full and the paid models in descending order of
-# requests per 5 hours, trimmed to the top few. The bar is drawn against the
-# largest request count on the page, so the paid models read as a share of the
-# busiest one, and a free model takes the whole bar because it has no limit.
+# The free rows first, then the rest in descending order of requests per 5
+# hours, trimmed to the ten busiest. The bar is drawn against the largest
+# request count on the page — not of the rows kept — so a bar means the same
+# share whether or not the table was trimmed, and a free model takes the whole
+# bar because it has no limit.
 build_go_rows() {
   local rows=$1
 
-  jq -nr --argjson paid_limit "$paid_limit" --argjson bar_width "$bar_width" --arg rows "$rows" '
+  jq -nr --argjson go_limit "$go_limit" --argjson bar_width "$bar_width" \
+    --arg rows "$rows" '
     def record: split("\t") | {
       name: .[0],
       requests: .[1],
@@ -413,9 +418,9 @@ build_go_rows() {
     ($rows | split("\n") | map(select(length > 0)) | map(record)) as $all
     | ($all | map(select(.free))) as $free
     | ($all | map(select(.free | not)) | sort_by(-.count)) as $paid
-    | ($paid[0:$paid_limit]) as $top
     | ($all | map(.count) | max // 0) as $max
-    | ($free + $top)[]
+    | ($free + $paid) as $listed
+    | ($listed[0:$go_limit][])
     | . as $row
     | (if $row.free then $bar_width
        elif $max == 0 then 0
@@ -598,7 +603,13 @@ print_table "Trending by tokens ($view)" \
   "$openrouter_header" \
   "$(format_openrouter_rows "$(build_trending_rows "$ranking" "$catalogue" "$popular")")"
 
-print_table "OpenCode Go plan (free models, top $paid_limit paid)" \
+# How many of how many: the page's own row count is in the title beside the
+# number shown, so a change to its markup that loses rows shows up as a smaller
+# second number rather than as a shorter table — and a trimmed table says so.
+go_count=$(printf '%s' "$go_rows" | grep -c '[^[:space:]]' || true)
+go_shown=$(( go_count < go_limit ? go_count : go_limit ))
+
+print_table "OpenCode Go plan ($go_shown of $go_count)" \
   "$(printf 'MODEL\tREQ/5H\tMONTHLY\tUSAGE')" \
   "$(build_go_rows "$go_rows")"
 
