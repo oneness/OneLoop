@@ -393,8 +393,8 @@
     <h2>Compaction</h2>
     <p class="big">When the conversation stops fitting, it is summarized<br>and the request that ran into the limit is retried.</p>
     <div class="mono" style="margin-top: 24px; font-size: 15px; text-align: left;">
-      render    → tool results named, not quoted<br>
-      chunk     → half the window, on line boundaries<br>
+      render    → tool results named, not quoted; a failure keeps both ends<br>
+      chunk     → half the window, between lines, each part saying which one<br>
       summarize → text in, briefing out. No tools, no session<br>
       replace   → a briefing, and the old transcript's path
     </div>

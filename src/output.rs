@@ -221,8 +221,9 @@ pub fn window_notice(line: &str) -> Option<&str> {
 }
 
 /// Longest suffix of `input` at most `max_bytes` long that starts on a UTF-8
-/// character boundary.
-fn truncate_tail_at_char_boundary(input: &str, max_bytes: usize) -> &str {
+/// character boundary. The counterpart of [`truncate_at_char_boundary`], for a
+/// payload whose end is the part worth keeping.
+pub fn truncate_tail_at_char_boundary(input: &str, max_bytes: usize) -> &str {
     if input.len() <= max_bytes {
         return input;
     }

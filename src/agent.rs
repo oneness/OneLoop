@@ -214,6 +214,17 @@ mod tests {
         .unwrap()
     }
 
+    /// The one line in the ledger a test reads: a single event has been logged
+    /// by then, so the first file is the whole of it.
+    fn ledger(dir: &Path) -> String {
+        let entry = fs::read_dir(dir.join(".oneloop").join("metrics"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        fs::read_to_string(entry.path()).unwrap()
+    }
+
     /// A turn the user stops writes nothing else: the request that was in
     /// flight is dropped with the future, so this line is the only record of
     /// how long it ran and what it was waiting for — including which call.
@@ -226,10 +237,24 @@ mod tests {
 
         agent.log_cancelled_turn(Instant::now());
 
-        let metrics_dir = dir.join(".oneloop").join("metrics");
-        let entry = fs::read_dir(&metrics_dir).unwrap().next().unwrap().unwrap();
-        let body = fs::read_to_string(entry.path()).unwrap();
+        let body = ledger(&dir);
         assert!(body.contains("bash: sed -n '1,40p' src/main.rs"), "{body}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The summarizer's request is an `api_call` like any other, and `purpose`
+    /// is the only thing that tells the two kinds apart in the ledger — a
+    /// compaction is billed the same way and would otherwise read as a turn.
+    #[test]
+    fn an_api_call_records_what_the_request_was_for() {
+        let dir = project_dir("api-call-purpose");
+        let agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+
+        agent.log_api_call("main", Instant::now(), 10, None, true, "summarize");
+
+        let body = ledger(&dir);
+        assert!(body.contains(r#""purpose":"summarize""#), "{body}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

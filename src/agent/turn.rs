@@ -27,6 +27,14 @@ use crate::status::TurnStatus;
 const FALLBACK_SENTENCE: &str =
     "I wasn't able to generate a response. Please try again or rephrase.";
 
+/// What a request was for, as its `api_call` line says it. Two words only
+/// because there are two kinds of request: a turn, and the compaction that
+/// replaces a conversation with a summary of itself. The ledger adds both up
+/// together — the cost is the same kind of cost — so this is the one thing
+/// that separates them.
+pub(super) const TURN: &str = "turn";
+pub(super) const SUMMARIZE: &str = "summarize";
+
 /// What a response is, as far as writing it down goes.
 ///
 /// Four outcomes, and the third is the one a three-variant enum loses: a
@@ -212,7 +220,14 @@ impl Agent {
             }
             Err(e) => {
                 spinner.stop();
-                self.log_api_call(&requested_model, api_start, tokens_estimated, None, false);
+                self.log_api_call(
+                    &requested_model,
+                    api_start,
+                    tokens_estimated,
+                    None,
+                    false,
+                    TURN,
+                );
                 output::fail(&format!("provider error: {e:#}"));
                 // Whether the loop can cure this one is the loop's decision, so
                 // the refusal is classified here and acted on there.
@@ -234,6 +249,7 @@ impl Agent {
             tokens_estimated,
             response.input_tokens,
             true,
+            TURN,
         );
         // The server's own count for this prompt, when it gave one: the gauge
         // prefers it over the estimate until the session moves on.
@@ -267,13 +283,17 @@ impl Agent {
         )
     }
 
-    fn log_api_call(
+    /// One `api_call` line per request, turn or compaction. The shape is the
+    /// same and so is what it costs, so the ledger adds them up together and
+    /// only `purpose` tells them apart.
+    pub(super) fn log_api_call(
         &self,
         model: &str,
         started: Instant,
         tokens_estimated: usize,
         input_tokens: Option<u64>,
         success: bool,
+        purpose: &str,
     ) {
         self.metrics.log(
             "api_call",
@@ -282,6 +302,7 @@ impl Agent {
                 // A log line is not worth failing over an unknown name.
                 "model_id": self.models.get(model)
                     .map_or_else(|_| "?".to_string(), |m| m.id.clone()),
+                "purpose": purpose,
                 "duration_ms": started.elapsed().as_millis(),
                 "tokens_estimated": tokens_estimated,
                 // The server's own count when it reported one; the pair lets

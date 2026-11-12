@@ -320,6 +320,9 @@ On restart, the latest session file for today is opened automatically.
 
 `metrics/` mirrors that naming, one file per session and one JSON line per
 `api_call` or `tool_exec` event, so a session and its costs are read together.
+An `api_call` says what it was for in `purpose` — `turn` for a request the
+loop made, `summarize` for a compaction's — so both can be summed as one cost
+and still told apart.
 A turn the user stops with Ctrl+C writes a `turn_cancelled` event with its
 duration and what it was waiting on: the request and the tool batch are both
 inside the future the interrupt drops, so this is the only line that survives,
@@ -419,17 +422,26 @@ judgement-shaped, and `agent/compact.rs` is the whole of it:
 
 1. `render` turns the transcript into text, naming a tool result longer than
    2 KB instead of quoting it, and cutting a tool call's arguments to the same
-   size with a marker that says so. This is where most of the compression
-   happens, before any model is called.
-2. `chunk` cuts that text at a budget of half the declared window, on line
-   boundaries. A rendered session usually fits in one piece; when it does not,
-   each piece is summarized and the summaries are summarized, up to three
-   rounds.
+   size with a marker that says so. A tool result that *failed* is the one
+   exception: it keeps both its ends, because a build or a test run puts the
+   command first and the verdict last, and those are what the next
+   conversation needs. This is where most of the compression happens, before
+   any model is called.
+2. `chunk` cuts that text at a budget of half the declared window, between
+   lines so no line is split — a message can still straddle the cut, which is
+   why each part is prefixed with which one it is. A rendered session usually
+   fits in one piece; when it does not, each piece is summarized and the
+   summaries are summarized, up to three rounds.
 3. `clear_session` rotates to a new file — the old one stays.
 4. `briefing` writes the summary and the path to the old transcript as the new
    session's first message. In a turn, the prompt that ran into the limit
    follows it, so the turn can answer. A one-shot has no transcript to name, and
    its briefing says so rather than pointing at the project's own session.
+
+That request is an `api_call` in the ledger like any other, carrying
+`purpose=summarize` rather than `purpose=turn`: it is billed the same way, and
+a compaction can be a session's most expensive request, so it is counted
+beside the turns it replaces rather than left out of the total.
 
 A compaction is a request, so it says when it starts — `compacting...` — and
 when it is done: `compacting done`, naming the new session's file unless the

@@ -7,12 +7,14 @@
 //! time, and every step reachable from a test without a provider.
 
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Result, bail};
 
 use super::Agent;
 use super::metrics;
 use super::spinner::SpinnerGuard;
+use super::turn::SUMMARIZE;
 use crate::messages::{Message, UserMessage};
 use crate::output;
 use crate::prompt;
@@ -90,7 +92,8 @@ impl Agent {
             let mut summaries = Vec::with_capacity(parts.len());
             for (index, part) in parts.iter().enumerate() {
                 output::step(&format!("  part {}/{}", index + 1, parts.len()));
-                summaries.push(self.summarize_one(part).await?);
+                let framed = format!("{}{part}", part_frame(index + 1, parts.len()));
+                summaries.push(self.summarize_one(&framed).await?);
             }
             text = summaries.join("\n\n");
         }
@@ -102,15 +105,21 @@ impl Agent {
     }
 
     /// One request, one summary — the model the user is paying for, with the
-    /// retry and fallback every other request gets.
+    /// retry and fallback every other request gets, and the ledger line that
+    /// makes what a compaction costs visible beside the turns it replaces.
     async fn summarize_one(&self, text: &str) -> Result<String> {
         let spinner = SpinnerGuard::new("summarizing...");
+        // The model this is aimed at; a fallback may answer instead, and the
+        // ledger names whichever did.
+        let requested_model = self.models.active().alias.clone();
+        let messages = vec![Message::User(UserMessage {
+            content: text.to_string(),
+        })];
+        let tokens_estimated = metrics::estimate_tokens(&messages, prompt::SUMMARIZER.len());
         let request = ProviderRequest {
             system_prompt: Some(prompt::SUMMARIZER.to_string()),
             session_id: self.session.id(),
-            messages: vec![Message::User(UserMessage {
-                content: text.to_string(),
-            })],
+            messages,
             // A summarizer with tools would have to be trusted to stop using
             // them, and the one thing it must not do is go looking for more.
             // The empty list is the limit; nothing in the prompt enforces it.
@@ -118,7 +127,8 @@ impl Agent {
             errors_log: self.errors_log.clone(),
         };
 
-        let (_, response) = self
+        let api_start = Instant::now();
+        let response = match self
             .models
             .complete_with_retry(
                 None,
@@ -126,7 +136,32 @@ impl Agent {
                 Some(spinner.stop_callback()),
                 Some(spinner.start_callback("summarizing...")),
             )
-            .await?;
+            .await
+        {
+            Ok((used_model, response)) => {
+                self.log_api_call(
+                    &used_model,
+                    api_start,
+                    tokens_estimated,
+                    response.input_tokens,
+                    true,
+                    SUMMARIZE,
+                );
+                response
+            }
+            Err(e) => {
+                spinner.stop();
+                self.log_api_call(
+                    &requested_model,
+                    api_start,
+                    tokens_estimated,
+                    None,
+                    false,
+                    SUMMARIZE,
+                );
+                return Err(e);
+            }
+        };
         spinner.stop();
 
         let summary = response.content.trim().to_string();
@@ -135,6 +170,18 @@ impl Agent {
         }
         Ok(summary)
     }
+}
+
+/// What a part of a cut conversation says about itself, above its own text. It
+/// arrives as a bare user message — usually opening mid tool result — and the
+/// brief asks the model to compress "a conversation", so without this it reads
+/// a fragment as the whole thing and answers that the conversation starts
+/// mid-sentence instead of summarizing what it was given.
+fn part_frame(index: usize, total: usize) -> String {
+    format!(
+        "[Part {index} of {total} of a longer conversation, in order. Summarize only what \
+         is in this part; the other parts are summarized separately and joined.]\n\n"
+    )
 }
 
 /// Bytes of rendered conversation one summarizer request may carry: half the
@@ -156,7 +203,9 @@ fn chunk_budget(context_window: Option<u64>) -> usize {
 /// A tool result is usually a file the next conversation will never reread: what
 /// it needs is that the read happened and what came of it, not the bytes. Eliding
 /// them here is where most of the compression happens — before any model is
-/// called — and it is why most sessions summarize in a single request.
+/// called — and it is why most sessions summarize in a single request. The one
+/// result that is read rather than merely noted is a failure, which keeps both
+/// its ends.
 fn render(messages: &[Message]) -> String {
     let mut text = String::new();
     for message in messages {
@@ -180,10 +229,17 @@ fn render(messages: &[Message]) -> String {
                 ));
             }
             Message::ToolResult(result) => {
-                let body = if result.content.len() > QUOTE_BYTES {
-                    format!("[{} bytes, elided]", result.content.len())
-                } else {
+                let body = if result.content.len() <= QUOTE_BYTES {
                     result.content.trim().to_string()
+                } else if result.is_error {
+                    // A failure is read for why it failed, and the payload over
+                    // the cap is usually exactly that: a build or a test run,
+                    // where the command is the first line and the verdict the
+                    // last. Dropping both would leave the next conversation the
+                    // size of the mistake with none of what it said.
+                    both_ends(&result.content, QUOTE_BYTES)
+                } else {
+                    format!("[{} bytes, elided]", result.content.len())
                 };
                 let failed = if result.is_error { " (failed)" } else { "" };
                 text.push_str(&format!(
@@ -210,9 +266,25 @@ fn quoted(payload: &str) -> String {
     )
 }
 
-/// Pieces no larger than `budget`, cut on line boundaries so no message is
-/// split. A single line over the budget is passed through rather than dropped:
-/// the server is the authority on what fits, and losing it whole is worse.
+/// The two ends of a payload too long to quote, half the budget each. A
+/// failure says what ran at the top and why it stopped at the bottom — a
+/// compiler and a test runner both put their verdict last — and the middle is
+/// the part the next conversation would never reread.
+fn both_ends(payload: &str, budget: usize) -> String {
+    let half = budget / 2;
+    let head = output::truncate_at_char_boundary(payload, half).trim_end();
+    let tail = output::truncate_tail_at_char_boundary(payload, half).trim_start();
+    format!(
+        "{head}\n[… {} bytes elided …]\n{tail}",
+        payload.len() - head.len() - tail.len()
+    )
+}
+
+/// Pieces no larger than `budget`, cut between lines so no line is split. A
+/// message can still straddle the cut — most parts of a long session do — and
+/// [`part_frame`] is what tells the model it is reading one. A single line over
+/// the budget is passed through rather than dropped: the server is the
+/// authority on what fits, and losing it whole is worse.
 fn chunk(text: &str, budget: usize) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -296,6 +368,55 @@ mod tests {
         assert!(rendered.contains("## Tool result: read"));
         assert!(rendered.contains("bytes, elided"), "{rendered}");
         assert!(!rendered.contains(&body), "the body was quoted anyway");
+    }
+
+    /// A failure over the cap is the payload whose text matters most and whose
+    /// size is largest: a build or a test run puts the command first and the
+    /// verdict last, and both are kept.
+    #[test]
+    fn a_failed_tool_result_over_the_cap_keeps_the_command_and_the_verdict() {
+        let command = "error[E0308]: mismatched types";
+        let verdict = "error: could not compile `oneloop`";
+        let body = format!("{command}\n{}\n{verdict}", "x".repeat(QUOTE_BYTES));
+
+        let rendered = render(&[Message::ToolResult(ToolResultMessage {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            content: body,
+            is_error: true,
+        })]);
+
+        assert!(rendered.contains(command), "{rendered}");
+        assert!(rendered.contains(verdict), "{rendered}");
+    }
+
+    /// Only the two ends: the middle of a long failure is the part the next
+    /// conversation would never reread, and it does not reach the summarizer.
+    #[test]
+    fn a_failed_tool_result_over_the_cap_drops_its_middle() {
+        let filler = "x".repeat(QUOTE_BYTES);
+        let body = format!("error: start\n{filler}\nwarning: end");
+
+        let rendered = render(&[Message::ToolResult(ToolResultMessage {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            content: body,
+            is_error: true,
+        })]);
+
+        assert!(!rendered.contains(&filler), "{rendered}");
+        assert!(rendered.contains("bytes elided"), "{rendered}");
+    }
+
+    /// A part of a cut conversation says which one it is before its text, or
+    /// the summarizer reads a fragment as the whole conversation.
+    #[test]
+    fn a_cut_conversation_says_which_part_it_is() {
+        assert_eq!(
+            part_frame(2, 3),
+            "[Part 2 of 3 of a longer conversation, in order. Summarize only what is in \
+             this part; the other parts are summarized separately and joined.]\n\n"
+        );
     }
 
     #[test]
