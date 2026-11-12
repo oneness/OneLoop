@@ -6,13 +6,13 @@
 //! what happens between a prompt and an answer: what a response means, what
 //! gets written down, what is printed, and when to stop.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::Agent;
-use super::batch::run;
+use super::batch::{run, span};
 use super::duplicate_reads::suppress_duplicate_reads;
 use super::metrics::estimate_tokens;
 use super::spinner::SpinnerGuard;
@@ -21,6 +21,7 @@ use crate::messages::ToolCall;
 use crate::output;
 use crate::providers::{ProviderRequest, ProviderResponse, is_context_overflow};
 use crate::status::TurnStatus;
+use crate::tools::ToolResult;
 
 /// The sentence a response with nothing in it is answered with. Printed and
 /// recorded, so a session that saw it can be read back.
@@ -315,8 +316,6 @@ impl Agent {
 
     /// Calls in one batch run concurrently.
     async fn execute_tool_calls(&mut self, tool_calls: Vec<ToolCall>) -> Result<()> {
-        let tool_start = Instant::now();
-
         // Every call is recorded before any result: a result with no call above
         // it is a conversation the provider will reject.
         for tc in &tool_calls {
@@ -347,13 +346,27 @@ impl Agent {
         // category it fell in.
         self.waiting_on = labels.join(" · ");
 
-        let mut results = run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
+        let called = run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
         spinner.stop();
+
+        // One measurement, two readers: the span the ledger records and the
+        // per-call spans the trace prints both come from what each call timed
+        // itself, so there is no second clock to disagree with the first.
+        let batch = span(&called);
+        let spans: Vec<Duration> = called.iter().map(|call| call.elapsed).collect();
+        let mut results: Vec<ToolResult> = called.into_iter().map(|call| call.result).collect();
 
         self.metrics.log(
             "tool_exec",
             json!({
-                "duration_ms": tool_start.elapsed().as_millis(),
+                "duration_ms": batch.as_millis(),
+                // Per call, because a batch says nothing about which of its
+                // calls was the slow one — and the span above cannot be
+                // checked without them.
+                "calls": tool_calls.iter().zip(&spans).map(|(tc, took)| json!({
+                    "tool": tc.name,
+                    "duration_ms": took.as_millis(),
+                })).collect::<Vec<_>>(),
                 "tools": tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
                 "success": results.iter().all(|r| !r.is_error),
             }),
@@ -377,7 +390,9 @@ impl Agent {
             ));
         }
 
-        for ((tc, result), tool_label) in tool_calls.iter().zip(results).zip(labels) {
+        for (((tc, result), tool_label), took) in
+            tool_calls.iter().zip(results).zip(labels).zip(spans)
+        {
             self.session.push_tool_result(
                 tc.id.clone(),
                 tc.name.clone(),
@@ -385,10 +400,17 @@ impl Agent {
                 result.is_error,
             )?;
 
+            // How long it took follows the name, before the failure text: the
+            // label is what the reader is looking for, and a duration buried at
+            // the end of a long error is one nobody finds.
+            let took = output::elapsed(took);
             if result.is_error {
-                output::fail(&format!("{tool_label} (failed: {})", result.content));
+                output::fail(&format!(
+                    "{tool_label} · {took} (failed: {})",
+                    result.content
+                ));
             } else {
-                output::tick(&tool_label);
+                output::tick(&format!("{tool_label} · {took}"));
             }
         }
 

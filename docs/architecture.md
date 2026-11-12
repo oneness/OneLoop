@@ -322,7 +322,10 @@ On restart, the latest session file for today is opened automatically.
 `api_call` or `tool_exec` event, so a session and its costs are read together.
 An `api_call` says what it was for in `purpose` — `turn` for a request the
 loop made, `summarize` for a compaction's — so both can be summed as one cost
-and still told apart.
+and still told apart. A `tool_exec` carries one `duration_ms` for the batch and
+a `calls` array with each call's own span: the batch number is the distance from
+the first call's start to the last call's end, which cannot be checked without
+the per-call spans it was computed from.
 A turn the user stops with Ctrl+C writes a `turn_cancelled` event with its
 duration and what it was waiting on: the request and the tool batch are both
 inside the future the interrupt drops, so this is the only line that survives,
@@ -523,6 +526,14 @@ Callers pick a meaning — `fail`, `warn`, `stopped`, `ok`, `tick`, `running`,
 `step`, `note`, `head` — and the module decides the glyph, the colour, and the
 stream.
 
+When a tool call returns it says how long it took: `✓ read src/main.rs · 0.3s`,
+and a failure says it in the same place, before the reason — `✗ bash: cargo test
+· 12.4s (failed: …)`. `elapsed` is the one spelling of a duration — a tenth below
+ten seconds, whole seconds above, minutes as minutes — so a number reads the same
+way wherever it appears. The span itself is measured once, in `batch.rs`, where
+the call actually runs: the trace line and the `tool_exec` ledger entry both read
+that measurement rather than a second clock beside it.
+
 The streams are split by what the text *is*, not by how bad it is:
 
 - **stdout** carries the model's answer, and nothing else.
@@ -621,7 +632,8 @@ src/
                     execute_tool_calls, log_api_call
     trace.rs        format_tool_call: the name, a colon, and the tool's own label
     banner.rs       the startup summary: summary, packed, the column it wraps on
-    batch.rs        One batch of tool calls, and the per-file locks that order it
+    batch.rs        One batch of tool calls, the per-file locks that order them, and
+                    the per-call timing the trace and the ledger both read
     duplicate_reads.rs
                     answering a re-read with a pointer: read_payloads_in_context,
                     payload_digest, suppress_duplicate_reads, duplicate_read_notice
@@ -646,7 +658,7 @@ src/
   models/
     retry.rs        Retry a request, then offer another model when one won't answer
   output.rs         Status lines (glyph, colour, stream), output truncation, trace-line
-                    rendering (elide, first_line), ANSI constants and OSC framing
+                    rendering (elide, first_line, elapsed), ANSI constants and OSC framing
   path.rs           Path resolution (@, ~, absolute, relative) and how the trace spells one
   prompt.rs         System prompt assembly (tool preamble + engineering tenets + environment
                     + AGENTS.md), and the summarizer's own system prompt

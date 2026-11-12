@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use std::time::Duration;
 
 pub const DEFAULT_MAX_BYTES: usize = 128 * 1024;
 pub const DEFAULT_MAX_LINES: usize = 1000;
@@ -123,6 +124,25 @@ pub fn step(message: &str) {
 /// qualifying the one above it.
 pub fn note(message: &str) {
     eprintln!("{}", line(DIM, "", message));
+}
+
+/// How long a step took, as a trace line says it: `0.4s`, `12s`, `2m 05s`.
+///
+/// A tenth below ten seconds, where a tool call is worth reading to a tenth;
+/// whole seconds above it, where the digit stops being something a reader acts
+/// on. Minutes are spelled as minutes, because `134s` is a number nobody can
+/// picture. One helper, so a duration is spelled one way wherever it appears.
+pub fn elapsed(took: Duration) -> String {
+    let seconds = took.as_secs_f64();
+    if seconds < 10.0 {
+        format!("{seconds:.1}s")
+    } else if seconds < 60.0 {
+        // Truncated, not rounded: rounding would let 59.6s print as `60s`,
+        // one line before the same duration prints as `1m 00s`.
+        format!("{}s", took.as_secs())
+    } else {
+        format!("{}m {:02}s", took.as_secs() / 60, took.as_secs() % 60)
+    }
 }
 
 /// A section heading above an interactive block: `── message ──`.
@@ -535,6 +555,16 @@ mod tests {
         for style in [RED, GREEN, YELLOW, DIM, BOLD] {
             assert!(line(style, "✓", "x").ends_with(RESET));
         }
+    }
+
+    /// A duration is spelled one way wherever one is shown: a tenth for the
+    /// range a call is worth reading to a tenth in, whole seconds above.
+    #[test]
+    fn a_duration_is_a_tenth_a_second_or_a_minute_and_a_half() {
+        assert_eq!(elapsed(Duration::from_millis(430)), "0.4s");
+        assert_eq!(elapsed(Duration::from_millis(12_400)), "12s");
+        assert_eq!(elapsed(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(elapsed(Duration::from_millis(59_600)), "59s");
     }
 
     /// An OSC string is opened by its sequence number and closed by ST, so a
