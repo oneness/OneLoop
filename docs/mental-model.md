@@ -22,7 +22,7 @@ the tools it asked for*, ending on an answer that asks for no tools.
             a /command or !cmd                 a prompt
                  |                              |
         /clear /compact /model /reload          |
-        /help /claude /antigravity !cmd         |
+        /help /cc /ca /cn /ag /aga /agn !cmd    |
                  |                              |
                  +--------------+---------------+
                                 |
@@ -122,7 +122,7 @@ The loop never writes a file directly; each of these has one owner.
 
 | What | Where | Written by |
 |---|---|---|
-| the conversation | `.oneloop/sessions/<date>-<n>.jsonl` | `agent/session.rs` |
+| the conversation | `.oneloop/sessions/<date>[-<nnn>].jsonl` | `agent/session.rs` |
 | cost per request and per batch | `.oneloop/metrics/<same name>` | `agent/metrics.rs` |
 | refusals, with the body the server sent | `.oneloop/errors.log` | `providers.rs` |
 | the answer, and nothing else | **stdout** | `turn.rs` (step 4) |
@@ -171,3 +171,9 @@ the exact shape of the trace and when a start line is printed (`Output`),
 compaction's chunking arithmetic (`Compaction`), the `!command` path and
 `/model <alias>; <prompt>` prefixes (`app.rs`), and Ctrl+C, which drops the turn
 mid-flight and records a `turn_cancelled` event with whatever it was waiting on.
+
+One path is deliberately outside this picture: `/cc`, `/ca`, `/cn`, `/ag`,
+`/aga` and `/agn` ask Claude Code or Antigravity instead of the active model, by
+running their CLI. No request goes through the loop, no tool is called, and what
+comes back is recorded as reference material for the next turn
+([Second opinions](architecture.md#second-opinions)).

@@ -125,7 +125,13 @@ ONELOOP_MODEL              model alias for this run
 ONELOOP_MAX_RETRIES        retry cap (default: 10)
 ONELOOP_WEB_TOOLS          OpenRouter server-side web search/fetch (default: false
                            unless a provider or model sets `web_tools`)
+ONELOOP_ORIGINAL_DIR       the directory the user was in, when a wrapper changed
+                           into the checkout before running (`ol`, `ols`)
 ```
+
+One more is read outside the binary: `ONELOOP_BIN`, which is where `install.sh`
+puts it (`~/.local/bin` by default). It is an installation path, not a run-time
+setting.
 
 ## Clippy
 

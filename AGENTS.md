@@ -60,7 +60,13 @@ Every repository question starts with OneSearch, not grep. Read
 Grep is for exhaustive literal checks, and for when OneSearch cannot run.
 Reaching for it first is a wasted step, not a shortcut.
 
-## Docs
+## Documentation
+
+A docstring says what the code cannot: the one-line contract, plus the
+why behind a choice that would otherwise look arbitrary. Aim for one
+line; never more than three. Don't restate the signature, the types,
+or the branches — the body is for that. How the design got here
+belongs in the commit message.
 
 A change is not finished until the docs say the same thing.
 
