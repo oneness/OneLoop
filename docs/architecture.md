@@ -5,6 +5,9 @@ OpenRouter, and OpenCode subscriptions you already pay for. The default model is
 still local — it runs on the same machine, needs no credentials, and sends
 nothing off the box — and hosted models are reachable whenever named.
 
+For the single path a message takes — the flow, with a diagram — see
+[mental-model.md](mental-model.md). This file is the reference behind it.
+
 ## Core
 
 The initial core is intentionally small:
