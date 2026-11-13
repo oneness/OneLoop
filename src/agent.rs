@@ -126,11 +126,15 @@ impl Agent {
     /// Rebuilds the model registry from disk without disturbing the session.
     /// The replacement happens only after the complete configuration is valid.
     pub fn reload_models(&mut self) -> Result<()> {
-        let active = self.models.active().alias.clone();
-        let models = ModelRegistry::new()?;
+        self.replace_models(ModelRegistry::new()?)
+    }
 
-        // Keep the user's session choice when it still exists. Otherwise the
-        // freshly loaded config's default is already active.
+    /// Swaps in a built registry, keeping the session's choice when the new
+    /// config still has it; a choice it lost is dropped rather than
+    /// resurrected.
+    fn replace_models(&mut self, models: ModelRegistry) -> Result<()> {
+        let active = self.models.active().alias.clone();
+
         if models.get(&active).is_ok() {
             models.set_active(&active)?;
         }
@@ -214,6 +218,20 @@ mod tests {
         .unwrap()
     }
 
+    /// One provider hosting `aliases`, so a test can say what the file holds.
+    fn registry_of(default: &str, aliases: &[&str]) -> ModelRegistry {
+        let models: Vec<String> = aliases
+            .iter()
+            .map(|alias| format!(r#""{alias}":{{"id":"{alias}-model"}}"#))
+            .collect();
+        ModelRegistry::for_test(&format!(
+            r#"{{"default":"{default}","providers":{{"p":{{"base_url":"http://u",
+                 "api_key_env":"P_KEY","models":{{{}}}}}}}}}"#,
+            models.join(",")
+        ))
+        .unwrap()
+    }
+
     /// The one line in the ledger a test reads: a single event has been logged
     /// by then, so the first file is the whole of it.
     fn ledger(dir: &Path) -> String {
@@ -255,6 +273,46 @@ mod tests {
 
         let body = ledger(&dir);
         assert!(body.contains(r#""purpose":"summarize""#), "{body}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `/model` rereads the file before it chooses, and the choice made a moment
+    /// earlier has to survive that or the session jumps back to the file's default.
+    #[test]
+    fn a_reread_keeps_the_model_the_session_chose() {
+        let dir = project_dir("reread-keeps-choice");
+        let mut agent = Agent::from_spec(
+            AgentSpec::coding(&dir).unwrap(),
+            Arc::new(registry_of("main", &["main", "other"])),
+        )
+        .unwrap();
+        agent.models.set_active("other").unwrap();
+
+        agent
+            .replace_models(registry_of("main", &["main", "other", "fresh"]))
+            .unwrap();
+
+        assert_eq!(agent.models().active().alias, "other");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A choice the new file no longer has is dropped rather than resurrected:
+    /// it named an entry in a config that has since been replaced.
+    #[test]
+    fn a_reread_drops_a_choice_the_new_config_lost() {
+        let dir = project_dir("reread-drops-choice");
+        let mut agent = Agent::from_spec(
+            AgentSpec::coding(&dir).unwrap(),
+            Arc::new(registry_of("main", &["main", "other"])),
+        )
+        .unwrap();
+        agent.models.set_active("other").unwrap();
+
+        agent
+            .replace_models(registry_of("main", &["main"]))
+            .unwrap();
+
+        assert_eq!(agent.models().active().alias, "main");
         let _ = fs::remove_dir_all(&dir);
     }
 }

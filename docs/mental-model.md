@@ -21,7 +21,7 @@ the tools it asked for*, ending on an answer that asks for no tools.
                  |                              |
             a /command or !cmd                 a prompt
                  |                              |
-        /clear /compact /model /reload          |
+        /clear /compact /model                  |
         /help /cc /ca /cn /ag /aga /agn !cmd    |
                  |                              |
                  +--------------+---------------+

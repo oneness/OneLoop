@@ -243,6 +243,13 @@ Setting a model, narrowest scope first: `/model` switches the session;
 last is persistent, and only it is edited by hand — a session-scoped command
 that rewrote the config would make the next run's model a side effect.
 
+`/model` reads the file again before it chooses, so the command that switches a
+model also picks up one added, renamed, or repriced since the session started.
+Cancelling the picker is the same reload without the switch: the read has
+already happened, and no alias was set. A file that no longer parses is a
+warning, not a refusal — the models already loaded still work, and the switch
+does not need the file it could not read.
+
 ## When a model won't answer
 
 `models/retry.rs` gives one model ten attempts by default (`ONELOOP_MAX_RETRIES`),
@@ -333,8 +340,9 @@ The context line reports startup instruction sources, currently `AGENTS.md`
 when successfully loaded. It is not an inventory of the prompt: the built-in
 sections — tool preamble, engineering tenets, environment — are always present
 and never listed. Nor is it an inventory of files read through tools; `MEMORY.md`
-and other Markdown files are not automatically loaded. `/reload` reloads model
-configuration, not instruction files. Ctrl+C stops a running request or discards
+and other Markdown files are not automatically loaded. `/model` reloads model
+configuration before it chooses, not instruction files, so a model edited into
+the file does not need a restart. Ctrl+C stops a running request or discards
 the draft at the terminal prompt. Editor frontends may intercept keys before
 they reach OneLoop.
 

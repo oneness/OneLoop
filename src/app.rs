@@ -121,7 +121,6 @@ enum Command<'a> {
         mode: AskMode,
         text: Option<&'a str>,
     },
-    Reload,
     /// An alias switches straight to it; without one, the list is offered.
     Model(Option<&'a str>),
     /// A command the user runs themselves: `!ls`. Shown to the model as
@@ -148,7 +147,6 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
         "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
         "compact" if argument.is_none() => Some(Command::Compact),
-        "reload" if argument.is_none() => Some(Command::Reload),
         "model" => Some(Command::Model(argument)),
         "cc" => Some(Command::Claude {
             mode: AskMode::Critique,
@@ -272,7 +270,7 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     let mut commands = String::from(
-        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/reload\x1b[22m             : Reload configuration\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
     );
     if has_claude {
         commands.push_str(
@@ -333,18 +331,6 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
             Ok(()) => true,
             Err(e) => {
                 output::fail(&format!("{e:#}"));
-                false
-            }
-        },
-        Command::Reload => match agent.reload_models() {
-            Ok(()) => {
-                output::ok("configuration reloaded");
-                output::step(&format!("model: {}", agent.models().active()));
-                true
-            }
-            Err(e) => {
-                output::fail(&format!("configuration reload failed: {e:#}"));
-                output::note(&format!("continuing with {}", agent.models().active()));
                 false
             }
         },
@@ -498,9 +484,15 @@ async fn run_bash(agent: &mut Agent, command: &str) -> bool {
     }
 }
 
-/// Lasts for this session; the config file is not touched, so what the next
-/// run starts on stays something the user wrote.
-async fn switch_model(agent: &Agent, requested: Option<&str>) -> bool {
+/// Lasts for this session; the config file is not touched. It is read again
+/// first, so a model added since startup is one command away — and a file that
+/// no longer parses warns instead of taking the loaded models away.
+async fn switch_model(agent: &mut Agent, requested: Option<&str>) -> bool {
+    if let Err(e) = agent.reload_models() {
+        output::warn(&format!(
+            "config not reread ({e:#}); choosing from the models already loaded"
+        ));
+    }
     let alias = match requested {
         Some(alias) => alias.to_string(),
         None => {
@@ -884,12 +876,6 @@ mod tests {
 
         assert!(matches!(parsed.command, Some(Command::Compact)));
         assert_eq!(parsed.prompt, Some("explain the parser"));
-    }
-
-    #[test]
-    fn reload_is_a_command_without_arguments() {
-        assert!(matches!(parse_command("/reload"), Some(Command::Reload)));
-        assert!(parse_command("/reload now").is_none());
     }
 
     #[test]
