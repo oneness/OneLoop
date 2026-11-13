@@ -11,8 +11,8 @@ use super::Model;
 use crate::messages::{Message, ToolCall};
 
 use super::{
-    OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderRequest, ProviderResponse, decode_tool_arguments,
-    log_provider_failure, send_and_read,
+    OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
+    decode_tool_arguments, extract_error_code, log_provider_failure, send_and_read,
 };
 
 // ── Request types (Chat Completions) ──────────────────────────────────
@@ -177,6 +177,10 @@ struct ProviderErrorResponse {
 #[derive(Debug, Deserialize)]
 struct ProviderErrorDetail {
     message: String,
+    /// OpenRouter puts a number here — `403`, restating the status — which says
+    /// nothing about why the request was refused. The classifier reads the
+    /// string form off the raw body for that reason, and this field is kept
+    /// only so the shape of the envelope is complete.
     #[expect(dead_code)]
     #[serde(default)]
     code: Option<u16>,
@@ -272,13 +276,17 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     // surface the real message instead of "missing field choices".
     if let Some(provider_msg) = extract_provider_error(&text) {
         // A 200 is not a success here, and the body is the only place the
-        // reason exists.
+        // reason exists. Built as the refusal a status would have been, so
+        // nothing downstream has to know this arrived inside a success — the
+        // status stays 200 because that is what the server sent.
         log_provider_failure(request.errors_log.as_deref(), &model.alias, status, &text);
-        return Err(anyhow::anyhow!(
-            "{} upstream error: {}",
-            model.alias,
-            provider_msg
-        ));
+        return Err(ProviderHttpError {
+            status,
+            message: provider_msg,
+            provider: model.alias.clone(),
+            code: extract_error_code(&text),
+        }
+        .into());
     }
 
     let parsed: ChatResponse = match serde_json::from_str(&text) {

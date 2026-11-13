@@ -14,7 +14,8 @@ use crate::messages::{Message, ToolCall};
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
-    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_message, log_provider_failure,
+    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_code, extract_error_message,
+    log_provider_failure,
 };
 
 // ── Request ───────────────────────────────────────────────────────────
@@ -184,6 +185,12 @@ struct FailedResponse {
 #[derive(Debug, Deserialize)]
 struct ResponseError {
     message: String,
+    /// The machine-readable reason, when the server sends one. The streaming
+    /// protocol's own spelling of `error.code`, read the same way as a
+    /// status-carried refusal's, so a classifier does not care which path
+    /// delivered the error.
+    #[serde(default)]
+    code: Option<String>,
 }
 
 /// What the turn produced. Reasoning arrives as an item too; it is dropped,
@@ -308,6 +315,7 @@ async fn read_turn(
             status,
             message: extract_error_message(&body),
             provider: alias.to_string(),
+            code: extract_error_code(&body),
         }
         .into());
     }
@@ -334,7 +342,7 @@ async fn read_turn(
             let line: Vec<u8> = pending.drain(..=end).collect();
             let event = event(&String::from_utf8_lossy(&line))
                 .with_context(|| format!("failed to parse an event from the {alias} stream"))?;
-            if let Some(output) = turn.absorb(event, alias)? {
+            if let Some(output) = turn.absorb(event, alias, status)? {
                 return Ok((output, turn.input_tokens));
             }
         }
@@ -354,7 +362,12 @@ struct Turn {
 impl Turn {
     /// `Some` once the turn is closed — nothing after that event belongs to
     /// it, and the connection stays open regardless.
-    fn absorb(&mut self, event: Option<Event>, alias: &str) -> Result<Option<Vec<OutputItem>>> {
+    fn absorb(
+        &mut self,
+        event: Option<Event>,
+        alias: &str,
+        status: reqwest::StatusCode,
+    ) -> Result<Option<Vec<OutputItem>>> {
         match event {
             Some(Event::OutputItemDone { item }) => {
                 self.items.push(item);
@@ -371,11 +384,22 @@ impl Turn {
                 }))
             }
             Some(Event::Failed { response }) => {
-                let message = response
-                    .error
-                    .map(|error| error.message)
-                    .unwrap_or_else(|| "the provider gave no reason".to_string());
-                Err(anyhow::anyhow!("{alias} refused the request: {message}"))
+                // The stream closed with an error event rather than a non-2xx.
+                // Built as the refusal a status would have been — the status is
+                // what the response carried, and the reason comes from the
+                // event's own error object — so nothing downstream has to know
+                // which of the three paths delivered it.
+                let error = response.error;
+                Err(ProviderHttpError {
+                    status,
+                    message: error
+                        .as_ref()
+                        .map(|error| error.message.clone())
+                        .unwrap_or_else(|| "the provider gave no reason".to_string()),
+                    provider: alias.to_string(),
+                    code: error.and_then(|error| error.code),
+                }
+                .into())
             }
             _ => Ok(None),
         }
@@ -406,7 +430,7 @@ fn event(line: &str) -> Result<Option<Event>> {
 fn final_turn(stream: &str, alias: &str) -> Result<(Vec<OutputItem>, Option<u64>)> {
     let mut turn = Turn::default();
     for line in stream.lines() {
-        if let Some(output) = turn.absorb(event(line)?, alias)? {
+        if let Some(output) = turn.absorb(event(line)?, alias, reqwest::StatusCode::OK)? {
             return Ok((output, turn.input_tokens));
         }
     }

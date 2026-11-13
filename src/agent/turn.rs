@@ -6,6 +6,7 @@
 //! what happens between a prompt and an answer: what a response means, what
 //! gets written down, what is printed, and when to stop.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -72,6 +73,40 @@ fn continues(response: &ProviderResponse) -> bool {
     !response.tool_calls.is_empty()
 }
 
+/// How long work may run before the trace says what it is.
+///
+/// A start line exists to prove the process is not hung. Anything that finishes
+/// inside a second was never in doubt, and naming it while it ran only left the
+/// same text on screen twice — once as `▸ what is running`, once as `✓ what
+/// ran`. A second is about how long a reader takes to wonder.
+const SAY_AFTER: Duration = Duration::from_secs(1);
+
+/// Awaits `work`, calling `announce` only if it is still running after `after`.
+///
+/// Where the spinner is silent — comint, a pipe, anything `output::plain()` —
+/// these lines are the only evidence a long wait is a wait and not a hang, so
+/// they are kept for exactly the waits long enough to need them.
+async fn when_slow<F, A>(after: Duration, announce: A, work: F) -> F::Output
+where
+    F: Future,
+    A: FnOnce(),
+{
+    tokio::pin!(work);
+    // An `Option` because the announcement fires at most once: taking it is what
+    // makes that true for the compiler as well as for the reader.
+    let mut announce = Some(announce);
+    loop {
+        tokio::select! {
+            outcome = &mut work => return outcome,
+            _ = tokio::time::sleep(after), if announce.is_some() => {
+                if let Some(announce) = announce.take() {
+                    announce();
+                }
+            }
+        }
+    }
+}
+
 /// What one request came back with. A refusal is not an answer, and a
 /// conversation that outgrew its window is the one refusal the loop can cure.
 enum Attempt {
@@ -108,6 +143,11 @@ impl Agent {
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
         let mut active_model: Option<String> = model.map(str::to_string);
+        // The turn names itself once, at the first moment it has been running
+        // long enough to wonder about — not once per request. A turn with three
+        // round trips would otherwise print the same line three times, and it
+        // is the turn that is slow or fast, not each request in it.
+        let mut announced = false;
         // One compaction per turn. A second overflow is one whose own shortest
         // form does not fit, and a summary of a summary is not smaller.
         let mut compacted = false;
@@ -117,7 +157,7 @@ impl Agent {
         // append-only, so it eventually outgrows the window and the server
         // refuses, and a run in the REPL can always be stopped with Ctrl+C.
         loop {
-            let response = match self.request(&mut active_model).await? {
+            let response = match self.request(&mut active_model, &mut announced).await? {
                 Attempt::Answered(response) => response,
 
                 Attempt::Overflow if !compacted => {
@@ -175,18 +215,25 @@ impl Agent {
 
     /// One request: assembly, retry and fallback, and the metric that records
     /// what it cost.
-    async fn request(&mut self, active: &mut Option<String>) -> Result<Attempt> {
+    ///
+    /// `announced` is the turn's, not this request's: the line naming the work
+    /// is printed at most once per turn, by whichever request first runs long
+    /// enough to be worth naming.
+    async fn request(
+        &mut self,
+        active: &mut Option<String>,
+        announced: &mut bool,
+    ) -> Result<Attempt> {
         let spinner = SpinnerGuard::new("computing...");
         let tokens_estimated = estimate_tokens(self.session.messages(), self.system_prompt_chars());
         // The spinner is the signal in a terminal. Where it is silent the screen
         // would show nothing at all for the length of the request, and a request
-        // can run for minutes — so it is spelled out once instead.
-        if spinner.is_silent() {
-            output::running(&format!(
-                "computing... · ~{}k tokens in current context",
-                tokens_estimated / 1000
-            ));
-        }
+        // can run for minutes — so the turn says so once, and only when it has
+        // been running long enough for the silence to need explaining.
+        let naming = format!(
+            "computing... · ~{}k tokens in current context",
+            tokens_estimated / 1000
+        );
         self.waiting_on = "a response".to_string();
         let api_start = Instant::now();
         // For metrics: the model this request is aimed at, which the registry's
@@ -202,15 +249,22 @@ impl Agent {
             errors_log: self.errors_log.clone(),
         };
 
-        let response = match self
-            .models
-            .complete_with_retry(
+        let response = match when_slow(
+            SAY_AFTER,
+            || {
+                if spinner.is_silent() && !*announced {
+                    *announced = true;
+                    output::running(&naming);
+                }
+            },
+            self.models.complete_with_retry(
                 active.as_deref(),
                 request,
                 Some(spinner.stop_callback()),
                 Some(spinner.start_callback("computing...")),
-            )
-            .await
+            ),
+        )
+        .await
         {
             Ok((used_model, response)) => {
                 // Commit only after a successful response, whether it came from
@@ -324,11 +378,13 @@ impl Agent {
         }
 
         let spinner = SpinnerGuard::new("running tools...");
-        // Named before it runs, not after: the label is the only thing about a
-        // call that is knowable in advance, and a command that takes a minute
-        // has to say what it is while it takes it. Printed only where the
-        // spinner is silent — a spinner is one line rewritten in place, and it
-        // says "running tools", not which one.
+        // The label is the only thing about a call that is knowable in advance,
+        // and a command that takes a minute has to say what it is while it takes
+        // it. Printed only where the spinner is silent — a spinner is one line
+        // rewritten in place, and it says "running tools", not which one — and
+        // only once the batch has run long enough to be worth naming: every call
+        // ends with a line carrying the same label and how long it took, so
+        // naming it up front as well is the same text twice for anything quick.
         let labels: Vec<String> = tool_calls
             .iter()
             .map(|tc| match self.spec.tools.get(&tc.name) {
@@ -336,17 +392,23 @@ impl Agent {
                 None => tc.name.clone(),
             })
             .collect();
-        if spinner.is_silent() {
-            for label in &labels {
-                output::running(label);
-            }
-        }
         // The same label the screen showed, where it showed one: a stop
         // explained afterwards should name the thing that was running, not the
         // category it fell in.
         self.waiting_on = labels.join(" · ");
 
-        let called = run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd).await;
+        let called = when_slow(
+            SAY_AFTER,
+            || {
+                if spinner.is_silent() {
+                    for label in &labels {
+                        output::running(label);
+                    }
+                }
+            },
+            run(self.spec.tools.clone(), &tool_calls, &self.spec.cwd),
+        )
+        .await;
         spinner.stop();
 
         // One measurement, two readers: the span the ledger records and the
@@ -421,6 +483,71 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Fast work finishes before the line would be useful, so it gets no line.
+    #[tokio::test]
+    async fn when_slow_says_nothing_about_work_that_finishes_first() {
+        let said = Arc::new(AtomicUsize::new(0));
+        let counter = said.clone();
+
+        let outcome = when_slow(
+            Duration::from_millis(50),
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+            std::future::ready(7),
+        )
+        .await;
+
+        assert_eq!(outcome, 7);
+        assert_eq!(said.load(Ordering::SeqCst), 0);
+    }
+
+    /// `SAY_AFTER` is the whole point: work that outlasts it is named while it
+    /// is still running, and the outcome still comes back untouched.
+    #[tokio::test]
+    async fn when_slow_names_work_that_outlasts_the_wait() {
+        let said = Arc::new(AtomicUsize::new(0));
+        let counter = said.clone();
+
+        let outcome = when_slow(
+            Duration::from_millis(20),
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                "finished"
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, "finished");
+        assert_eq!(said.load(Ordering::SeqCst), 1);
+    }
+
+    /// Once, however long it runs: a line repeated every second would be the
+    /// noise this exists to remove.
+    #[tokio::test]
+    async fn when_slow_names_work_once_however_long_it_takes() {
+        let said = Arc::new(AtomicUsize::new(0));
+        let counter = said.clone();
+
+        when_slow(
+            Duration::from_millis(10),
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            },
+        )
+        .await;
+
+        assert_eq!(said.load(Ordering::SeqCst), 1);
+    }
 
     fn call() -> ToolCall {
         ToolCall {

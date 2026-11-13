@@ -58,13 +58,21 @@ because the loop, not the request, decides whether a refusal is curable: a
 refusal ends the turn without ending the run, and an overflow is the one the
 loop can answer with a compaction.
 
-Where the spinner is silent — comint, a pipe, anything `output::plain()` — a
-request says so in one line instead, and each tool call is named with `▸` when
-it is dispatched as well as with `✓` when it returns: a command that takes a
-minute has to say what it is while it takes it. Both exist for the same reason:
-a wait with nothing on screen cannot be told from a hang. Where the spinner does
-run it is a single line rewritten in place, so `▸` is not printed there: the
-`✓` on the way out is what names the call.
+Where the spinner is silent — comint, a pipe, anything `output::plain()` — the
+trace has to speak instead, because a wait with nothing on screen cannot be told
+from a hang. It speaks on one rule, applied to both a turn and a tool call: **a
+start line is printed only for work that outlasts a second** (`SAY_AFTER` in
+`turn.rs`). A wait that ends sooner was never in doubt, and the completion line
+already names it — so printing `▸ what is running` as well left the same text on
+screen twice for every quick call. The completion line, `✓ what ran · how long`,
+is the one record that a call happened at all, and it is always printed.
+
+A turn names itself once, not once per request: a turn with three tool round
+trips is three requests, and `▸ computing... · ~Nk tokens in current context`
+repeated per request reads as a countdown that never ends. `when_slow` is the
+one helper both sites use, so the rule is stated in one place. Where the spinner
+does run there is nothing to print: it is a single line rewritten in place, and
+the `✓` on the way out is what names the call.
 
 Neither `record` nor `continues` touches the terminal or the session, which is
 what makes them the first part of this loop a test can reach.
@@ -209,7 +217,8 @@ registry knows about.
 `is_retryable` decides whether a second attempt can plausibly differ: a 5xx, a
 429, a timeout, or a transport error can, while a 400 or a 401 is the same
 answer every time — a refused request fails at once. That refusal keeps its
-type, so the caller can still tell an overflow from any other rejection.
+type, so the caller can still tell an overflow from any other rejection — the
+one refusal a second attempt cannot cure.
 
 When the attempts run out, an interactive run offers the other models. A pipe
 or a script gets the error instead, because nobody there can answer the picker.
@@ -236,12 +245,26 @@ Nothing is silently dropped. A conversation that outgrows its window is either
 summarized (see [Compaction](#compaction)) or handed back with the fix named —
 never quietly trimmed.
 
-`is_context_overflow` in `providers.rs` classifies a 400/413 by the phrases
-every server words differently ("context length", "prompt is too long",
-"context size"), beside `is_retryable` and answering the same kind of
-question about the same error. It classifies; it does not decide. The turn loop
-reads the answer as `Attempt::Overflow` and spends its one compaction on it,
-because that is the one refusal the loop can cure.
+`is_context_overflow` in `providers.rs` classifies a 400/413, beside
+`is_retryable` and answering the same kind of question about the same error. It
+reads two signals, in order of how much they can be trusted: the `error.code`
+the server puts on the refusal (OpenAI's `context_length_exceeded`, and the
+hyphenated spellings gateways use), and — where a server sends no usable code,
+which OpenRouter never does and a proxying gateway sometimes drops — the
+message, against a short list of the phrases every server words differently
+("context length", "prompt is too long", "context size"). A code is a closed
+vocabulary, so an unrecognised one stays an ordinary refusal instead of falling
+through to the prose. It classifies; it does not decide. The turn loop reads the
+answer as `Attempt::Overflow` and spends its one compaction on it, because that
+is the one refusal the loop can cure.
+
+Both classifiers read that one function, and `ProviderHttpError` is the one type
+a refusal arrives as however it was delivered — a non-2xx status, an `error`
+object inside a 200 (OpenRouter's habit), or a `failed` event closing a stream
+whose headers were already sent. The last two keep the status the response
+actually carried rather than inventing a 400, so the refusal is still logged as
+what happened; `is_retryable` gives them the attempts a status-carried refusal
+would get, except when the classification says the body will never fit.
 
 A model *may* declare a `context_window` in the config; the interactive
 prompt then shows roughly how much of it is still free — measured from the

@@ -210,15 +210,37 @@ impl std::error::Error for NotSignedIn {}
 
 /// Carries the status so callers can tell a temporary failure from a
 /// request that will never succeed.
+///
+/// One type for every refusal, whatever path it arrived by. A body that
+/// reports a failure inside an otherwise successful response — OpenRouter
+/// answers a gated model with a 200 and an `error` object, and the streaming
+/// protocol has a `failed` event of its own — is the same event as a status,
+/// and is built as one, so the classifiers downstream never have to ask which
+/// kind of error they are holding.
 #[derive(Debug)]
 pub struct ProviderHttpError {
     pub status: reqwest::StatusCode,
     pub message: String,
     pub provider: String,
+    /// The machine-readable reason the server gave, when it gave one, in the
+    /// `error.code` field: OpenAI's `context_length_exceeded` and friends.
+    /// The message is prose and every server words it differently; a code is
+    /// a closed vocabulary, which is what [`is_context_overflow`] prefers to
+    /// read. `None` when the body carries no code, which several providers
+    /// (OpenRouter among them) never do — the message stays the only signal
+    /// there, and the phrase fallback below is what reads it.
+    pub code: Option<String>,
 }
 
 impl std::fmt::Display for ProviderHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A refusal carried inside a 200 did not fail as a request — the
+        // request succeeded and the body said no — so naming its status would
+        // read as "request failed (200 OK)". The status is the marker: both
+        // paths are this type now, and only a body-carried one is a success.
+        if self.status.is_success() {
+            return write!(f, "{} refused the request: {}", self.provider, self.message);
+        }
         write!(
             f,
             "{} request failed ({}): {}",
@@ -243,6 +265,10 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
     let Some(error) = error.downcast_ref::<ProviderHttpError>() else {
         return true;
     };
+    // The one refusal no second attempt cures, whichever way it arrived.
+    if overflow(error) {
+        return false;
+    }
     if error.status.is_client_error() {
         return matches!(
             error.status,
@@ -256,16 +282,45 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
 ///
 /// Worth telling apart from the rest not because the loop can cure it — it
 /// cannot — but because the cure is a specific one the user can apply, and
-/// "provider error: 400" does not suggest `/clear`. Every server words it
-/// differently — llama.cpp
-/// "exceeds the available context size", OpenAI "maximum context length",
-/// Anthropic "prompt is too long" — and none of them use a status of their
-/// own, so the message is all there is to go on. An unrecognised phrasing
-/// stays an ordinary error, which is what every one of them was before this
-/// existed: the cost of missing one is the behaviour we already had.
+/// "provider error: 400" does not suggest `/clear`.
+///
+/// Two signals, in order of how much they can be trusted. The `error.code`
+/// field is a closed vocabulary — OpenAI answers `context_length_exceeded`,
+/// Anthropic and several gateways their own spelling of it — and an unknown
+/// code is simply not an overflow, which is what happened before this
+/// existed. Where a server sends no code at all (OpenRouter does not), the
+/// message is all there is, so a short list of phrasings reads it: every
+/// server words it differently — llama.cpp "exceeds the available context
+/// size", OpenAI "maximum context length", Anthropic "prompt is too long" —
+/// and none of them use a status of their own. Either way the status has to
+/// agree, so a `code: 403` that merely mentions a window can never be read as
+/// one that closed.
 pub fn is_context_overflow(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ProviderHttpError>()
+        .is_some_and(overflow)
+}
+
+/// The classification itself, over the error rather than an `anyhow::Error`,
+/// so the retry path can ask the same question of the same value: the two
+/// classifiers must never disagree about one refusal.
+fn overflow(error: &ProviderHttpError) -> bool {
+    /// Codes a server puts in `error.code` to say the request does not fit.
+    /// Closed on purpose: a code outside this set is not an overflow, and
+    /// adding one is a decision rather than a guess. Spellings seen from
+    /// OpenAI-compatible gateways, which hyphenate as often as they
+    /// underscore.
+    const OVERFLOW_CODES: [&str; 6] = [
+        "context_length_exceeded",
+        "context-length-exceeded",
+        "context_window_exceeded",
+        "context-window-exceeded",
+        "prompt_too_long",
+        "prompt-too-long",
+    ];
+
     /// Lowercase, and matched as substrings: the numbers around them differ
-    /// on every occurrence.
+    /// on every occurrence. The fallback for a server that reports no code.
     const PHRASES: [&str; 6] = [
         "context length",
         "context size",
@@ -275,14 +330,27 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
         "token count",
     ];
 
-    let Some(error) = error.downcast_ref::<ProviderHttpError>() else {
-        return false;
-    };
-    if !matches!(
+    // What counts as a refusal about the body: the two statuses a server uses
+    // for one, and a body that carried its failure inside a success. A 403 is a
+    // refusal about *permission*, not about size, so no amount of window-talk
+    // in its message makes it a compaction — which is the whole point of
+    // checking the status before the words.
+    let refused = matches!(
         error.status,
         reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE
-    ) {
+    ) || error.status.is_success();
+    if !refused {
         return false;
+    }
+
+    // A code decides when there is one: it is the server naming the reason in
+    // a closed vocabulary, so an unrecognised code stays an ordinary error
+    // rather than falling through to the prose and matching something it never
+    // meant. Where a server sends no usable code — OpenRouter sends a number,
+    // and a body-carried refusal keeps the 200 it arrived with — the message is
+    // all there is, and the phrases are what read it.
+    if let Some(code) = error.code.as_deref() {
+        return OVERFLOW_CODES.contains(&code.to_lowercase().as_str());
     }
     let message = error.message.to_lowercase();
     PHRASES.iter().any(|phrase| message.contains(phrase))
@@ -345,6 +413,7 @@ async fn send_and_read_inner(
             status,
             message: extract_error_message(&text),
             provider: provider.to_string(),
+            code: extract_error_code(&text),
         }
         .into());
     }
@@ -441,11 +510,31 @@ fn extract_error_message(raw: &str) -> String {
     }
 }
 
+/// The machine-readable reason a server gave for a refusal, in `error.code`,
+/// when the body has one.
+///
+/// Read from the same shapes [`extract_error_message`] reads, so a body that
+/// carries a code without prose (or prose without a code) is handled the same
+/// way twice. `None` is ordinary and expected: OpenRouter puts a numeric
+/// status in this field, which says nothing about *why* the request was
+/// refused, so a code is only trusted when it is one of the words
+/// [`is_context_overflow`] knows.
+fn extract_error_code(raw: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let code = val.get("error")?.get("code")?;
+    if let Some(code) = code.as_str() {
+        return Some(code.to_string());
+    }
+    // A numeric code is a status restated, not a reason.
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Credentials, OauthEntry, Provider, ProviderHttpError, append_record, decode_tool_arguments,
-        errors_log_path, extract_error_message, is_context_overflow, is_retryable,
+        errors_log_path, extract_error_code, extract_error_message, is_context_overflow,
+        is_retryable,
     };
     use reqwest::StatusCode;
     use serde_json::{Value, json};
@@ -474,10 +563,30 @@ mod tests {
     }
 
     fn refusal(status: StatusCode, message: &str) -> anyhow::Error {
+        refused(status, message, None)
+    }
+
+    fn refused(status: StatusCode, message: &str, code: Option<&str>) -> anyhow::Error {
         ProviderHttpError {
             status,
             message: message.to_string(),
             provider: "local".to_string(),
+            code: code.map(str::to_string),
+        }
+        .into()
+    }
+
+    /// The refusal that arrived inside a successful body, as OpenRouter sends
+    /// it: the status is 200, the reason is in the `error` object, and the code
+    /// is whatever that object carries. Built by hand here because the two
+    /// producers have different inputs — one a raw body, one an already-parsed
+    /// event — so there is no constructor for them to share.
+    fn in_body(body: &str) -> anyhow::Error {
+        ProviderHttpError {
+            status: StatusCode::OK,
+            message: extract_error_message(body),
+            provider: "local".to_string(),
+            code: extract_error_code(body),
         }
         .into()
     }
@@ -654,6 +763,114 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE,
             "request body too many tokens"
         )));
+    }
+
+    /// The code is the signal to prefer: it is a closed vocabulary, so a
+    /// server that sends one is understood however it words the prose beside
+    /// it — and an unrecognised code stays an ordinary error rather than
+    /// becoming advice that cures nothing.
+    #[test]
+    fn a_server_that_names_the_overflow_in_its_code_is_understood() {
+        for code in [
+            "context_length_exceeded",
+            "context-length-exceeded",
+            "context_window_exceeded",
+            "prompt_too_long",
+            "CONTEXT_LENGTH_EXCEEDED",
+        ] {
+            assert!(
+                is_context_overflow(&refused(StatusCode::BAD_REQUEST, "nope", Some(code))),
+                "not recognised: {code}"
+            );
+        }
+        assert!(!is_context_overflow(&refused(
+            StatusCode::BAD_REQUEST,
+            "context length is not why this failed",
+            Some("rate_limit_exceeded")
+        )));
+    }
+
+    /// The status is checked before the words. A 403 is a refusal about
+    /// permission, so a `code` that names an overflow on one — or a message
+    /// that merely mentions a window — must not become a compaction.
+    #[test]
+    fn a_forbidden_request_is_never_an_overflow_however_it_is_worded() {
+        let error = refused(
+            StatusCode::FORBIDDEN,
+            "this model requires a larger context window than your plan allows",
+            Some("context_length_exceeded"),
+        );
+        assert!(!is_context_overflow(&error));
+        assert!(!is_retryable(&error));
+    }
+
+    /// The body-carried refusal is now the same type as a status-carried one,
+    /// so the classifier reads it without knowing which path it took. This is
+    /// the case that used to end the turn as a plain refusal.
+    #[test]
+    fn an_overflow_carried_in_a_successful_body_is_still_an_overflow() {
+        let body = r#"{"error":{"message":"This model's maximum context length is 131072 tokens","code":"context_length_exceeded"}}"#;
+        assert!(is_context_overflow(&in_body(body)));
+    }
+
+    /// ...and the OpenRouter shape, where the body carries a numeric code and
+    /// the reason is only in the prose.
+    #[test]
+    fn an_overflow_carried_in_a_200_without_a_usable_code_reads_the_message() {
+        let body = r#"{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum","code":400}}"#;
+        assert!(is_context_overflow(&in_body(body)));
+    }
+
+    /// A 200 that carries an unrelated error stays a refusal: an in-body error
+    /// is not evidence that the conversation outgrew anything.
+    #[test]
+    fn an_in_body_refusal_that_is_not_an_overflow_stays_a_refusal() {
+        let body = r#"{"error":{"message":"no endpoints found for this model"}}"#;
+        assert!(!is_context_overflow(&in_body(body)));
+    }
+
+    /// The retry count is the one behaviour a type change can move without
+    /// anyone noticing: before the refusal had a type of its own, a body-carried
+    /// failure fell through to "retry it" like any other unknown error, and a
+    /// stream that breaks mid-answer is worth one more attempt.
+    #[test]
+    fn a_body_carried_failure_is_retried_like_any_other_transient_one() {
+        let body = r#"{"error":{"message":"usage limit reached"}}"#;
+        assert!(is_retryable(&in_body(body)));
+    }
+
+    /// Except the one that cannot change: retrying an oversized body only
+    /// spends the wait again. The two classifiers must agree about it, which is
+    /// the whole reason both read one function.
+    #[test]
+    fn a_body_carried_overflow_is_never_retried() {
+        let body = r#"{"error":{"message":"This model's maximum context length is 131072 tokens","code":"context_length_exceeded"}}"#;
+        let error = in_body(body);
+        assert!(is_context_overflow(&error));
+        assert!(!is_retryable(&error));
+    }
+
+    /// A refusal carried in a 200 did not fail as a request, so the line the
+    /// user reads must not say it did.
+    #[test]
+    fn a_body_carried_refusal_reads_as_a_refusal_not_a_failed_request() {
+        let body = r#"{"error":{"message":"usage limit reached"}}"#;
+        assert_eq!(
+            format!("{:#}", in_body(body)),
+            "local refused the request: usage limit reached"
+        );
+    }
+
+    /// The code is read out of the same shapes the message is, and a numeric
+    /// code is a status restated rather than a reason.
+    #[test]
+    fn a_code_is_read_from_the_error_object_and_a_number_is_not_a_code() {
+        assert_eq!(
+            extract_error_code(r#"{"error":{"code":"prompt_too_long"}}"#).as_deref(),
+            Some("prompt_too_long")
+        );
+        assert_eq!(extract_error_code(r#"{"error":{"code":400}}"#), None);
+        assert_eq!(extract_error_code("not json"), None);
     }
 
     #[test]
