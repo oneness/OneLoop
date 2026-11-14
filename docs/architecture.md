@@ -814,3 +814,32 @@ docs/
   index.html        Executive presentation (GitHub Pages, space-bar nav)
   style-guide.md    Coding conventions and lint config
 ```
+
+## Size
+
+A snapshot as of 2026-11-14, because it drifts with every change. Recompute
+with `nix-shell -p tokei --run "tokei src --types=Rust"`, or count non-comment
+lines outside each file's `#[cfg(test)]` module.
+
+| Measure | Lines |
+|---|---|
+| Production Rust | 6,415 |
+| Test Rust | 3,011 |
+| Combined | 9,426 |
+| Test : production ratio | 0.47 |
+| Production share of combined | 68% |
+| Test share of combined | 32% |
+| Physical lines (all `.rs`, blanks and comments in) | 12,644 |
+
+`tokei` reports 9,486 code lines out of 11,129 physical ones (1,245 blanks, 398
+`//` comments). The split above differs in one way only: it drops comment-only
+lines, so 1,920 come out and 9,426 remain. `///` doc comments count as code in
+both — `tokei` treats them that way, and so does this table — which is why the
+comment total stays so small.
+
+Two things the totals hide: about 1.8k of the production lines are the
+provider adapters (`providers.rs`, `providers/chat.rs`, `providers/responses.rs`),
+not the loop itself — the loop, in `agent.rs`, `turn.rs`, and `batch.rs`, is
+~510 lines. And the production figure is inflated by doc comments, which no
+line count can tell apart from the code it documents: the *why* sits next to the
+line it explains, and both are counted as the same line.
