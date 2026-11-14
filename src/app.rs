@@ -270,7 +270,7 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
     let mut commands = String::from(
-        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first\n                      /model <alias>; <prompt> — switch, then send the prompt\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first, with or without a prompt\n                      /model <alias>; <prompt> — switch once that model answers\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
     );
     if has_claude {
         commands.push_str(
@@ -484,15 +484,20 @@ async fn run_bash(agent: &mut Agent, command: &str) -> bool {
     }
 }
 
-/// Lasts for this session; the config file is not touched. It is read again
-/// first, so a model added since startup is one command away — and a file that
-/// no longer parses warns instead of taking the loaded models away.
-async fn switch_model(agent: &mut Agent, requested: Option<&str>) -> bool {
+/// Every `/model` starts here, prefixed or not: the file is read again before
+/// the switch, so a model added since startup is one command away, and a file
+/// that no longer parses warns instead of taking the loaded models away.
+fn reread_models(agent: &mut Agent) {
     if let Err(e) = agent.reload_models() {
         output::warn(&format!(
-            "config not reread ({e:#}); choosing from the models already loaded"
+            "config not reread ({e:#}); the models already loaded still work"
         ));
     }
+}
+
+/// Lasts for this session; the config file is not touched.
+async fn switch_model(agent: &mut Agent, requested: Option<&str>) -> bool {
+    reread_models(agent);
     let alias = match requested {
         Some(alias) => alias.to_string(),
         None => {
@@ -594,6 +599,7 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 
         let ParsedInput { prompt, command } = parse_input(&line);
         if let Some((alias, prompt)) = model_prompt(command.as_ref(), prompt) {
+            reread_models(agent);
             run_interactive_turn(agent, prompt, Some(alias)).await;
             eprintln!();
             continue;
