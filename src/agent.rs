@@ -1,7 +1,6 @@
 mod banner;
 mod batch;
 mod compact;
-mod duplicate_reads;
 pub mod metrics;
 pub mod session;
 pub mod spec;

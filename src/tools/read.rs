@@ -22,10 +22,6 @@ struct ReadInput {
     offset: Option<usize>,
     /// Lines to show from `offset`, never more than the cap.
     limit: Option<usize>,
-    // `force` is deliberately absent: whether this read is a duplicate is a
-    // question only the agent's transcript can answer, so the agent reads the
-    // flag out of the raw arguments before dispatching the call. Serde ignores
-    // unknown fields, which is what lets the tool accept it and do nothing.
 }
 
 #[async_trait]
@@ -63,15 +59,6 @@ impl Tool for ReadTool {
                         "Optional. How many lines to show from `offset`. \
                          Defaults to, and is never more than, {DEFAULT_MAX_LINES}."
                     )
-                },
-                // Read by the agent, not by this tool: only the agent holds the
-                // transcript that can say whether the read is a duplicate.
-                "force": {
-                    "type": "boolean",
-                    "description": "Optional. Re-send a result this conversation \
-                                    already has. Only matters when the same read \
-                                    is already above, which the agent otherwise \
-                                    answers with a pointer to it."
                 }
             },
             "required": ["path"]

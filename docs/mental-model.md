@@ -82,14 +82,13 @@ the tools it asked for*, ending on an answer that asks for no tools.
             (7) batch.rs run: every call in     |               |
                 its own task, per-file lock     |               |
             (8) metrics: tool_exec + calls[]    |               |
-            (9) duplicate reads -> pointers     |               |
-             (10) push_tool_result (each after) |               |
+             (9) push_tool_result (each after) |               |
                  "✓ <what ran> · 1.2s"          |               |
                    |                            |               |
                    +----------------------------+---------------+
 ```
 
-## The same ten steps, in words
+## The same nine steps, in words
 
 1. **The turn claims the status line.** `TurnStatus` holds `working` for as long
    as it lives and reports `idle` when it drops, so no exit path can leave the
@@ -111,10 +110,8 @@ the tools it asked for*, ending on an answer that asks for no tools.
    behind a lock; everything else runs together. Each call times itself, and
    that one measurement feeds both the trace line and the ledger.
 8. **The batch is recorded** with its span and each call's own.
-9. **A re-read of a payload already in the transcript** is answered with a
-   pointer to the original instead of a second copy of it.
-10. **Each result is written down and named on screen**, then the loop goes back
-    to step 3. The turn ends at step 5 when nothing more is asked for.
+9. **Each result is written down and named on screen**, then the loop goes back
+   to step 3. The turn ends at step 5 when nothing more is asked for.
 
 ## What is written where
 

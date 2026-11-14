@@ -171,7 +171,6 @@ pub fn truncate_tail(input: &str, max_bytes: usize, max_lines: usize) -> String 
 /// A window that stops short of the cap because the caller asked for a small
 /// range is not "truncated" — it is exactly what was requested — but it still
 /// gets the hint, because the model's next question is always the same one.
-/// Every notice it can end with is recognised by [`window_notice`].
 pub fn truncate_window(file_lines: &[&str], first: usize, last: usize, max_bytes: usize) -> String {
     let total = file_lines.len();
     // No caller produces a window that names no line, but an empty payload
@@ -193,8 +192,6 @@ pub fn truncate_window(file_lines: &[&str], first: usize, last: usize, max_bytes
     // an empty result and a resume offset that never advances — the next call
     // would ask for the same line and get the same nothing — so return the
     // widest slice that fits and say plainly that no window reaches the rest.
-    // It opens the way every notice here does, so [`window_notice`] can tell
-    // it apart from file content.
     if shown == 0 {
         return format!(
             "{}\n[output truncated at the {max_bytes}-byte cap: line {first} alone exceeds \
@@ -218,26 +215,6 @@ pub fn truncate_window(file_lines: &[&str], first: usize, last: usize, max_bytes
         ));
     }
     content
-}
-
-/// How every notice [`truncate_window`] appends opens: a payload whose last
-/// line starts with one is telling the model where the rest of the file is.
-/// `[showing lines` is the range hint for a window that stopped where it was
-/// asked to; the rest are the byte cap, which is the only thing that ever cuts
-/// content short.
-const NOTICE_OPENERS: [&str; 2] = ["[output truncated", "[showing lines"];
-
-/// The resume hint a window payload ends with, or `None` when it ends in file
-/// content.
-///
-/// A caller that wants to carry the hint somewhere else asks here rather than
-/// matching the text at a distance, so a notice shape added to
-/// [`truncate_window`] is recognised everywhere by being written once.
-pub fn window_notice(line: &str) -> Option<&str> {
-    NOTICE_OPENERS
-        .iter()
-        .any(|opener| line.starts_with(opener))
-        .then_some(line)
 }
 
 /// Longest suffix of `input` at most `max_bytes` long that starts on a UTF-8
@@ -454,7 +431,7 @@ mod tests {
     /// A window that stops early must say where to resume, in the file's own
     /// numbering — an offset the model cannot act on is worse than no hint.
     #[test]
-    fn a_window_notice_names_the_offset_that_continues_it() {
+    fn a_window_names_the_offset_that_continues_it() {
         let lines = ["a", "b", "c", "d"];
         let window = truncate_window(&lines, 2, 3, 1024);
         assert_eq!(
@@ -495,24 +472,6 @@ mod tests {
             window.contains("no line window reaches the rest"),
             "{window}"
         );
-    }
-
-    /// Every notice a window can end with is recognisable, so a caller can
-    /// carry the hint over — and file content never is, so a file whose last
-    /// line merely looks like a notice cannot be mistaken for one.
-    #[test]
-    fn every_notice_a_window_appends_is_recognised_as_one() {
-        let long = "x".repeat(40);
-        let stopped_short = truncate_window(&["a", "b", "c"], 1, 2, 1024);
-        let byte_capped = truncate_window(&["aaaa", "bbbb", "cccc"], 1, 3, 9);
-        let too_wide = truncate_window(&[long.as_str(), "b"], 1, 2, 8);
-
-        for window in [stopped_short, byte_capped, too_wide] {
-            let last = window.lines().next_back().unwrap_or_default();
-            assert_eq!(window_notice(last), Some(last), "{window}");
-        }
-
-        assert_eq!(window_notice("fn main() {}"), None);
     }
 
     /// Bounds that name no line are answered rather than silently emptied: a

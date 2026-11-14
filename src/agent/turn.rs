@@ -14,7 +14,6 @@ use serde_json::json;
 
 use super::Agent;
 use super::batch::{run, span};
-use super::duplicate_reads::suppress_duplicate_reads;
 use super::metrics::estimate_tokens;
 use super::spinner::SpinnerGuard;
 use super::trace::format_tool_call;
@@ -416,7 +415,7 @@ impl Agent {
         // itself, so there is no second clock to disagree with the first.
         let batch = span(&called);
         let spans: Vec<Duration> = called.iter().map(|call| call.elapsed).collect();
-        let mut results: Vec<ToolResult> = called.into_iter().map(|call| call.result).collect();
+        let results: Vec<ToolResult> = called.into_iter().map(|call| call.result).collect();
 
         self.metrics.log(
             "tool_exec",
@@ -433,24 +432,6 @@ impl Agent {
                 "success": results.iter().all(|r| !r.is_error),
             }),
         );
-
-        // Cheap reads, expensive re-sends: a payload already in the transcript
-        // is answered with a pointer to it instead of a second copy. Done here
-        // rather than inside the tool because this is where the transcript is
-        // in hand — and the transcript is the only honest record of what the
-        // model can still see.
-        let suppressed = suppress_duplicate_reads(
-            &self.spec.tools,
-            &self.spec.cwd,
-            &tool_calls,
-            &mut results,
-            self.session.messages(),
-        );
-        if suppressed > 0 {
-            output::step(&format!(
-                "answered {suppressed} duplicate read(s) with a pointer to the original"
-            ));
-        }
 
         for (((tc, result), tool_label), took) in
             tool_calls.iter().zip(results).zip(labels).zip(spans)

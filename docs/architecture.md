@@ -764,9 +764,6 @@ src/
     banner.rs       the startup summary: summary, packed, the column it wraps on
     batch.rs        One batch of tool calls, the per-file locks that order them, and
                     the per-call timing the trace and the ledger both read
-    duplicate_reads.rs
-                    answering a re-read with a pointer: read_payloads_in_context,
-                    payload_digest, suppress_duplicate_reads, duplicate_read_notice
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
     session.rs      Session persistence, root, rotation, dangling-tool-call repair, the
                     per-conversation lock
