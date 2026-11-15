@@ -431,11 +431,11 @@ mod tests {
         );
     }
 
-    /// Replacements are applied from the end of the file, so earlier offsets
-    /// remain valid even when a later replacement changes text length.
+    /// Applying from the end preserves original offsets when an earlier edit
+    /// changes length, and an empty replacement deletes text in the same batch.
     #[tokio::test]
-    async fn replacement_order_does_not_shift_original_match_offsets() {
-        let dir = dir_holding("batch-offsets", "a middle z\n");
+    async fn a_batch_handles_length_changes_and_deletions_together() {
+        let dir = dir_holding("batch-offsets-delete", "a middle z\n");
         let ctx = AgentContext { cwd: dir.clone() };
         EditTool
             .execute(
@@ -443,39 +443,17 @@ mod tests {
                     "path": "file.txt",
                     "edits": [
                         {"old_text": "a", "new_text": "long beginning"},
-                        {"old_text": "z", "new_text": "end"}
+                        {"old_text": " middle", "new_text": ""}
                     ]
                 }),
                 &ctx,
             )
             .await
-            .expect("both disjoint replacements should apply");
+            .expect("the disjoint replacement and deletion should apply");
 
         assert_eq!(
             std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "long beginning middle end\n"
-        );
-    }
-
-    /// Empty replacement text deletes the uniquely matched text.
-    #[tokio::test]
-    async fn an_empty_new_text_deletes_the_match() {
-        let dir = dir_holding("batch-delete", "alpha middle omega");
-        let ctx = AgentContext { cwd: dir.clone() };
-        EditTool
-            .execute(
-                json!({
-                    "path": "file.txt",
-                    "edits": [{"old_text": " middle", "new_text": ""}]
-                }),
-                &ctx,
-            )
-            .await
-            .expect("empty new_text is a deletion");
-
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "alpha omega"
+            "long beginning z\n"
         );
     }
 
