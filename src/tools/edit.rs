@@ -43,7 +43,8 @@ impl Tool for EditTool {
                 },
                 "old_text": {
                     "type": "string",
-                    "description": "Exact text to replace"
+                    "minLength": 1,
+                    "description": "Non-empty exact text to replace. It must occur exactly once in the file; include enough surrounding context to make it unique."
                 },
                 "new_text": {
                     "type": "string",
@@ -66,8 +67,13 @@ impl Tool for EditTool {
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
         let input: EditInput = serde_json::from_value(input).context(
-            "invalid edit input; expected { path: string, old_text: string, new_text: string }",
+            "invalid edit input; expected { path: string, old_text: non-empty string, new_text: string }",
         )?;
+        if input.old_text.is_empty() {
+            return Err(anyhow!(
+                "old_text must not be empty; provide non-empty exact text that occurs once in the file"
+            ));
+        }
 
         let path = resolve_path(&ctx.cwd, &input.path);
 
@@ -312,6 +318,34 @@ mod tests {
             "alpha\ngamma\n"
         );
         assert!(result.content.starts_with("edited"), "{}", result.content);
+    }
+
+    #[test]
+    fn the_schema_requires_a_nonempty_old_text() {
+        let schema = EditTool.schema();
+        assert_eq!(schema["properties"]["old_text"]["minLength"], 1);
+        assert_eq!(schema["required"], json!(["path", "old_text", "new_text"]));
+    }
+
+    #[tokio::test]
+    async fn an_empty_old_text_is_refused_without_changing_the_file() {
+        let dir = dir_holding("empty-old-text", "alpha\nbeta\n");
+        let ctx = AgentContext { cwd: dir.clone() };
+
+        let error = EditTool
+            .execute(
+                json!({"path": "file.txt", "old_text": "", "new_text": "replacement"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("old_text must not be empty"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "alpha\nbeta\n"
+        );
     }
 
     /// The shape that cost ten attempts in one session: two identical blocks,
