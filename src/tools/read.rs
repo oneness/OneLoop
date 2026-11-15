@@ -6,9 +6,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, first_line, truncate_window},
-    path::{display_path, resolve_path},
-    tools::AgentContext,
+    output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_window},
+    path::resolve_path,
+    tools::{AgentContext, PATH_ARGUMENT, path_trace_label},
 };
 
 use super::{Tool, ToolResult};
@@ -68,14 +68,11 @@ impl Tool for ReadTool {
     /// The resolved path, spelled the way every other tool in the trace spells
     /// it. A call that arrived without one says so.
     fn trace_label(&self, arguments: &Value, cwd: &Path) -> Option<String> {
-        Some(arguments.get("path").and_then(Value::as_str).map_or_else(
-            || "?".to_string(),
-            |path| first_line(&display_path(cwd, path)),
-        ))
+        path_trace_label(arguments, cwd)
     }
 
     fn lock_path(&self) -> Option<&'static str> {
-        Some("path")
+        Some(PATH_ARGUMENT)
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {

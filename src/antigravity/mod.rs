@@ -2,4 +2,4 @@
 
 mod client;
 
-pub use client::{DEFAULT_INSTRUCTION, Request, review};
+pub use client::{DEFAULT_INSTRUCTION, NAME, review};

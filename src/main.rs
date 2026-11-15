@@ -11,6 +11,7 @@ mod output;
 mod path;
 mod prompt;
 mod providers;
+mod review;
 mod status;
 mod tools;
 

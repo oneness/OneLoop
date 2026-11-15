@@ -24,6 +24,27 @@ pub fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+/// A fresh scratch directory for a test, removed first so a leftover from an
+/// earlier run cannot answer for this one.
+///
+/// The `name` is the test's own, and it lands in the directory along with the
+/// process id, so two tests asking at once — which is what the harness does —
+/// do not share a tree. `nested` is created inside it, for a test that needs
+/// the layout the code expects rather than an empty directory: a session test
+/// wants `.oneloop/sessions` to exist, a skill test `.oneloop/skills`.
+///
+/// Returns the root; the caller is responsible for the rest.
+#[cfg(test)]
+pub fn test_dir(name: &str, nested: Option<&str>) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("oneloop-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    match nested {
+        Some(relative) => std::fs::create_dir_all(dir.join(relative)).unwrap(),
+        None => std::fs::create_dir_all(&dir).unwrap(),
+    }
+    dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

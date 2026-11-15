@@ -379,6 +379,32 @@ fn decode_tool_arguments(arguments: Value) -> (Value, Option<String>) {
     }
 }
 
+/// The one place the wire shape of a call's `arguments` is decided: a JSON
+/// object, encoded as a string.
+///
+/// Shared by both protocols, which disagree about almost everything else. The
+/// field is typed as a string, but a server that renders history through a
+/// chat template needs an object *inside* it — Qwen's template reaches for
+/// `arguments|items`, and a string or an array there fails the whole request
+/// with a 500. The message stays in the session, so that is every request from
+/// then on, not just the one.
+///
+/// A call whose arguments never parsed ([`decode_tool_arguments`] keeps the
+/// raw text) therefore goes out as `{}`. Nothing is lost by it: the tool
+/// result travelling beside the call is what tells the model to send it again,
+/// and half a truncated argument list is no more use to the model than none.
+pub(super) fn encode_arguments(arguments: &Value) -> String {
+    let object = match arguments {
+        Value::Object(_) => Some(arguments.to_string()),
+        // Already encoded — pass the model's own bytes through rather than
+        // re-encoding them, but only once it is known to be an object.
+        Value::String(text) => matches!(serde_json::from_str::<Value>(text), Ok(Value::Object(_)))
+            .then(|| text.clone()),
+        _ => None,
+    };
+    object.unwrap_or_else(|| "{}".to_string())
+}
+
 /// Non-2xx becomes an error carrying the provider's own message.
 async fn send_and_read(
     request: reqwest::RequestBuilder,
@@ -533,8 +559,8 @@ fn extract_error_code(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         Credentials, OauthEntry, Provider, ProviderHttpError, append_record, decode_tool_arguments,
-        errors_log_path, extract_error_code, extract_error_message, is_context_overflow,
-        is_retryable,
+        encode_arguments, errors_log_path, extract_error_code, extract_error_message,
+        is_context_overflow, is_retryable,
     };
     use reqwest::StatusCode;
     use serde_json::{Value, json};
@@ -682,6 +708,34 @@ mod tests {
             decode_tool_arguments(Value::String(r#"{"command":"ls"}"#.to_string()));
         assert_eq!(arguments, json!({"command": "ls"}));
         assert!(error.is_none());
+    }
+
+    /// An argument list that never parsed goes back on the wire as `{}`: the
+    /// conversation has to carry a call for every result, and inventing the
+    /// missing half would misreport the turn.
+    #[test]
+    fn encode_arguments_sends_an_unparsed_call_as_an_empty_object() {
+        assert_eq!(
+            encode_arguments(&Value::String(r#"{"path":"a.r"#.into())),
+            "{}"
+        );
+    }
+
+    /// A call that was already encoded goes out as the model's own bytes,
+    /// rather than being encoded a second time.
+    #[test]
+    fn encode_arguments_passes_an_encoded_object_through() {
+        assert_eq!(
+            encode_arguments(&Value::String(r#"{"path":"a.rs"}"#.into())),
+            r#"{"path":"a.rs"}"#
+        );
+    }
+
+    /// Anything that is not an object — an array, a bare string — has no
+    /// object to put inside the field, so it collapses to `{}`.
+    #[test]
+    fn encode_arguments_collapses_a_non_object_to_an_empty_object() {
+        assert_eq!(encode_arguments(&json!(["a", "b"])), "{}");
     }
 
     #[test]

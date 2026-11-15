@@ -159,11 +159,7 @@ mod tests {
     }
 
     fn project_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneloop-batch-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::config::test_dir(name, None)
     }
 
     fn called(started: Instant, elapsed: Duration) -> Called {

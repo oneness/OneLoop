@@ -14,8 +14,8 @@ use crate::messages::{Message, ToolCall};
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
-    STREAM_IDLE_TIMEOUT, decode_tool_arguments, extract_error_code, extract_error_message,
-    log_provider_failure,
+    STREAM_IDLE_TIMEOUT, decode_tool_arguments, encode_arguments, extract_error_code,
+    extract_error_message, log_provider_failure,
 };
 
 // ── Request ───────────────────────────────────────────────────────────
@@ -117,22 +117,6 @@ fn to_items(messages: Vec<Message>) -> Vec<Item> {
             }),
         })
         .collect()
-}
-
-/// Arguments go back as the encoded object the API asks for. A call whose
-/// arguments never parsed is replayed as `{}`: the result travelling beside
-/// it is what tells the model to try again, and half an argument list is no
-/// more use than none.
-fn encode_arguments(arguments: &Value) -> String {
-    match arguments {
-        Value::Object(_) => arguments.to_string(),
-        Value::String(text)
-            if matches!(serde_json::from_str::<Value>(text), Ok(Value::Object(_))) =>
-        {
-            text.clone()
-        }
-        _ => "{}".to_string(),
-    }
 }
 
 // ── Response ──────────────────────────────────────────────────────────

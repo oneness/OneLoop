@@ -12,7 +12,8 @@ use crate::messages::{Message, ToolCall};
 
 use super::{
     OPENCODE_GO, OPENCODE_SESSION_HEADER, ProviderHttpError, ProviderRequest, ProviderResponse,
-    decode_tool_arguments, extract_error_code, log_provider_failure, send_and_read,
+    decode_tool_arguments, encode_arguments, extract_error_code, log_provider_failure,
+    send_and_read,
 };
 
 // ── Request types (Chat Completions) ──────────────────────────────────
@@ -107,31 +108,6 @@ where
     S: serde::Serializer,
 {
     serializer.serialize_str(&encode_arguments(arguments))
-}
-
-/// The one place the wire shape of `arguments` is decided: a JSON object,
-/// encoded as a string.
-///
-/// The field is typed as a string, but a server that renders history through a
-/// chat template needs an object *inside* it — Qwen's template reaches for
-/// `arguments|items`, and a string or an array there fails the whole request
-/// with a 500. The message stays in the session, so that is every request from
-/// then on, not just the one.
-///
-/// A call whose arguments never parsed (`decode_tool_arguments` keeps the raw
-/// text) therefore goes out as `{}`. Nothing is lost by it: the tool result
-/// travelling beside the call is what tells the model to send it again, and
-/// half a truncated argument list is no more use to the model than none.
-fn encode_arguments(arguments: &Value) -> String {
-    let object = match arguments {
-        Value::Object(_) => Some(arguments.to_string()),
-        // Already encoded — pass the model's own bytes through rather than
-        // re-encoding them, but only once it is known to be an object.
-        Value::String(text) => matches!(serde_json::from_str::<Value>(text), Ok(Value::Object(_)))
-            .then(|| text.clone()),
-        _ => None,
-    };
-    object.unwrap_or_else(|| "{}".to_string())
 }
 
 // ── Response types (Chat Completions) ─────────────────────────────────

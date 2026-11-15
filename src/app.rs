@@ -90,20 +90,35 @@ enum AskMode {
     Standalone,
 }
 
-impl AskMode {
-    fn as_command(&self) -> &'static str {
+/// Which second-opinion CLI answers a review command.
+#[derive(Clone, Copy, PartialEq)]
+enum SecondOpinion {
+    Claude,
+    Antigravity,
+}
+
+impl SecondOpinion {
+    /// The name and the default critique instruction, read from the backend's
+    /// own re-exports so this never reaches the mechanism they share.
+    fn identity(self) -> (&'static str, &'static str) {
         match self {
-            AskMode::Critique => "/cc",
-            AskMode::Ask => "/ca",
-            AskMode::Standalone => "/cn",
+            SecondOpinion::Claude => (crate::claude::NAME, crate::claude::DEFAULT_INSTRUCTION),
+            SecondOpinion::Antigravity => (
+                crate::antigravity::NAME,
+                crate::antigravity::DEFAULT_INSTRUCTION,
+            ),
         }
     }
 
-    fn as_antigravity_command(&self) -> &'static str {
-        match self {
-            AskMode::Critique => "/ag",
-            AskMode::Ask => "/aga",
-            AskMode::Standalone => "/agn",
+    /// The `/cc` vs `/ag` form of each mode, for a usage message.
+    fn command(self, mode: AskMode) -> &'static str {
+        match (self, mode) {
+            (SecondOpinion::Claude, AskMode::Critique) => "/cc",
+            (SecondOpinion::Claude, AskMode::Ask) => "/ca",
+            (SecondOpinion::Claude, AskMode::Standalone) => "/cn",
+            (SecondOpinion::Antigravity, AskMode::Critique) => "/ag",
+            (SecondOpinion::Antigravity, AskMode::Ask) => "/aga",
+            (SecondOpinion::Antigravity, AskMode::Standalone) => "/agn",
         }
     }
 }
@@ -113,11 +128,8 @@ enum Command<'a> {
     Help,
     Clear,
     Compact,
-    Claude {
-        mode: AskMode,
-        text: Option<&'a str>,
-    },
-    Antigravity {
+    SecondOpinion {
+        backend: SecondOpinion,
         mode: AskMode,
         text: Option<&'a str>,
     },
@@ -143,35 +155,24 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
         None => (remainder, ""),
     };
     let argument = (!argument.is_empty()).then_some(argument);
+    let second_opinion = |backend, mode| {
+        Some(Command::SecondOpinion {
+            backend,
+            mode,
+            text: argument,
+        })
+    };
     match name {
         "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
         "compact" if argument.is_none() => Some(Command::Compact),
         "model" => Some(Command::Model(argument)),
-        "cc" => Some(Command::Claude {
-            mode: AskMode::Critique,
-            text: argument,
-        }),
-        "ca" => Some(Command::Claude {
-            mode: AskMode::Ask,
-            text: argument,
-        }),
-        "cn" => Some(Command::Claude {
-            mode: AskMode::Standalone,
-            text: argument,
-        }),
-        "ag" => Some(Command::Antigravity {
-            mode: AskMode::Critique,
-            text: argument,
-        }),
-        "aga" => Some(Command::Antigravity {
-            mode: AskMode::Ask,
-            text: argument,
-        }),
-        "agn" => Some(Command::Antigravity {
-            mode: AskMode::Standalone,
-            text: argument,
-        }),
+        "cc" => second_opinion(SecondOpinion::Claude, AskMode::Critique),
+        "ca" => second_opinion(SecondOpinion::Claude, AskMode::Ask),
+        "cn" => second_opinion(SecondOpinion::Claude, AskMode::Standalone),
+        "ag" => second_opinion(SecondOpinion::Antigravity, AskMode::Critique),
+        "aga" => second_opinion(SecondOpinion::Antigravity, AskMode::Ask),
+        "agn" => second_opinion(SecondOpinion::Antigravity, AskMode::Standalone),
         _ => None,
     }
 }
@@ -336,99 +337,81 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
         },
         Command::Model(alias) => switch_model(agent, alias).await,
         Command::Bash(command) => run_bash(agent, command).await,
-        Command::Claude { mode, text } => {
-            use crate::claude::{DEFAULT_INSTRUCTION, Request};
+        Command::SecondOpinion {
+            backend,
+            mode,
+            text,
+        } => run_second_opinion(agent, backend, mode, text).await,
+    }
+}
 
-            let focused;
-            let request = match (mode, text) {
-                (AskMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
-                (AskMode::Critique, Some(focus)) => {
-                    focused = format!("{DEFAULT_INSTRUCTION} Focus on: {focus}");
-                    Request::Discussion(&focused)
-                }
-                (AskMode::Ask, Some(question)) => Request::Discussion(question),
-                (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
-                (mode, None) => {
-                    output::fail(&format!(
-                        "usage: {} <question or prompt>",
-                        mode.as_command()
-                    ));
-                    return false;
-                }
-            };
-            output::step(if matches!(request, Request::Direct(_)) {
-                "asking Claude (sending your prompt only)..."
-            } else {
-                "asking Claude (sharing discussion and recorded tool calls/results)..."
-            });
+/// Ask one of the second-opinion CLIs about this conversation, then keep its
+/// answer as a reference the current model is told about.
+///
+/// One implementation for both backends: the name, the default instruction,
+/// and the review call are looked up from the backend, so this function speaks
+/// only to `claude` and `antigravity` — never to the mechanism they share.
+async fn run_second_opinion(
+    agent: &mut Agent,
+    backend: SecondOpinion,
+    mode: AskMode,
+    text: Option<&str>,
+) -> bool {
+    use crate::claude::Request;
 
-            match crate::claude::review(agent.messages(), request, agent.cwd()).await {
-                Ok(review) => {
-                    output::head("Claude response");
-                    println!("{}", review.text);
-                    if let Err(error) = agent.record_reference(review.reference) {
-                        output::fail(&format!(
-                            "Claude response displayed but could not be saved: {error:#}"
-                        ));
-                        return false;
-                    }
-                    output::note(
-                        "Claude response saved as reference — tell the current model how to proceed",
-                    );
-                    true
-                }
-                Err(error) => {
-                    output::fail(&format!("{error:#}"));
-                    false
-                }
-            }
+    let (name, default_instruction) = backend.identity();
+    let focused;
+    let request = match (mode, text) {
+        (AskMode::Critique, None) => Request::Discussion(default_instruction),
+        (AskMode::Critique, Some(focus)) => {
+            focused = format!("{default_instruction} Focus on: {focus}");
+            Request::Discussion(&focused)
         }
-        Command::Antigravity { mode, text } => {
-            use crate::antigravity::{DEFAULT_INSTRUCTION, Request};
+        (AskMode::Ask, Some(question)) => Request::Discussion(question),
+        (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
+        (mode, None) => {
+            output::fail(&format!(
+                "usage: {} <question or prompt>",
+                backend.command(mode)
+            ));
+            return false;
+        }
+    };
+    if matches!(request, Request::Direct(_)) {
+        output::step(&format!("asking {name} (sending your prompt only)..."));
+    } else {
+        output::step(&format!(
+            "asking {name} (sharing discussion and recorded tool calls/results)..."
+        ));
+    }
 
-            let focused;
-            let request = match (mode, text) {
-                (AskMode::Critique, None) => Request::Discussion(DEFAULT_INSTRUCTION),
-                (AskMode::Critique, Some(focus)) => {
-                    focused = format!("{DEFAULT_INSTRUCTION} Focus on: {focus}");
-                    Request::Discussion(&focused)
-                }
-                (AskMode::Ask, Some(question)) => Request::Discussion(question),
-                (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
-                (mode, None) => {
-                    output::fail(&format!(
-                        "usage: {} <question or prompt>",
-                        mode.as_antigravity_command()
-                    ));
-                    return false;
-                }
-            };
-            output::step(if matches!(request, Request::Direct(_)) {
-                "asking Antigravity (sending your prompt only)..."
-            } else {
-                "asking Antigravity (sharing discussion and recorded tool calls/results)..."
-            });
+    let reviewed = match backend {
+        SecondOpinion::Claude => {
+            crate::claude::review(agent.messages(), request, agent.cwd()).await
+        }
+        SecondOpinion::Antigravity => {
+            crate::antigravity::review(agent.messages(), request, agent.cwd()).await
+        }
+    };
 
-            match crate::antigravity::review(agent.messages(), request, agent.cwd()).await {
-                Ok(review) => {
-                    output::head("Antigravity response");
-                    println!("{}", review.text);
-                    if let Err(error) = agent.record_reference(review.reference) {
-                        output::fail(&format!(
-                            "Antigravity response displayed but could not be saved: {error:#}"
-                        ));
-                        return false;
-                    }
-                    output::note(
-                        "Antigravity response saved as reference — tell the current model how to proceed",
-                    );
-                    true
-                }
-                Err(error) => {
-                    output::fail(&format!("{error:#}"));
-                    false
-                }
+    match reviewed {
+        Ok(review) => {
+            output::head(&format!("{name} response"));
+            println!("{}", review.text);
+            if let Err(error) = agent.record_reference(review.reference) {
+                output::fail(&format!(
+                    "{name} response displayed but could not be saved: {error:#}"
+                ));
+                return false;
             }
+            output::note(&format!(
+                "{name} response saved as reference — tell the current model how to proceed"
+            ));
+            true
+        }
+        Err(error) => {
+            output::fail(&format!("{error:#}"));
+            false
         }
     }
 }
@@ -656,7 +639,10 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 
 #[cfg(test)]
 mod tests {
-    use super::{AskMode, Command, help_commands, interactive_prompt, parse_command, parse_input};
+    use super::{
+        AskMode, Command, SecondOpinion, help_commands, interactive_prompt, parse_command,
+        parse_input,
+    };
     use crate::agent::spec::SessionPolicy;
 
     /// The run mode is the only thing that decides whether a conversation is
@@ -676,16 +662,20 @@ mod tests {
 
     #[test]
     fn ag_modes_report_their_command_names() {
-        assert_eq!(AskMode::Critique.as_antigravity_command(), "/ag");
-        assert_eq!(AskMode::Ask.as_antigravity_command(), "/aga");
-        assert_eq!(AskMode::Standalone.as_antigravity_command(), "/agn");
+        assert_eq!(SecondOpinion::Antigravity.command(AskMode::Critique), "/ag");
+        assert_eq!(SecondOpinion::Antigravity.command(AskMode::Ask), "/aga");
+        assert_eq!(
+            SecondOpinion::Antigravity.command(AskMode::Standalone),
+            "/agn"
+        );
     }
 
     #[test]
     fn bare_ag_is_the_default_critique_command() {
         assert!(matches!(
             parse_input("/ag").command,
-            Some(Command::Antigravity {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Antigravity,
                 mode: AskMode::Critique,
                 text: None
             })
@@ -696,14 +686,16 @@ mod tests {
     fn aga_and_agn_parse_their_arguments() {
         assert!(matches!(
             parse_input("/aga question").command,
-            Some(Command::Antigravity {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Antigravity,
                 mode: AskMode::Ask,
                 text: Some("question")
             })
         ));
         assert!(matches!(
             parse_input("/agn prompt").command,
-            Some(Command::Antigravity {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Antigravity,
                 mode: AskMode::Standalone,
                 text: Some("prompt")
             })
@@ -724,7 +716,8 @@ mod tests {
     fn cc_without_arguments_is_critique() {
         assert!(matches!(
             parse_input("/cc").command,
-            Some(Command::Claude {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Claude,
                 mode: AskMode::Critique,
                 text: None
             })
@@ -737,7 +730,8 @@ mod tests {
         assert!(matches!(
             (parsed.command, parsed.prompt),
             (
-                Some(Command::Claude {
+                Some(Command::SecondOpinion {
+                    backend: SecondOpinion::Claude,
                     mode: AskMode::Critique,
                     text: Some("the retry logic")
                 }),
@@ -750,7 +744,8 @@ mod tests {
     fn ca_requires_a_question() {
         assert!(matches!(
             parse_input("/ca").command,
-            Some(Command::Claude {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Claude,
                 mode: AskMode::Ask,
                 text: None
             })
@@ -763,7 +758,8 @@ mod tests {
         assert!(matches!(
             (parsed.command, parsed.prompt),
             (
-                Some(Command::Claude {
+                Some(Command::SecondOpinion {
+                    backend: SecondOpinion::Claude,
                     mode: AskMode::Ask,
                     text: Some("What about the retry logic?")
                 }),
@@ -776,7 +772,8 @@ mod tests {
     fn cn_requires_a_prompt() {
         assert!(matches!(
             parse_input("/cn").command,
-            Some(Command::Claude {
+            Some(Command::SecondOpinion {
+                backend: SecondOpinion::Claude,
                 mode: AskMode::Standalone,
                 text: None
             })
@@ -789,7 +786,8 @@ mod tests {
         assert!(matches!(
             (parsed.command, parsed.prompt),
             (
-                Some(Command::Claude {
+                Some(Command::SecondOpinion {
+                    backend: SecondOpinion::Claude,
                     mode: AskMode::Standalone,
                     text: Some("Hello world")
                 }),
@@ -1055,7 +1053,7 @@ mod tests {
             let parsed = parse_input(input);
             assert!(matches!(
                 (parsed.command, parsed.prompt),
-                (Some(Command::Claude { text: None, .. }), None)
+                (Some(Command::SecondOpinion { text: None, .. }), None)
             ));
         }
     }

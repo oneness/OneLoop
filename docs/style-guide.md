@@ -116,6 +116,38 @@ When to use `for` loops instead:
       retry.rs        ← retry, then fall back to another model
   ```
 
+### Dependencies form a tree, not a graph
+
+Each module depends only on things *below* it. Nothing depends back up, and no
+two modules at the same level depend on each other through a third.
+
+Concretely: `app` depends on `agent`, `claude`, `antigravity`, `models`,
+`config`, `output`, and `tools` — everything below it, never the reverse. The
+leaves (`messages`, `path`, and `output`) import nothing internal at all. The
+shape is a DAG, and it should stay one — a cycle means two modules cannot be
+understood, or tested, without the other.
+
+Two rules keep it that way:
+
+- **A child never reaches up for its parent's internals.** `use super::X` is
+  fine and normal — the parent of a nested module is also the barrel that
+  declares it, so `super` means "the namespace my siblings share," not "the
+  layer above me." A tool taking `Tool` and `ToolResult` from `super` is
+  reading its siblings' shared vocabulary, not calling upward. What is *not*
+  fine is a module reaching past its siblings to a shared dependency to name
+  a type they own: if `app` needs a type that only `claude` and `antigravity`
+  use, it takes it from one of *them*, which is why both re-export `Request`
+  and `DEFAULT_INSTRUCTION`.
+- **A shared helper goes in the lowest module that owns the concept.** Two
+  modules that need the same logic take it from their common dependency rather
+  than duplicating it, and the dependency does not learn about either of them
+  back — `review.rs` holds the second-opinion mechanism and imports only
+  `messages` and `status`, never `app`.
+
+A cheap check when adding a module: name what it may import, then confirm
+nothing in that list imports *it*. If something does, one of the two is in the
+wrong place.
+
 ## Environment Variables
 
 All env-based config follows the `ONELOOP_` prefix convention:

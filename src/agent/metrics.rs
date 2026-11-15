@@ -220,13 +220,7 @@ mod tests {
     }
 
     fn project_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "oneloop-metrics-test-{}-{name}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::config::test_dir(name, None)
     }
 
     #[test]

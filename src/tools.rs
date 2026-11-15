@@ -13,6 +13,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::messages::ToolDefinition;
+use crate::output::first_line;
+use crate::path::display_path;
 
 /// What a tool is given besides its own arguments: where the agent works.
 ///
@@ -27,6 +29,32 @@ pub struct AgentContext {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+}
+
+/// The argument every path-taking tool names its file in. The three tools that
+/// read, write, and edit one file answer both of the trait's path questions
+/// from it — the label resolves it and the lock names it — so it is written
+/// once here rather than in three `lock_path` bodies. The schemas still spell
+/// `"path"` in their own JSON, because a `json!` key cannot be a constant.
+pub const PATH_ARGUMENT: &str = "path";
+
+/// The trace label and lock path shared by every tool that takes one file.
+///
+/// A tool whose argument is a path answers both questions the same way — the
+/// label resolves it against the working directory, and the lock names the
+/// argument it came from — so the rule lives here instead of being copied into
+/// each tool. [`Tool::trace_label`] and [`Tool::lock_path`] are the only
+/// per-tool knobs, and a tool that wants neither keeps the defaults.
+pub fn path_trace_label(arguments: &Value, cwd: &Path) -> Option<String> {
+    Some(
+        arguments
+            .get(PATH_ARGUMENT)
+            .and_then(Value::as_str)
+            .map_or_else(
+                || "?".to_string(),
+                |path| first_line(&display_path(cwd, path)),
+            ),
+    )
 }
 
 #[async_trait]

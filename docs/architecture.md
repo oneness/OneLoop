@@ -387,6 +387,11 @@ registry — so `/help` lists these commands only when `claude` or `agy` is on
 `PATH`. The commands themselves parse either way; a missing binary is a launch
 error naming the fix, not an unknown command.
 
+Both are the same mechanism wearing different flags: `review.rs` builds the
+discussion payload, streams it to the child's stdin, and owns the timeout,
+cancellation, and reaping, while each client names only its binary, its flags,
+and whether its system prompt travels as a flag or in the prompt text.
+
 Six commands, three modes each, because the same reviewer can be asked three
 kinds of question:
 
@@ -771,7 +776,7 @@ src/
                     token estimation
   antigravity/
     mod.rs          Public entry points for Antigravity requests
-    client.rs       Stateless Antigravity CLI execution, discussion prompts, reference responses
+    client.rs       The Antigravity CLI: its binary, flags, and how it takes a system prompt
   app.rs            Interactive REPL (rustyline), `/` and `!` commands, Ctrl+C handling
   auth.rs           Credential resolution (env over ~/.oneloop/auth.json) and storage
   auth/
@@ -779,7 +784,7 @@ src/
   catalog.rs        ~/.oneloop/config.json: providers and their models, validation, active model
   claude/
     mod.rs          Public entry points for Claude requests
-    client.rs       Stateless Claude CLI execution, discussion prompts, reference responses
+    client.rs       The Claude Code CLI: its binary, flags, and how it takes a system prompt
   config.rs         env_or, the working directory
   models.rs         The registry: the list, which one is active, switching
   models/
@@ -795,6 +800,8 @@ src/
   providers/
     chat.rs         The Chat Completions wire format
     responses.rs    The shared Responses API implementation
+  review.rs         The second-opinion mechanism both CLIs share: the discussion
+                    payload, stdin streaming, timeout, cancellation, and reaping
   tools.rs          Tool trait (incl. trace_label, lock_path), ToolRegistry (Arc<dyn Tool>),
                     AgentContext
   tools/
@@ -818,28 +825,34 @@ docs/
 ## Size
 
 A snapshot as of 2026-11-14, because it drifts with every change. Recompute
-with `nix-shell -p tokei --run "tokei src --types=Rust"`, or count non-comment
-lines outside each file's `#[cfg(test)]` module.
+with `wc -l` over `src/**/*.rs` for the physical count, and by splitting each
+file at its first `#[cfg(test)]` line for the rest — every such marker here
+gates a test-only item, and the last one is always `mod tests`, so the split
+cannot cut production code.
 
 | Measure | Lines |
 |---|---|
-| Production Rust | 6,415 |
-| Test Rust | 3,011 |
-| Combined | 9,426 |
-| Test : production ratio | 0.47 |
-| Production share of combined | 68% |
-| Test share of combined | 32% |
-| Physical lines (all `.rs`, blanks and comments in) | 12,644 |
+| Production Rust | 5,416 |
+| Test Rust | 3,753 |
+| Combined | 9,169 |
+| Test : production ratio | 0.69 |
+| Production share of combined | 59% |
+| Test share of combined | 41% |
+| Physical lines (all `.rs`, blanks and comments in) | 12,441 |
 
-`tokei` reports 9,486 code lines out of 11,129 physical ones (1,245 blanks, 398
-`//` comments). The split above differs in one way only: it drops comment-only
-lines, so 1,920 come out and 9,426 remain. `///` doc comments count as code in
-both — `tokei` treats them that way, and so does this table — which is why the
-comment total stays so small.
+The split drops comment-only lines, so 1,979 of the 11,148 non-blank lines come
+out and 9,169 remain. `///` doc comments count as code here, because no line
+count can tell them apart from the line they document.
 
-Two things the totals hide: about 1.8k of the production lines are the
+`tokei` numbers the same tree differently: 9,227 code lines, 394 `//` comments,
+and 1,238 blanks against the Rust row, plus 1,551 doc-comment lines it
+reclassifies as Markdown for a 12,410 total. Its "code" is therefore slightly
+higher than the production figure above, which is the same file counted two
+ways rather than a disagreement.
+
+Two things the totals hide: about 933 of the production lines are the
 provider adapters (`providers.rs`, `providers/chat.rs`, `providers/responses.rs`),
 not the loop itself — the loop, in `agent.rs`, `turn.rs`, and `batch.rs`, is
-~510 lines. And the production figure is inflated by doc comments, which no
-line count can tell apart from the code it documents: the *why* sits next to the
-line it explains, and both are counted as the same line.
+~510 lines. And the test share is high because the provider adapters and
+`app.rs` carry more test code than production: `app.rs` is 515 production lines
+against 401 test, while `agent/trace.rs` is 9 against 198.
