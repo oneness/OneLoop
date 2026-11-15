@@ -345,6 +345,16 @@ fn help_commands(mut available: impl FnMut(SecondOpinion) -> bool) -> String {
     commands
 }
 
+/// The interactive second-opinion commands for inclusion in the binary's CLI
+/// help. Generated from the same descriptors as `/help` so users can discover
+/// REPL commands without creating a second command list.
+pub fn cli_command_help() -> String {
+    let mut help =
+        String::from("Interactive slash commands (when running `ol` without a prompt):\n");
+    help.push_str(&help_commands(SecondOpinion::available));
+    help
+}
+
 fn print_help(agent: &Agent) {
     output::head("Current session");
     eprintln!("{}\n", agent.summary());

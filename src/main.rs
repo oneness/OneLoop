@@ -18,7 +18,7 @@ mod tools;
 use std::io::{self, IsTerminal, Read};
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "oneloop")]
@@ -46,7 +46,10 @@ enum Command {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
+    let cli = Cli::command()
+        .after_help(app::cli_command_help())
+        .get_matches();
+    let cli = Cli::from_arg_matches(&cli)?;
 
     match cli.command {
         Some(Command::Login { provider }) => login(&provider).await,
