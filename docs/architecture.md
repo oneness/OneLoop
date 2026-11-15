@@ -812,7 +812,7 @@ src/
     elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading
     write.rs        File writing
-    edit.rs         Find-and-replace file editing
+    edit.rs         Exact, non-overlapping replacements batched against one file snapshot
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md),
                     skill_file
   status.rs         Turn state, model title, and named work via OSC 7501 (Program Status

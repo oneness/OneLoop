@@ -149,15 +149,6 @@ mod tests {
     use crate::tools::Tool;
     use std::fs;
 
-    fn edit_call(id: &str, path: &str, old: &str, new: &str) -> ToolCall {
-        ToolCall {
-            id: id.to_string(),
-            name: "edit".to_string(),
-            arguments: serde_json::json!({ "path": path, "old_text": old, "new_text": new }),
-            parse_error: None,
-        }
-    }
-
     fn project_dir(name: &str) -> PathBuf {
         crate::config::test_dir(name, None)
     }
@@ -197,26 +188,72 @@ mod tests {
         assert_eq!(span(&[]), Duration::ZERO);
     }
 
-    /// Two edits to one file in a single batch must take turns: the second
-    /// reads what the first wrote. Run at once, each would read the original
-    /// and one edit would be silently lost. The two spellings only meet after
-    /// normalization, so this also holds the lock's key honest.
+    /// Multiple edits to one file in one tool call share the original snapshot
+    /// and are committed together under that file's batch lock.
     #[tokio::test]
-    async fn edits_to_one_file_in_a_batch_do_not_lose_each_other() {
-        let dir = project_dir("edit-lock");
-        fs::create_dir_all(dir.join("sub")).unwrap();
+    async fn multiple_edits_to_one_file_apply_together() {
+        let dir = project_dir("edit-batch-lock");
+        fs::write(dir.join("note.txt"), "foo middle end").unwrap();
+
+        let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
+        let call = ToolCall {
+            id: "call-1".to_string(),
+            name: "edit".to_string(),
+            arguments: serde_json::json!({
+                "path": "note.txt",
+                "edits": [
+                    {"old_text": "foo", "new_text": "bar"},
+                    {"old_text": "end", "new_text": "done"}
+                ]
+            }),
+            parse_error: None,
+        };
+
+        let results = run(registry, &[call], &dir).await;
+
+        assert!(!results[0].result.is_error);
+        assert_eq!(
+            fs::read_to_string(dir.join("note.txt")).unwrap(),
+            "bar middle done"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Separate calls in a batch still serialize on the normalized file path;
+    /// batching replacements in one call must not weaken the existing lock.
+    #[tokio::test]
+    async fn separate_edits_to_one_file_still_take_the_file_lock() {
+        let dir = project_dir("edit-call-lock");
         fs::write(dir.join("note.txt"), "foo").unwrap();
 
         let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
         let calls = vec![
-            edit_call("call-1", "note.txt", "foo", "bar"),
-            edit_call("call-2", "sub/../note.txt", "foo", "baz"),
+            ToolCall {
+                id: "call-1".to_string(),
+                name: "edit".to_string(),
+                arguments: serde_json::json!({
+                    "path": "note.txt",
+                    "edits": [{"old_text": "foo", "new_text": "bar"}]
+                }),
+                parse_error: None,
+            },
+            ToolCall {
+                id: "call-2".to_string(),
+                name: "edit".to_string(),
+                arguments: serde_json::json!({
+                    "path": "sub/../note.txt",
+                    "edits": [{"old_text": "foo", "new_text": "baz"}]
+                }),
+                parse_error: None,
+            },
         ];
 
         let results = run(registry, &calls, &dir).await;
-
         let errors = results.iter().filter(|call| call.result.is_error).count();
+        let final_content = fs::read_to_string(dir.join("note.txt")).unwrap();
+
         assert_eq!(errors, 1);
+        assert!(final_content == "bar" || final_content == "baz");
         let _ = fs::remove_dir_all(&dir);
     }
 

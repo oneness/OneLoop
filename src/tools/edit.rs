@@ -17,6 +17,11 @@ pub struct EditTool;
 #[derive(Debug, Deserialize)]
 struct EditInput {
     path: String,
+    edits: Vec<Replacement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Replacement {
     old_text: String,
     new_text: String,
 }
@@ -28,7 +33,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> String {
-        "Edit file contents".to_string()
+        "Edit a file with one or more exact text replacements".to_string()
     }
 
     fn schema(&self) -> Value {
@@ -41,17 +46,28 @@ impl Tool for EditTool {
                                     working directory unless absolute. `~` is \
                                     expanded; pass it through as-is."
                 },
-                "old_text": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Non-empty exact text to replace. It must occur exactly once in the file; include enough surrounding context to make it unique."
-                },
-                "new_text": {
-                    "type": "string",
-                    "description": "Replacement text"
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "One or more exact replacements in this file. Every old_text is matched against the original file, must occur exactly once, and must not overlap another edit. Combine nearby changes into one edit.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Non-empty exact text to replace; it must occur exactly once in the original file."
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "Replacement text; an empty string deletes the matched text."
+                            }
+                        },
+                        "required": ["old_text", "new_text"]
+                    }
                 }
             },
-            "required": ["path", "old_text", "new_text"]
+            "required": ["path", "edits"]
         })
     }
 
@@ -67,12 +83,18 @@ impl Tool for EditTool {
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
         let input: EditInput = serde_json::from_value(input).context(
-            "invalid edit input; expected { path: string, old_text: non-empty string, new_text: string }",
+            "invalid edit input; expected { path: string, edits: [{ old_text: non-empty string, new_text: string }] }",
         )?;
-        if input.old_text.is_empty() {
-            return Err(anyhow!(
-                "old_text must not be empty; provide non-empty exact text that occurs once in the file"
-            ));
+        if input.edits.is_empty() {
+            return Err(anyhow!("edits must contain at least one replacement"));
+        }
+        if let Some((index, _)) = input
+            .edits
+            .iter()
+            .enumerate()
+            .find(|(_, edit)| edit.old_text.is_empty())
+        {
+            return Err(anyhow!("edits[{index}].old_text must not be empty"));
         }
 
         let path = resolve_path(&ctx.cwd, &input.path);
@@ -88,26 +110,66 @@ impl Tool for EditTool {
             .await
             .with_context(|| format!("failed to read file: {}", path.display()))?;
 
-        let occurrences = content.matches(&input.old_text).count();
-        if occurrences == 0 {
-            return Err(anyhow!(not_found(&path, &content, &input.old_text)));
-        }
-        if occurrences > 1 {
-            return Err(anyhow!(not_unique(
-                &path,
-                &content,
-                &input.old_text,
-                occurrences
-            )));
+        let mut matches = Vec::with_capacity(input.edits.len());
+        for (index, edit) in input.edits.iter().enumerate() {
+            let mut occurrences = content.match_indices(&edit.old_text);
+            let Some((start, _)) = occurrences.next() else {
+                return Err(anyhow!(
+                    "edits[{index}]: {}",
+                    not_found(&path, &content, &edit.old_text)
+                ));
+            };
+            if let Some((next_start, _)) = occurrences.next() {
+                if next_start < start + edit.old_text.len() {
+                    return Err(anyhow!(
+                        "edits[{index}].old_text has overlapping matches in file (nothing was written); provide a longer anchor"
+                    ));
+                }
+                let count = 2 + occurrences.count();
+                return Err(anyhow!(
+                    "edits[{index}]: {}",
+                    not_unique(&path, &content, &edit.old_text, count)
+                ));
+            }
+            let next_character = start + edit.old_text.chars().next().map_or(0, char::len_utf8);
+            if next_character < content.len() && content[next_character..].contains(&edit.old_text)
+            {
+                return Err(anyhow!(
+                    "edits[{index}].old_text has overlapping matches in file (nothing was written); provide a longer anchor"
+                ));
+            }
+            matches.push((start, start + edit.old_text.len(), index));
         }
 
-        let updated = content.replacen(&input.old_text, &input.new_text, 1);
+        matches.sort_unstable_by_key(|(start, _, _)| *start);
+        for pair in matches.windows(2) {
+            let (start, end, index) = pair[0];
+            let (next_start, _, next_index) = pair[1];
+            if next_start < end {
+                return Err(anyhow!(
+                    "edits[{index}] and edits[{next_index}] overlap in file: {} (nothing was written); combine overlapping changes into one edit",
+                    path.display()
+                ));
+            }
+            debug_assert!(start < end);
+        }
+
+        let mut updated = content;
+        for (start, end, index) in matches.into_iter().rev() {
+            let edit = &input.edits[index];
+            updated.replace_range(start..end, &edit.new_text);
+        }
+
         tokio::fs::write(&path, updated)
             .await
             .with_context(|| format!("failed to write edited file: {}", path.display()))?;
 
         Ok(ToolResult {
-            content: format!("edited {}", path.display()),
+            content: format!(
+                "applied {} edit(s) to {}",
+                input.edits.len(),
+                path.display()
+            ),
             is_error: false,
         })
     }
@@ -288,11 +350,11 @@ mod tests {
         dir
     }
 
-    async fn edit_error(cwd: &Path, old_text: &str) -> String {
+    async fn edit_error(cwd: &Path, edits: Value) -> String {
         let ctx = AgentContext {
             cwd: cwd.to_path_buf(),
         };
-        let input = json!({ "path": "file.txt", "old_text": old_text, "new_text": "x" });
+        let input = json!({ "path": "file.txt", "edits": edits });
         EditTool
             .execute(input, &ctx)
             .await
@@ -300,15 +362,132 @@ mod tests {
             .to_string()
     }
 
-    /// The path this change did not touch: a unique anchor still writes, and
-    /// says so, so a diagnostic that fires too eagerly cannot pass unnoticed.
+    /// Independent replacements are all matched against the same original and
+    /// written together, so one tool call can change several regions safely.
+    #[tokio::test]
+    async fn multiple_disjoint_edits_apply_together() {
+        let dir = dir_holding("multiple", "alpha\nbeta\ngamma\n");
+        let ctx = AgentContext { cwd: dir.clone() };
+        let result = EditTool
+            .execute(
+                json!({
+                    "path": "file.txt",
+                    "edits": [
+                        {"old_text": "alpha", "new_text": "first"},
+                        {"old_text": "gamma", "new_text": "last"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("both disjoint replacements should apply");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "first\nbeta\nlast\n"
+        );
+        assert!(result.content.contains("2 edit(s)"), "{}", result.content);
+    }
+
+    /// An invalid member rejects the whole batch before any replacement is
+    /// written, even when an earlier member matched uniquely.
+    #[tokio::test]
+    async fn a_missing_match_rejects_the_whole_edit_batch() {
+        let dir = dir_holding("batch-missing", "alpha\nbeta\n");
+        let error = edit_error(
+            &dir,
+            json!([
+                {"old_text": "alpha", "new_text": "first"},
+                {"old_text": "missing", "new_text": "last"}
+            ]),
+        )
+        .await;
+
+        assert!(error.contains("edits[1]"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "alpha\nbeta\n"
+        );
+    }
+
+    /// Match ranges that overlap in the original are rejected rather than
+    /// applying replacements whose meaning depends on order.
+    #[tokio::test]
+    async fn overlapping_edit_ranges_are_rejected_without_writing() {
+        let dir = dir_holding("batch-overlap", "abcdef\n");
+        let error = edit_error(
+            &dir,
+            json!([
+                {"old_text": "abc", "new_text": "left"},
+                {"old_text": "cde", "new_text": "right"}
+            ]),
+        )
+        .await;
+
+        assert!(error.contains("overlap"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "abcdef\n"
+        );
+    }
+
+    /// Replacements are applied from the end of the file, so earlier offsets
+    /// remain valid even when a later replacement changes text length.
+    #[tokio::test]
+    async fn replacement_order_does_not_shift_original_match_offsets() {
+        let dir = dir_holding("batch-offsets", "a middle z\n");
+        let ctx = AgentContext { cwd: dir.clone() };
+        EditTool
+            .execute(
+                json!({
+                    "path": "file.txt",
+                    "edits": [
+                        {"old_text": "a", "new_text": "long beginning"},
+                        {"old_text": "z", "new_text": "end"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("both disjoint replacements should apply");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "long beginning middle end\n"
+        );
+    }
+
+    /// Empty replacement text deletes the uniquely matched text.
+    #[tokio::test]
+    async fn an_empty_new_text_deletes_the_match() {
+        let dir = dir_holding("batch-delete", "alpha middle omega");
+        let ctx = AgentContext { cwd: dir.clone() };
+        EditTool
+            .execute(
+                json!({
+                    "path": "file.txt",
+                    "edits": [{"old_text": " middle", "new_text": ""}]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("empty new_text is a deletion");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "alpha omega"
+        );
+    }
+
+    /// A non-empty anchor still performs a unique replacement and reports the
+    /// number of edits applied.
     #[tokio::test]
     async fn a_unique_edit_rewrites_the_file() {
         let dir = dir_holding("unique", "alpha\nbeta\n");
         let ctx = AgentContext { cwd: dir.clone() };
         let result = EditTool
             .execute(
-                json!({ "path": "file.txt", "old_text": "beta", "new_text": "gamma" }),
+                json!({ "path": "file.txt", "edits": [{ "old_text": "beta", "new_text": "gamma" }] }),
                 &ctx,
             )
             .await
@@ -317,14 +496,133 @@ mod tests {
             std::fs::read_to_string(dir.join("file.txt")).unwrap(),
             "alpha\ngamma\n"
         );
-        assert!(result.content.starts_with("edited"), "{}", result.content);
+        assert_eq!(
+            result.content,
+            format!("applied 1 edit(s) to {}", dir.join("file.txt").display())
+        );
+    }
+
+    /// All matches are located before mutation, so repeated text in one
+    /// replacement is rejected rather than applying to an arbitrary occurrence.
+    #[tokio::test]
+    async fn an_ambiguous_member_rejects_the_whole_edit_batch() {
+        let dir = dir_holding("batch-ambiguous-single", "same\nother\nsame\n");
+        let error = edit_error(&dir, json!([{"old_text": "same", "new_text": "new"}])).await;
+
+        assert!(error.contains("edits[0]"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "same\nother\nsame\n"
+        );
+    }
+
+    /// A substring with overlapping starting positions is ambiguous even when
+    /// non-overlapping string iteration would report only one occurrence.
+    #[tokio::test]
+    async fn a_self_overlapping_anchor_is_refused_without_writing() {
+        let dir = dir_holding("self-overlap", "aaa\n");
+        let error = edit_error(&dir, json!([{"old_text": "aa", "new_text": "x"}])).await;
+
+        assert!(error.contains("overlapping matches"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "aaa\n"
+        );
+    }
+
+    /// Two identical edit entries target the same source range and therefore
+    /// overlap; reject both instead of letting array order decide the result.
+    #[tokio::test]
+    async fn duplicate_edit_ranges_are_rejected_without_writing() {
+        let dir = dir_holding("batch-duplicate", "same\n");
+        let error = edit_error(
+            &dir,
+            json!([
+                {"old_text": "same", "new_text": "first"},
+                {"old_text": "same", "new_text": "second"}
+            ]),
+        )
+        .await;
+
+        assert!(error.contains("overlap"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "same\n"
+        );
+    }
+
+    /// A later ambiguous member also rejects the whole call; earlier matches
+    /// are not applied before ambiguity validation completes.
+    #[tokio::test]
+    async fn a_later_ambiguous_edit_rejects_the_whole_batch() {
+        let dir = dir_holding("batch-ambiguous-later", "first\nsame\nother\nsame\n");
+        let error = edit_error(
+            &dir,
+            json!([
+                {"old_text": "first", "new_text": "changed"},
+                {"old_text": "same", "new_text": "new"}
+            ]),
+        )
+        .await;
+
+        assert!(error.contains("edits[1]"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "first\nsame\nother\nsame\n"
+        );
+    }
+
+    /// Empty batches are rejected before reading or writing a path.
+    #[tokio::test]
+    async fn an_empty_edit_batch_is_refused() {
+        let dir = dir_holding("batch-empty", "content\n");
+        let error = edit_error(&dir, json!([])).await;
+        assert!(error.contains("at least one replacement"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "content\n"
+        );
+    }
+
+    /// Non-overlapping ranges are measured in the original file, even when one
+    /// replacement inserts text that another edit also names.
+    #[tokio::test]
+    async fn replacements_do_not_match_text_inserted_by_another_edit() {
+        let dir = dir_holding("batch-original", "first\nsecond\n");
+        let ctx = AgentContext { cwd: dir.clone() };
+        EditTool
+            .execute(
+                json!({
+                    "path": "file.txt",
+                    "edits": [
+                        {"old_text": "first", "new_text": "second"},
+                        {"old_text": "second", "new_text": "last"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("both original ranges are disjoint");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "second\nlast\n"
+        );
     }
 
     #[test]
     fn the_schema_requires_a_nonempty_old_text() {
         let schema = EditTool.schema();
-        assert_eq!(schema["properties"]["old_text"]["minLength"], 1);
-        assert_eq!(schema["required"], json!(["path", "old_text", "new_text"]));
+        assert_eq!(schema["properties"]["edits"]["minItems"], 1);
+        assert_eq!(
+            schema["properties"]["edits"]["items"]["properties"]["old_text"]["minLength"],
+            1
+        );
+        assert_eq!(schema["required"], json!(["path", "edits"]));
+        assert_eq!(
+            schema["properties"]["edits"]["items"]["required"],
+            json!(["old_text", "new_text"])
+        );
     }
 
     #[tokio::test]
@@ -334,7 +632,7 @@ mod tests {
 
         let error = EditTool
             .execute(
-                json!({"path": "file.txt", "old_text": "", "new_text": "replacement"}),
+                json!({"path": "file.txt", "edits": [{"old_text": "", "new_text": "replacement"}]}),
                 &ctx,
             )
             .await
@@ -353,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn an_ambiguous_edit_names_every_candidate_line() {
         let dir = dir_holding("ambiguous", "same\nother\nsame\n");
-        let message = edit_error(&dir, "same").await;
+        let message = edit_error(&dir, json!([{"old_text": "same", "new_text": "x"}])).await;
         assert!(message.contains("1: same"), "{message}");
         assert!(message.contains("3: same"), "{message}");
     }
@@ -361,14 +659,14 @@ mod tests {
     #[tokio::test]
     async fn a_padded_blank_line_is_diagnosed_as_spacing() {
         let dir = dir_holding("spacing", "a\n\nb\n");
-        let message = edit_error(&dir, "a\n   \nb").await;
+        let message = edit_error(&dir, json!([{"old_text": "a\n   \nb", "new_text": "x"}])).await;
         assert!(message.contains("different spacing"), "{message}");
     }
 
     #[tokio::test]
     async fn a_failed_edit_leaves_the_file_untouched() {
         let dir = dir_holding("untouched", "a\n\nb\n");
-        let _ = edit_error(&dir, "a\n   \nb").await;
+        let _ = edit_error(&dir, json!([{"old_text": "a\n   \nb", "new_text": "x"}])).await;
         assert_eq!(
             std::fs::read_to_string(dir.join("file.txt")).unwrap(),
             "a\n\nb\n"
@@ -442,8 +740,7 @@ mod tests {
         assert_eq!(match_lines("a\nb\na\n", "a", 5), vec![1, 3]);
     }
 
-    /// An empty `old_text` matches every character boundary; only the few that
-    /// get shown are located, so the work stays proportional to the file.
+    /// Match-line reporting only examines the first `limit` matches.
     #[test]
     fn only_the_listed_matches_are_located() {
         let content = "x\nx\nx\nx\nx\n";
