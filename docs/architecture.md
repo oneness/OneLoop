@@ -294,16 +294,18 @@ never quietly trimmed.
 
 `is_context_overflow` in `providers.rs` classifies a 400/413, beside
 `is_retryable` and answering the same kind of question about the same error. It
-reads two signals, in order of how much they can be trusted: the `error.code`
+reads two signals, either of which establishes the overflow: the `error.code`
 the server puts on the refusal (OpenAI's `context_length_exceeded`, and the
-hyphenated spellings gateways use), and — where a server sends no usable code,
-which OpenRouter never does and a proxying gateway sometimes drops — the
-message, against a short list of the phrases every server words differently
-("context length", "prompt is too long", "context size"). A code is a closed
-vocabulary, so an unrecognised one stays an ordinary refusal instead of falling
-through to the prose. It classifies; it does not decide. The turn loop reads the
-answer as `Attempt::Overflow` and spends its one compaction on it, because that
-is the one refusal the loop can cure.
+hyphenated spellings gateways use), and the message, against a short list of
+the phrases every server words differently ("context length", "context size",
+"prompt is too long", "max_model_len"). A code outside that closed vocabulary
+settles nothing — the gateway behind OpenCode Go restates its error *type*
+there (`invalid_request_error`) on every 400 — so it is dropped rather than
+read as a denial, and the message decides, exactly as it does for OpenRouter,
+which sends a number, and for a body-carried refusal, which keeps the 200 it
+arrived with. It classifies; it does not decide. The turn loop reads the answer
+as `Attempt::Overflow` and spends its one compaction on it, because that is the
+one refusal the loop can cure.
 
 Both classifiers read that one function, and `ProviderHttpError` is the one type
 a refusal arrives as however it was delivered — a non-2xx status, an `error`
@@ -455,13 +457,19 @@ Old sessions are preserved on disk — never deleted.
 On restart, the latest session file for today is opened automatically.
 
 `metrics/` mirrors that naming, one file per session and one JSON line per
-`api_call` or `tool_exec` event, so a session and its costs are read together.
+event, so a session and its costs are read together.
 An `api_call` says what it was for in `purpose` — `turn` for a request the
 loop made, `summarize` for a compaction's — so both can be summed as one cost
 and still told apart. A `tool_exec` carries one `duration_ms` for the batch and
 a `calls` array with each call's own span: the batch number is the distance from
 the first call's start to the last call's end, which cannot be checked without
 the per-call spans it was computed from.
+A `compact` carries what its summarizer requests cannot: one `duration_ms` for
+the whole operation — rendering, the rounds, the session swap — and the message
+and token counts on either side, which are what say whether the summary shrank
+the conversation at all. Its `requests` count rises above one only when the
+conversation had to be cut into parts, so a compaction that felt slow can be
+told from one that had a lot to carry.
 A turn the user stops with Ctrl+C writes a `turn_cancelled` event with its
 duration and what it was waiting on: the request and the tool batch are both
 inside the future the interrupt drops, so this is the only line that survives,
@@ -581,11 +589,14 @@ That request is an `api_call` in the ledger like any other, carrying
 `purpose=summarize` rather than `purpose=turn`: it is billed the same way, and
 a compaction can be a session's most expensive request, so it is counted
 beside the turns it replaces rather than left out of the total.
+The operation around those requests is one `compact` line: rendering and the
+session swap take time no request reports, and the counts on either side of it
+are the evidence that the summary was worth what it cost.
 
 A compaction is a request, so it says when it starts — `compacting...` — and
-when it is done: `compacting done`, naming the new session's file unless the
-conversation was never written. Without the pair, a long compaction cannot be
-told from a hang, and where the spinner is silent there is nothing else on
+when it is done: `compacting done · 24s`, naming the new session's file unless
+the conversation was never written. Without the pair, a long compaction cannot
+be told from a hang, and where the spinner is silent there is nothing else on
 screen to tell it.
 
 The same pair reaches Emacs's mode line through the status report: `working`
@@ -774,8 +785,8 @@ src/
     spinner.rs      SpinnerGuard (AbortHandle-based RAII spinner)
     session.rs      Session persistence, root, rotation, dangling-tool-call repair, the
                     per-conversation lock
-    metrics.rs      Per-session JSONL metrics (api_call, tool_exec, turn_cancelled),
-                    token estimation
+    metrics.rs      Per-session JSONL metrics (api_call, tool_exec, compact,
+                    turn_cancelled), token estimation
   antigravity/
     mod.rs          Public entry points for Antigravity requests
     client.rs       The Antigravity CLI: its binary, flags, and how it takes a system prompt

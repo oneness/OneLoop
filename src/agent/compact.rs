@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
+use serde_json::json;
 
 use super::Agent;
 use super::metrics;
@@ -30,6 +31,14 @@ const QUOTE_BYTES: usize = 2_000;
 /// shrink is a model ignoring its brief, and three attempts is enough to say so.
 const MAX_ROUNDS: usize = 3;
 
+/// A conversation as the ledger measures it: how many messages, and roughly
+/// what they cost. The two move apart — one message can be a file read — so a
+/// compaction records both.
+struct Size {
+    messages: usize,
+    tokens: usize,
+}
+
 impl Agent {
     /// Replaces this conversation with a summary of itself, so the next request
     /// is small however long this one was. The old file stays on disk, and the
@@ -49,6 +58,23 @@ impl Agent {
         // replaced underneath it.
         let _compacting = status::Compacting::new();
 
+        // Measured around the whole operation, and around the failure too: the
+        // `?`s inside would otherwise return past any line written after them,
+        // and what a compaction spent before giving up is the first thing to
+        // look at when it did.
+        let started = Instant::now();
+        let before = self.size();
+        let mut requests = 0;
+        let outcome = self.replace_with_summary(&mut requests, started).await;
+        let after = self.size();
+        self.log_compact(started, before, after, requests, outcome.is_ok());
+
+        outcome
+    }
+
+    /// The body of a compaction — summarize, rotate, brief — split out from
+    /// [`Self::compact`] so the measurement around it survives an early return.
+    async fn replace_with_summary(&mut self, requests: &mut usize, started: Instant) -> Result<()> {
         // A written conversation leaves a file to name. An ephemeral one leaves
         // nothing: naming the path it would have used would point the next
         // conversation at the project's own transcript, which is someone else's.
@@ -56,7 +82,9 @@ impl Agent {
             .session
             .root()
             .map(|_| self.session.path().to_path_buf());
-        let summary = self.summarize(render(self.session.messages())).await?;
+        let summary = self
+            .summarize(render(self.session.messages()), requests)
+            .await?;
 
         // Nothing above this line touched the session, so a summary that failed
         // leaves the conversation exactly as it was, and the old advice still
@@ -65,17 +93,62 @@ impl Agent {
         self.session
             .push_user(briefing(&summary, history.as_deref()))?;
         // A conversation that was never written has no new file to announce,
-        // but it still finished: the line says so either way.
+        // but it still finished: the line says so either way. How long it took
+        // is spelled by the one helper every other duration uses.
+        let took = output::elapsed(started.elapsed());
         let done = if history.is_some() {
-            format!("compacting done — new session: {}", path.display())
+            format!("compacting done · {took} — new session: {}", path.display())
         } else {
-            "compacting done".to_string()
+            format!("compacting done · {took}")
         };
         output::tick(&done);
         Ok(())
     }
 
-    async fn summarize(&self, mut text: String) -> Result<String> {
+    /// The conversation as the ledger measures it, on either side of a
+    /// compaction: the count, and what it costs by the same estimate the
+    /// `api_call` lines carry.
+    fn size(&self) -> Size {
+        let messages = self.session.messages();
+        Size {
+            messages: messages.len(),
+            tokens: metrics::estimate_tokens(messages, self.system_prompt_chars()),
+        }
+    }
+
+    /// One `compact` line: what the operation cost, and what it replaced.
+    ///
+    /// The summarizer's requests are `api_call` lines with a `summarize`
+    /// purpose. This is what no single request can report — the render, the
+    /// rounds, the session swap and the sizes on either side — so a compaction
+    /// that took a minute can be told from one that took a minute because it
+    /// had three parts to carry.
+    fn log_compact(
+        &self,
+        started: Instant,
+        before: Size,
+        after: Size,
+        requests: usize,
+        success: bool,
+    ) {
+        self.metrics.log(
+            "compact",
+            json!({
+                "duration_ms": started.elapsed().as_millis(),
+                // Above one only when the conversation had to be cut into
+                // parts, which is the difference between a compaction that was
+                // slow and one that had a lot to carry.
+                "requests": requests,
+                "messages_before": before.messages,
+                "messages_after": after.messages,
+                "tokens_before": before.tokens,
+                "tokens_after": after.tokens,
+                "success": success,
+            }),
+        );
+    }
+
+    async fn summarize(&self, mut text: String, requests: &mut usize) -> Result<String> {
         let budget = chunk_budget(self.models.active().context_window);
 
         // A rendered conversation usually fits in one request, because rendering
@@ -85,6 +158,7 @@ impl Agent {
         for _ in 0..MAX_ROUNDS {
             let parts = chunk(&text, budget);
             if parts.len() <= 1 {
+                *requests += 1;
                 return self.summarize_one(text.trim()).await;
             }
 
@@ -93,6 +167,9 @@ impl Agent {
             for (index, part) in parts.iter().enumerate() {
                 output::step(&format!("  part {}/{}", index + 1, parts.len()));
                 let framed = format!("{}{part}", part_frame(index + 1, parts.len()));
+                // Counted before the request, so a part that failed is still a
+                // request the compaction spent.
+                *requests += 1;
                 summaries.push(self.summarize_one(&framed).await?);
             }
             text = summaries.join("\n\n");
@@ -327,8 +404,13 @@ fn briefing(summary: &str, history: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::spec::AgentSpec;
     use crate::messages::{AssistantMessage, ToolCall, ToolResultMessage};
+    use crate::models::ModelRegistry;
     use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn user(content: &str) -> Message {
         Message::User(UserMessage {
@@ -521,5 +603,103 @@ mod tests {
     #[test]
     fn a_model_without_a_window_still_gets_a_budget() {
         assert_eq!(chunk_budget(None), 48 * 1024);
+    }
+
+    fn project_dir(name: &str) -> PathBuf {
+        crate::config::test_dir(name, None)
+    }
+
+    fn registry() -> ModelRegistry {
+        ModelRegistry::for_test(
+            r#"{"default":"main","providers":{"p":{"base_url":"http://u",
+                 "api_key_env":"P_KEY","models":{"main":{"id":"main-model"}}}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// The one line in the ledger a test reads: a single event has been logged
+    /// by then, so the first file is the whole of it.
+    fn ledger(dir: &Path) -> String {
+        let entry = fs::read_dir(dir.join(".oneloop").join("metrics"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        fs::read_to_string(entry.path()).unwrap()
+    }
+
+    fn size(messages: usize, tokens: usize) -> Size {
+        Size { messages, tokens }
+    }
+
+    /// A compaction's cost is not the sum of its requests: it also renders the
+    /// conversation, cuts it if it has to, and swaps the session. The whole
+    /// span is what tells a compaction that was slow from one that was long.
+    #[test]
+    fn a_compaction_records_how_long_the_whole_operation_took() {
+        let dir = project_dir("compact-timing");
+        let agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+
+        agent.log_compact(Instant::now(), size(9, 1_206_482), size(1, 3_610), 1, true);
+
+        let body = ledger(&dir);
+        assert!(
+            body.contains(r#""event":"compact""#) && body.contains(r#""duration_ms":"#),
+            "{body}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The sizes on either side are the point of the line: a summary that did
+    /// not shrink the conversation is exactly what a reader needs to see.
+    #[test]
+    fn a_compaction_records_what_it_replaced() {
+        let dir = project_dir("compact-replaced");
+        let agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+
+        agent.log_compact(Instant::now(), size(9, 1_206_482), size(1, 3_610), 1, true);
+
+        let body = ledger(&dir);
+        assert!(body.contains(r#""messages_before":9"#), "{body}");
+        assert!(body.contains(r#""messages_after":1"#), "{body}");
+        assert!(body.contains(r#""tokens_before":1206482"#), "{body}");
+        assert!(body.contains(r#""tokens_after":3610"#), "{body}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Counted, not scraped: the parts a compaction had to carry are what make
+    /// one slow, and the ledger has to say so on the same line as the duration.
+    #[test]
+    fn a_compaction_records_how_many_requests_it_made() {
+        let dir = project_dir("compact-requests");
+        let agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+
+        agent.log_compact(Instant::now(), size(9, 100), size(1, 10), 3, true);
+
+        let body = ledger(&dir);
+        assert!(body.contains(r#""requests":3"#), "{body}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The measured size is the same estimate the `api_call` lines carry, so a
+    /// compaction's before and after can be read beside the requests it
+    /// replaced rather than against a different unit.
+    #[test]
+    fn a_size_counts_the_messages_and_estimates_their_tokens() {
+        let dir = project_dir("compact-size");
+        let mut agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+        agent.session.push_user("a".repeat(300)).unwrap();
+
+        let measured = agent.size();
+
+        assert_eq!(
+            (measured.messages, measured.tokens),
+            (1, (agent.system_prompt_chars() + 300) / 3)
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

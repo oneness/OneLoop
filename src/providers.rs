@@ -284,17 +284,18 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
 /// cannot — but because the cure is a specific one the user can apply, and
 /// "provider error: 400" does not suggest `/clear`.
 ///
-/// Two signals, in order of how much they can be trusted. The `error.code`
-/// field is a closed vocabulary — OpenAI answers `context_length_exceeded`,
-/// Anthropic and several gateways their own spelling of it — and an unknown
-/// code is simply not an overflow, which is what happened before this
-/// existed. Where a server sends no code at all (OpenRouter does not), the
-/// message is all there is, so a short list of phrasings reads it: every
-/// server words it differently — llama.cpp "exceeds the available context
-/// size", OpenAI "maximum context length", Anthropic "prompt is too long" —
-/// and none of them use a status of their own. Either way the status has to
-/// agree, so a `code: 403` that merely mentions a window can never be read as
-/// one that closed.
+/// Two signals, either of which establishes it. The `error.code` field is a
+/// closed vocabulary the server uses to name the reason — OpenAI answers
+/// `context_length_exceeded` — and a code in it settles the question. A code
+/// outside it settles nothing: a gateway restates its error *type* there
+/// (`invalid_request_error`) on every 400 it sends, so an unrecognised code is
+/// discarded rather than read as "not this", and the message decides. Every
+/// server words that message differently — llama.cpp "exceeds the available
+/// context size", OpenAI "maximum context length", Anthropic "prompt is too
+/// long" — so a short list of phrasings reads it, which also covers the servers
+/// that send no code at all (OpenRouter sends a number). Either way the status
+/// has to agree, so a `code: 403` that merely mentions a window can never be
+/// read as one that closed.
 pub fn is_context_overflow(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ProviderHttpError>()
@@ -306,10 +307,8 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
 /// classifiers must never disagree about one refusal.
 fn overflow(error: &ProviderHttpError) -> bool {
     /// Codes a server puts in `error.code` to say the request does not fit.
-    /// Closed on purpose: a code outside this set is not an overflow, and
-    /// adding one is a decision rather than a guess. Spellings seen from
-    /// OpenAI-compatible gateways, which hyphenate as often as they
-    /// underscore.
+    /// Closed on purpose: adding one is a decision rather than a guess, and a
+    /// code outside the set is not evidence either way.
     const OVERFLOW_CODES: [&str; 6] = [
         "context_length_exceeded",
         "context-length-exceeded",
@@ -320,14 +319,16 @@ fn overflow(error: &ProviderHttpError) -> bool {
     ];
 
     /// Lowercase, and matched as substrings: the numbers around them differ
-    /// on every occurrence. The fallback for a server that reports no code.
-    const PHRASES: [&str; 6] = [
+    /// on every occurrence. `max_model_len` is the name of the limit a vLLM
+    /// front end interpolates instead of writing a sentence.
+    const PHRASES: [&str; 7] = [
         "context length",
         "context size",
         "context window",
         "prompt is too long",
         "too many tokens",
         "token count",
+        "max_model_len",
     ];
 
     // What counts as a refusal about the body: the two statuses a server uses
@@ -343,14 +344,17 @@ fn overflow(error: &ProviderHttpError) -> bool {
         return false;
     }
 
-    // A code decides when there is one: it is the server naming the reason in
-    // a closed vocabulary, so an unrecognised code stays an ordinary error
-    // rather than falling through to the prose and matching something it never
-    // meant. Where a server sends no usable code — OpenRouter sends a number,
-    // and a body-carried refusal keeps the 200 it arrived with — the message is
-    // all there is, and the phrases are what read it.
-    if let Some(code) = error.code.as_deref() {
-        return OVERFLOW_CODES.contains(&code.to_lowercase().as_str());
+    // A code the convention defines settles it: the server named the reason in
+    // a closed vocabulary. Any other code names nothing about size — a gateway
+    // putting its error type there says only that the request was refused — so
+    // it is dropped instead of being read as a denial, and the message decides.
+    // Where there is no code at all — OpenRouter sends a number, and a
+    // body-carried refusal keeps the 200 it arrived with — the message was
+    // always the only signal, and this is the same path.
+    if let Some(code) = error.code.as_deref()
+        && OVERFLOW_CODES.contains(&code.to_lowercase().as_str())
+    {
+        return true;
     }
     let message = error.message.to_lowercase();
     PHRASES.iter().any(|phrase| message.contains(phrase))
@@ -819,10 +823,10 @@ mod tests {
         )));
     }
 
-    /// The code is the signal to prefer: it is a closed vocabulary, so a
-    /// server that sends one is understood however it words the prose beside
-    /// it — and an unrecognised code stays an ordinary error rather than
-    /// becoming advice that cures nothing.
+    /// The code is the signal to prefer when it names the reason: a server that
+    /// sends one is understood however it words the prose beside it. A code it
+    /// does not name there is dropped, so what is left is the prose — see the
+    /// gateway test below for why that matters.
     #[test]
     fn a_server_that_names_the_overflow_in_its_code_is_understood() {
         for code in [
@@ -839,8 +843,37 @@ mod tests {
         }
         assert!(!is_context_overflow(&refused(
             StatusCode::BAD_REQUEST,
-            "context length is not why this failed",
-            Some("rate_limit_exceeded")
+            "no endpoints found for this model",
+            Some("model_not_found")
+        )));
+    }
+
+    /// The gateway OneLoop talks to answers a size refusal with
+    /// `code: "invalid_request_error"` — its error *type*, restated — and puts
+    /// the reason in the prose only. Reading that code as a denial of size is
+    /// what left a conversation of 1,049,243 tokens against a 1,048,576 window
+    /// with no compaction offered. The body here is the one it logged.
+    #[test]
+    fn a_gateway_that_restates_its_error_type_as_the_code_is_read_by_the_message() {
+        let body = r#"{"error":{"param":null,"type":"invalid_request_error","code":"invalid_request_error","message":"Upstream request failed: [invalid_request_error] This model's maximum context length is 1048576 tokens; the prompt has 1049139 tokens (max_model_len) (request_id: gw-a274d2dd87fc-2876abc)"}}"#;
+        let error: anyhow::Error = ProviderHttpError {
+            status: StatusCode::BAD_REQUEST,
+            message: extract_error_message(body),
+            provider: "deepseek-flash".to_string(),
+            code: extract_error_code(body),
+        }
+        .into();
+        assert!(is_context_overflow(&error));
+        assert!(!is_retryable(&error));
+    }
+
+    /// The field name alone, with no sentence around it: a vLLM front end names
+    /// the limit rather than describing it, and `context length` never appears.
+    #[test]
+    fn a_prompt_longer_than_the_named_limit_is_an_overflow() {
+        assert!(is_context_overflow(&refusal(
+            StatusCode::BAD_REQUEST,
+            "The prompt (9001 tokens) is longer than max_model_len (8192)"
         )));
     }
 
