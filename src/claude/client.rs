@@ -29,16 +29,18 @@ const CLI_ARGS: &[&str] = &[
     "text",
 ];
 
-const CLI: Cli = Cli {
-    binary: "claude",
-    args: CLI_ARGS,
-    system_prompt: SystemPrompt::Flag("--system-prompt"),
-    name: "Claude",
-    missing: "could not launch Claude Code; install `claude` and log in with your subscription first",
-};
-
 /// The name this backend reports itself under.
 pub const NAME: &str = "Claude";
+/// The executable used for this backend.
+pub const BINARY: &str = "claude";
+
+const CLI: Cli = Cli {
+    binary: BINARY,
+    args: CLI_ARGS,
+    system_prompt: SystemPrompt::Flag("--system-prompt"),
+    name: NAME,
+    missing: "could not launch Claude Code; install `claude` and log in with your subscription first",
+};
 
 /// Ask Claude without resuming or persisting a Claude session.
 pub async fn review(messages: &[Message], request: Request<'_>, cwd: &Path) -> Result<Review> {

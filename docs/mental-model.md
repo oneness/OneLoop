@@ -82,7 +82,7 @@ the tools it asked for*, ending on an answer that asks for no tools.
             (7) batch.rs run: every call in     |               |
                 its own task, per-file lock     |               |
             (8) metrics: tool_exec + calls[]    |               |
-             (9) push_tool_result (each after) |               |
+            (9) push_tool_result (each after)   |               |
                  "✓ <what ran> · 1.2s"          |               |
                    |                            |               |
                    +----------------------------+---------------+

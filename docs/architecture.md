@@ -393,7 +393,9 @@ cancellation, and reaping, while each client names only its binary, its flags,
 and whether its system prompt travels as a flag or in the prompt text.
 
 Six commands, three modes each, because the same reviewer can be asked three
-kinds of question:
+kinds of question. `app.rs` keeps their spellings, backend/mode mappings, and
+help descriptions in one descriptor table; parsing, `/help`, and missing-argument
+usage messages read that table rather than maintaining separate command lists.
 
 | mode | Claude | Antigravity | what the CLI receives |
 |---|---|---|---|
@@ -777,7 +779,8 @@ src/
   antigravity/
     mod.rs          Public entry points for Antigravity requests
     client.rs       The Antigravity CLI: its binary, flags, and how it takes a system prompt
-  app.rs            Interactive REPL (rustyline), `/` and `!` commands, Ctrl+C handling
+  app.rs            Interactive REPL (rustyline), `/` and `!` commands, the second-opinion
+                    command descriptors, Ctrl+C handling
   auth.rs           Credential resolution (env over ~/.oneloop/auth.json) and storage
   auth/
     codex.rs        ChatGPT sign-in: PKCE, the callback server, token refresh
@@ -832,27 +835,27 @@ cannot cut production code.
 
 | Measure | Lines |
 |---|---|
-| Production Rust | 5,416 |
-| Test Rust | 3,753 |
-| Combined | 9,169 |
+| Production Rust | 5,460 |
+| Test Rust | 3,766 |
+| Combined | 9,226 |
 | Test : production ratio | 0.69 |
 | Production share of combined | 59% |
 | Test share of combined | 41% |
-| Physical lines (all `.rs`, blanks and comments in) | 12,441 |
+| Physical lines (all `.rs`, blanks and comments in) | 12,504 |
 
-The split drops comment-only lines, so 1,979 of the 11,148 non-blank lines come
-out and 9,169 remain. `///` doc comments count as code here, because no line
+The split drops comment-only lines, so 1,982 of the 11,208 non-blank lines come
+out and 9,226 remain. `///` doc comments count as code here, because no line
 count can tell them apart from the line they document.
 
-`tokei` numbers the same tree differently: 9,227 code lines, 394 `//` comments,
-and 1,238 blanks against the Rust row, plus 1,551 doc-comment lines it
-reclassifies as Markdown for a 12,410 total. Its "code" is therefore slightly
+`tokei` numbers the same tree differently: 9,282 code lines, 394 `//` comments,
+and 1,245 blanks against the Rust row, plus 1,554 doc-comment lines it
+reclassifies as Markdown for a 12,475 total. Its "code" is therefore slightly
 higher than the production figure above, which is the same file counted two
 ways rather than a disagreement.
 
 Two things the totals hide: about 933 of the production lines are the
 provider adapters (`providers.rs`, `providers/chat.rs`, `providers/responses.rs`),
 not the loop itself — the loop, in `agent.rs`, `turn.rs`, and `batch.rs`, is
-~510 lines. And the test share is high because the provider adapters and
-`app.rs` carry more test code than production: `app.rs` is 515 production lines
-against 401 test, while `agent/trace.rs` is 9 against 198.
+~510 lines. And the test share is high because several modules carry substantial
+test coverage: `app.rs` is 557 production lines against 414 test, while
+`agent/trace.rs` is 9 against 198.

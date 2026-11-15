@@ -26,16 +26,18 @@ const CLI_ARGS: &[&str] = &[
     "--dangerously-skip-permissions",
 ];
 
-const CLI: Cli = Cli {
-    binary: "agy",
-    args: CLI_ARGS,
-    system_prompt: SystemPrompt::InPrompt,
-    name: "Antigravity",
-    missing: "could not launch Antigravity CLI; install `agy` and log in with your Google account first",
-};
-
 /// The name this backend reports itself under.
 pub const NAME: &str = "Antigravity";
+/// The executable used for this backend.
+pub const BINARY: &str = "agy";
+
+const CLI: Cli = Cli {
+    binary: BINARY,
+    args: CLI_ARGS,
+    system_prompt: SystemPrompt::InPrompt,
+    name: NAME,
+    missing: "could not launch Antigravity CLI; install `agy` and log in with your Google account first",
+};
 
 /// Ask Antigravity as a fresh review: no conversation is resumed.
 pub async fn review(messages: &[Message], request: Request<'_>, cwd: &Path) -> Result<Review> {

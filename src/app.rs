@@ -82,12 +82,30 @@ fn interactive_prompt(alias: &str, remaining_context: Option<u8>) -> String {
     }
 }
 
-/// How `/cc`, `/ca`, and `/cn` ask Claude.
-#[derive(Debug, PartialEq, Eq)]
+/// The three ways a second-opinion backend can be asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AskMode {
     Critique,
     Ask,
     Standalone,
+}
+
+impl AskMode {
+    fn arguments(self) -> &'static str {
+        match self {
+            AskMode::Critique => "[focus]",
+            AskMode::Ask => "<question>",
+            AskMode::Standalone => "<prompt>",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            AskMode::Critique => "critique the discussion",
+            AskMode::Ask => "about the discussion",
+            AskMode::Standalone => "without discussion history",
+        }
+    }
 }
 
 /// Which second-opinion CLI answers a review command.
@@ -110,18 +128,58 @@ impl SecondOpinion {
         }
     }
 
-    /// The `/cc` vs `/ag` form of each mode, for a usage message.
-    fn command(self, mode: AskMode) -> &'static str {
-        match (self, mode) {
-            (SecondOpinion::Claude, AskMode::Critique) => "/cc",
-            (SecondOpinion::Claude, AskMode::Ask) => "/ca",
-            (SecondOpinion::Claude, AskMode::Standalone) => "/cn",
-            (SecondOpinion::Antigravity, AskMode::Critique) => "/ag",
-            (SecondOpinion::Antigravity, AskMode::Ask) => "/aga",
-            (SecondOpinion::Antigravity, AskMode::Standalone) => "/agn",
+    fn binary(self) -> &'static str {
+        match self {
+            SecondOpinion::Claude => crate::claude::BINARY,
+            SecondOpinion::Antigravity => crate::antigravity::BINARY,
         }
     }
+
+    fn available(self) -> bool {
+        executable_available(self.binary())
+    }
 }
+
+/// One slash spelling and its backend/mode mapping.
+struct SecondOpinionCommand {
+    name: &'static str,
+    backend: SecondOpinion,
+    mode: AskMode,
+}
+
+/// Command spellings are shared by parsing, `/help`, and usage errors.
+const SECOND_OPINION_COMMANDS: &[SecondOpinionCommand] = &[
+    SecondOpinionCommand {
+        name: "cc",
+        backend: SecondOpinion::Claude,
+        mode: AskMode::Critique,
+    },
+    SecondOpinionCommand {
+        name: "ca",
+        backend: SecondOpinion::Claude,
+        mode: AskMode::Ask,
+    },
+    SecondOpinionCommand {
+        name: "cn",
+        backend: SecondOpinion::Claude,
+        mode: AskMode::Standalone,
+    },
+    SecondOpinionCommand {
+        name: "ag",
+        backend: SecondOpinion::Antigravity,
+        mode: AskMode::Critique,
+    },
+    SecondOpinionCommand {
+        name: "aga",
+        backend: SecondOpinion::Antigravity,
+        mode: AskMode::Ask,
+    },
+    SecondOpinionCommand {
+        name: "agn",
+        backend: SecondOpinion::Antigravity,
+        mode: AskMode::Standalone,
+    },
+];
 
 /// A line the REPL answers itself instead of sending to a model.
 enum Command<'a> {
@@ -155,24 +213,22 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
         None => (remainder, ""),
     };
     let argument = (!argument.is_empty()).then_some(argument);
-    let second_opinion = |backend, mode| {
-        Some(Command::SecondOpinion {
-            backend,
-            mode,
+    let second_opinion = SECOND_OPINION_COMMANDS
+        .iter()
+        .find(|command| command.name == name)
+        .map(|command| Command::SecondOpinion {
+            backend: command.backend,
+            mode: command.mode,
             text: argument,
-        })
-    };
+        });
+    if let Some(command) = second_opinion {
+        return Some(command);
+    }
     match name {
         "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
         "compact" if argument.is_none() => Some(Command::Compact),
         "model" => Some(Command::Model(argument)),
-        "cc" => second_opinion(SecondOpinion::Claude, AskMode::Critique),
-        "ca" => second_opinion(SecondOpinion::Claude, AskMode::Ask),
-        "cn" => second_opinion(SecondOpinion::Claude, AskMode::Standalone),
-        "ag" => second_opinion(SecondOpinion::Antigravity, AskMode::Critique),
-        "aga" => second_opinion(SecondOpinion::Antigravity, AskMode::Ask),
-        "agn" => second_opinion(SecondOpinion::Antigravity, AskMode::Standalone),
         _ => None,
     }
 }
@@ -269,41 +325,31 @@ fn executable_available(name: &str) -> bool {
     })
 }
 
-fn help_commands(has_claude: bool, has_antigravity: bool) -> String {
+fn help_commands(mut available: impl FnMut(SecondOpinion) -> bool) -> String {
     let mut commands = String::from(
         "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first, with or without a prompt\n                      /model <alias>; <prompt> — switch once that model answers\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
     );
-    if has_claude {
-        commands.push_str(
-            "\x1b[1m/cc [focus]\x1b[22m         : Claude: critique the discussion\n\x1b[1m/ca <question>\x1b[22m      : Claude: about the discussion\n\x1b[1m/cn <prompt>\x1b[22m        : Claude: without discussion history\n",
-        );
-    }
-    if has_antigravity {
-        commands.push_str(
-            "\x1b[1m/ag [focus]\x1b[22m         : Antigravity: critique the discussion\n\x1b[1m/aga <question>\x1b[22m     : Antigravity: about the discussion\n\x1b[1m/agn <prompt>\x1b[22m       : Antigravity: without discussion history\n",
-        );
+    for command in SECOND_OPINION_COMMANDS {
+        if available(command.backend) {
+            let (backend_name, _) = command.backend.identity();
+            let usage = format!("/{} {}", command.name, command.mode.arguments());
+            commands.push_str(&format!(
+                "\x1b[1m{usage:<20}\x1b[22m : {backend_name}: {}\n",
+                command.mode.description()
+            ));
+        }
     }
     commands.push_str(
-        "
-\x1b[1m! <command>\x1b[22m         : Run a bash command, show it, and record it for the model
-
-\x1b[1mCtrl+C\x1b[22m              : Stop a running request or a running ! command,
-                      or discard the current input
-
-  ****************************** Note ******************************
-  * Unknown slash commands are sent as ordinary prompts to the     *
-  * current model. A ! command never sends a prompt: the model     *
-  * reads its output when you next write to it.                    *
-  ******************************************************************",
+        "\n\x1b[1m! <command>\x1b[22m         : Run a bash command, show it, and record it for the model\n\n\x1b[1mCtrl+C\x1b[22m              : Stop a running request or a running ! command,\n                      or discard the current input\n\n  ****************************** Note ******************************\n  * Unknown slash commands are sent as ordinary prompts to the     *\n  * current model. A ! command never sends a prompt: the model     *\n  * reads its output when you next write to it.                    *\n  ******************************************************************",
     );
     commands
 }
 
-fn print_help(agent: &Agent, has_claude: bool, has_antigravity: bool) {
+fn print_help(agent: &Agent) {
     output::head("Current session");
     eprintln!("{}\n", agent.summary());
     eprintln!("  ── Commands ──");
-    eprintln!("{}", help_commands(has_claude, has_antigravity));
+    eprintln!("{}", help_commands(SecondOpinion::available));
 }
 
 /// Returns false when the command failed or selection was cancelled, so a
@@ -311,11 +357,7 @@ fn print_help(agent: &Agent, has_claude: bool, has_antigravity: bool) {
 async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
     match command {
         Command::Help => {
-            print_help(
-                agent,
-                executable_available("claude"),
-                executable_available("agy"),
-            );
+            print_help(agent);
             true
         }
         Command::Clear => match agent.clear_session() {
@@ -370,10 +412,14 @@ async fn run_second_opinion(
         (AskMode::Ask, Some(question)) => Request::Discussion(question),
         (AskMode::Standalone, Some(prompt)) => Request::Direct(prompt),
         (mode, None) => {
-            output::fail(&format!(
-                "usage: {} <question or prompt>",
-                backend.command(mode)
-            ));
+            let usage = SECOND_OPINION_COMMANDS
+                .iter()
+                .find(|command| command.backend == backend && command.mode == mode)
+                .map_or_else(
+                    || format!("{} {}", backend.identity().0, mode.arguments()),
+                    |command| format!("/{} {}", command.name, mode.arguments()),
+                );
+            output::fail(&format!("usage: {usage}"));
             return false;
         }
     };
@@ -640,8 +686,8 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{
-        AskMode, Command, SecondOpinion, help_commands, interactive_prompt, parse_command,
-        parse_input,
+        AskMode, Command, SECOND_OPINION_COMMANDS, SecondOpinion, help_commands,
+        interactive_prompt, parse_command, parse_input,
     };
     use crate::agent::spec::SessionPolicy;
 
@@ -661,13 +707,26 @@ mod tests {
     }
 
     #[test]
-    fn ag_modes_report_their_command_names() {
-        assert_eq!(SecondOpinion::Antigravity.command(AskMode::Critique), "/ag");
-        assert_eq!(SecondOpinion::Antigravity.command(AskMode::Ask), "/aga");
-        assert_eq!(
-            SecondOpinion::Antigravity.command(AskMode::Standalone),
-            "/agn"
-        );
+    fn every_second_opinion_descriptor_drives_parsing_and_help() {
+        let help = help_commands(|_| true);
+        for command in SECOND_OPINION_COMMANDS {
+            let (backend_name, _) = command.backend.identity();
+            let usage = format!("/{} {}", command.name, command.mode.arguments());
+            let expected = format!(
+                "\x1b[1m{usage:<20}\x1b[22m : {backend_name}: {}",
+                command.mode.description()
+            );
+            assert!(help.contains(&expected), "missing help row: {expected}");
+            assert!(
+                matches!(
+                    parse_command(&format!("/{}", command.name)),
+                    Some(Command::SecondOpinion { backend, mode, .. })
+                        if backend == command.backend && mode == command.mode
+                ),
+                "wrong mapping for /{}",
+                command.name
+            );
+        }
     }
 
     #[test]
@@ -800,7 +859,7 @@ mod tests {
     fn every_help_line_is_indented() {
         // A `\\` at the end of a string literal also eats the next line's
         // leading whitespace, which is what once left `! <command>` flush left.
-        for line in help_commands(true, true)
+        for line in help_commands(|_| true)
             .lines()
             .filter(|line| !line.trim().is_empty())
         {
@@ -817,7 +876,7 @@ mod tests {
 
     #[test]
     fn help_entries_align_labels_and_colons() {
-        let help = help_commands(true, true);
+        let help = help_commands(|_| true);
         for line in help.lines().filter(|line| {
             line.starts_with('/') || line.starts_with('!') || line.starts_with("Ctrl+C")
         }) {
@@ -830,7 +889,7 @@ mod tests {
     fn no_command_is_listed_twice() {
         // The `; <prompt>` form is a second line of its command's entry, not an
         // entry of its own: no line may repeat another.
-        let help = help_commands(true, true)
+        let help = help_commands(|_| true)
             .replace("\x1b[1m", "")
             .replace("\x1b[22m", "");
         let lines: Vec<&str> = help
