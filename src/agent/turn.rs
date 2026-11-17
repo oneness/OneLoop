@@ -142,19 +142,17 @@ impl Agent {
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
         let mut active_model: Option<String> = model.map(str::to_string);
-        // The turn names itself once, at the first moment it has been running
-        // long enough to wonder about — not once per request. A turn with three
-        // round trips would otherwise print the same line three times, and it
-        // is the turn that is slow or fast, not each request in it.
+        // The turn names itself once, at the first moment it has run long enough
+        // to wonder about — not once per request, which would print the same line
+        // for every round trip in it.
         let mut announced = false;
         // One compaction per turn. A second overflow is one whose own shortest
         // form does not fit, and a summary of a summary is not smaller.
         let mut compacted = false;
 
-        // Exits and no fuse, and each has already said its piece. A run that
-        // never converges cannot grind on for ever either: the transcript is
-        // append-only, so it eventually outgrows the window and the server
-        // refuses, and a run in the REPL can always be stopped with Ctrl+C.
+        // Exits and no fuse: a run that never converges cannot grind on for ever,
+        // because the append-only transcript outgrows the window and the server
+        // refuses — and a run in the REPL can always be stopped with Ctrl+C.
         loop {
             let response = match self.request(&mut active_model, &mut announced).await? {
                 Attempt::Answered(response) => response,
@@ -169,11 +167,9 @@ impl Agent {
                     // answered nothing.
                     self.session.push_user(prompt.clone())?;
 
-                    // The summary is short and the prompt is not, so if the pair
-                    // still does not fit, the prompt alone is over the window.
-                    // Asking again would spend a request to be told the same
-                    // thing — and the estimate is why this says "does not
-                    // appear to": it is a gauge, not the server's answer.
+                    // The summary is short and the prompt is not, so a pair that
+                    // still does not fit is over the window on the prompt alone.
+                    // The estimate is a gauge, hence "does not appear to".
                     if self.remaining_context() == Some(0) {
                         output::note(
                             "this message does not appear to fit the model's window on its \
@@ -185,9 +181,8 @@ impl Agent {
                 }
 
                 // A compaction has already run: this is the second overflow, and
-                // `/compact` is not offered because it is the thing that just
-                // did not help — a summary of a summary is not smaller. What is
-                // left is a fresh conversation or a bigger window.
+                // `/compact` is not offered because a summary of a summary is not
+                // smaller. What is left is a fresh conversation or a bigger window.
                 Attempt::Overflow => {
                     output::note(
                         "the conversation still does not fit after a compaction — \
@@ -225,10 +220,9 @@ impl Agent {
     ) -> Result<Attempt> {
         let spinner = SpinnerGuard::new("computing...");
         let tokens_estimated = estimate_tokens(self.session.messages(), self.system_prompt_chars());
-        // The spinner is the signal in a terminal. Where it is silent the screen
-        // would show nothing at all for the length of the request, and a request
-        // can run for minutes — so the turn says so once, and only when it has
-        // been running long enough for the silence to need explaining.
+        // The spinner is the signal in a terminal; where it is silent the screen
+        // shows nothing for the length of a request, which can run for minutes. So
+        // the turn says so once, once the silence needs explaining.
         let naming = format!(
             "computing... · ~{}k tokens in current context",
             tokens_estimated / 1000
@@ -377,13 +371,9 @@ impl Agent {
         }
 
         let spinner = SpinnerGuard::new("running tools...");
-        // The label is the only thing about a call that is knowable in advance,
-        // and a command that takes a minute has to say what it is while it takes
-        // it. Printed only where the spinner is silent — a spinner is one line
-        // rewritten in place, and it says "running tools", not which one — and
-        // only once the batch has run long enough to be worth naming: every call
-        // ends with a line carrying the same label and how long it took, so
-        // naming it up front as well is the same text twice for anything quick.
+        // A command that takes a minute must say what it is while it takes it, but
+        // only where the spinner is silent and only once the batch has run long
+        // enough to be worth naming: each call's own line carries the same label.
         let labels: Vec<String> = tool_calls
             .iter()
             .map(|tc| match self.spec.tools.get(&tc.name) {
@@ -443,14 +433,14 @@ impl Agent {
                 result.is_error,
             )?;
 
-            // How long it took follows the name, before the failure text: the
-            // label is what the reader is looking for, and a duration buried at
-            // the end of a long error is one nobody finds.
+            // The duration follows the name, before the failure text, which is
+            // cut to its first line: a refusal is written for the model and can
+            // carry an excerpt, while the trace is read by whoever is watching.
             let took = output::elapsed(took);
             if result.is_error {
                 output::fail(&format!(
                     "{tool_label} · {took} (failed: {})",
-                    result.content
+                    output::first_line(&result.content)
                 ));
             } else {
                 output::tick(&format!("{tool_label} · {took}"));

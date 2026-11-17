@@ -1,16 +1,19 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{
-    path::resolve_path,
-    tools::{AgentContext, PATH_ARGUMENT, path_trace_label},
-};
+use crate::path::resolve_path;
+use crate::tools::{AgentContext, PATH_ARGUMENT, path_trace_label};
 
 use super::{Tool, ToolResult};
+use refusal::Refusal;
+
+mod matcher;
+mod refusal;
+mod show;
 
 pub struct EditTool;
 
@@ -33,7 +36,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> String {
-        "Edit a file with one or more exact text replacements".to_string()
+        "Edit a file by replacing one or more blocks of text".to_string()
     }
 
     fn schema(&self) -> Value {
@@ -49,18 +52,21 @@ impl Tool for EditTool {
                 "edits": {
                     "type": "array",
                     "minItems": 1,
-                    "description": "One or more exact replacements in this file. Every old_text is matched against the original file, must occur exactly once, and must not overlap another edit. Combine nearby changes into one edit.",
+                    "description": "One or more replacements, each matching one place in \
+                                    the original file and none of them overlapping another.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "old_text": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Non-empty exact text to replace; it must occur exactly once in the original file."
+                                "description": "Non-empty text to replace, copied from the \
+                                                file: exact bytes first, then trailing \
+                                                whitespace ignored."
                             },
                             "new_text": {
                                 "type": "string",
-                                "description": "Replacement text; an empty string deletes the matched text."
+                                "description": "Replacement text; empty deletes the match."
                             }
                         },
                         "required": ["old_text", "new_text"]
@@ -77,289 +83,270 @@ impl Tool for EditTool {
         path_trace_label(arguments, cwd)
     }
 
+    /// The batch holds this file's lock for the whole call, which is what makes
+    /// one snapshot safe to rewrite. A caller reaching `execute` without it — the
+    /// registry's own is one — does not get that guarantee.
     fn lock_path(&self) -> Option<&'static str> {
         Some(PATH_ARGUMENT)
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
-        let input: EditInput = serde_json::from_value(input).context(
-            "invalid edit input; expected { path: string, edits: [{ old_text: non-empty string, new_text: string }] }",
-        )?;
-        if input.edits.is_empty() {
-            return Err(anyhow!("edits must contain at least one replacement"));
+        match edit(input, &ctx.cwd).await {
+            Ok(report) => Ok(ToolResult {
+                content: report,
+                is_error: false,
+            }),
+            // A refusal is an answer the model can act on, so it travels back the
+            // way a success does and only `is_error` says otherwise.
+            Err(Fault::Refused(refusal)) => Ok(ToolResult {
+                content: refusal.to_string(),
+                is_error: true,
+            }),
+            Err(Fault::Broken(error)) => Err(error),
         }
-        if let Some((index, _)) = input
-            .edits
-            .iter()
-            .enumerate()
-            .find(|(_, edit)| edit.old_text.is_empty())
-        {
-            return Err(anyhow!("edits[{index}].old_text must not be empty"));
-        }
+    }
+}
 
-        let path = resolve_path(&ctx.cwd, &input.path);
+/// Why a step stopped: a [`Refusal`] is an answer the model can act on and returns
+/// as a tool result, while a failure is the tool's own problem and returns as the
+/// caller's error.
+enum Fault {
+    Refused(Refusal),
+    Broken(anyhow::Error),
+}
 
-        if !tokio::fs::try_exists(&path)
-            .await
-            .with_context(|| format!("failed to check file existence: {}", path.display()))?
-        {
-            return Err(anyhow!("file does not exist: {}", path.display()));
-        }
+impl From<Refusal> for Fault {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
 
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("failed to read file: {}", path.display()))?;
+impl From<anyhow::Error> for Fault {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Broken(error)
+    }
+}
 
-        let mut matches = Vec::with_capacity(input.edits.len());
-        for (index, edit) in input.edits.iter().enumerate() {
-            let mut occurrences = content.match_indices(&edit.old_text);
-            let Some((start, _)) = occurrences.next() else {
-                return Err(anyhow!(
-                    "edits[{index}]: {}",
-                    not_found(&path, &content, &edit.old_text)
-                ));
-            };
-            if let Some((next_start, _)) = occurrences.next() {
-                if next_start < start + edit.old_text.len() {
-                    return Err(anyhow!(
-                        "edits[{index}].old_text has overlapping matches in file (nothing was written); provide a longer anchor"
-                    ));
-                }
-                let count = 2 + occurrences.count();
-                return Err(anyhow!(
-                    "edits[{index}]: {}",
-                    not_unique(&path, &content, &edit.old_text, count)
-                ));
-            }
-            let next_character = start + edit.old_text.chars().next().map_or(0, char::len_utf8);
-            if next_character < content.len() && content[next_character..].contains(&edit.old_text)
-            {
-                return Err(anyhow!(
-                    "edits[{index}].old_text has overlapping matches in file (nothing was written); provide a longer anchor"
-                ));
-            }
-            matches.push((start, start + edit.old_text.len(), index));
-        }
+/// One call, as the steps it takes: check the arguments, read the file, locate
+/// every anchor in that one snapshot, splice a non-overlapping batch, write it,
+/// and report what landed.
+async fn edit(input: Value, cwd: &Path) -> Result<String, Fault> {
+    let input = parse_input(input)?;
+    let path = resolve_path(cwd, &input.path);
 
-        matches.sort_unstable_by_key(|(start, _, _)| *start);
-        for pair in matches.windows(2) {
-            let (start, end, index) = pair[0];
-            let (next_start, _, next_index) = pair[1];
-            if next_start < end {
-                return Err(anyhow!(
-                    "edits[{index}] and edits[{next_index}] overlap in file: {} (nothing was written); combine overlapping changes into one edit",
-                    path.display()
-                ));
-            }
-            debug_assert!(start < end);
-        }
+    let content = read_text(&path).await?;
+    let found = locate_all(&content, &input.edits, &path)?;
+    let (updated, applied) = splice_all(&content, &input.edits, &found, &path)?;
 
-        let mut updated = content;
-        for (start, end, index) in matches.into_iter().rev() {
-            let edit = &input.edits[index];
-            updated.replace_range(start..end, &edit.new_text);
-        }
+    tokio::fs::write(&path, &updated)
+        .await
+        .with_context(|| format!("failed to write edited file: {}", path.display()))?;
 
-        tokio::fs::write(&path, updated)
-            .await
-            .with_context(|| format!("failed to write edited file: {}", path.display()))?;
+    Ok(report(&path, &content, &applied))
+}
 
-        Ok(ToolResult {
-            content: format!(
-                "applied {} edit(s) to {}",
-                input.edits.len(),
-                path.display()
+/// The arguments, checked for what a provider may ignore in the schema: an empty
+/// anchor would otherwise reach the matcher, where it matches once per byte and
+/// is reported as ambiguous rather than wrong.
+fn parse_input(input: Value) -> Result<EditInput, Refusal> {
+    let input: EditInput =
+        serde_json::from_value(input).map_err(|error| Refusal::bad_input(&error.to_string()))?;
+    if input.edits.is_empty() {
+        return Err(Refusal::empty_batch());
+    }
+    if let Some(index) = input.edits.iter().position(|edit| edit.old_text.is_empty()) {
+        return Err(Refusal::empty_anchor(index));
+    }
+    Ok(input)
+}
+
+/// The file's contents, with a missing or undecodable file refused and anything
+/// else a failure. One call, not an existence check beside it: two answers to one
+/// question leave a window in which the file can go away.
+async fn read_text(path: &Path) -> Result<String, Fault> {
+    tokio::fs::read_to_string(path)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Fault::Refused(Refusal::not_found(path)),
+            std::io::ErrorKind::InvalidData => Fault::Refused(Refusal::not_text(path)),
+            _ => Fault::Broken(
+                anyhow::Error::new(error)
+                    .context(format!("failed to read file: {}", path.display())),
             ),
-            is_error: false,
         })
+}
+
+/// An anchor that landed: the matcher that found it and the bytes it covers.
+#[derive(Debug, Clone)]
+struct Found {
+    matcher: &'static str,
+    span: matcher::Span,
+}
+
+impl Found {
+    /// Whether the model already knows what landed here: an exact anchor *is* the
+    /// bytes it sent, so a receipt would only repeat them, while a fallback
+    /// matched something it did not send.
+    fn is_fallback(&self) -> bool {
+        self.matcher != matcher::EXACT
     }
 }
 
-/// A refusal that says how many matches there were and nothing else leaves the
-/// model extending its anchor blind: in one session, ten consecutive attempts
-/// on a file with two identical helper blocks failed on the same ambiguity.
-/// Naming where every match is turns that guess into a choice.
-fn not_unique(path: &Path, content: &str, old_text: &str, occurrences: usize) -> String {
-    /// Enough to show the shape of the problem without pasting a file back.
-    const LISTED: usize = 5;
-
-    let lines = match_lines(content, old_text, LISTED);
-    let mut message = format!(
-        "old_text is not unique in file: {} ({occurrences} matches, nothing was written)",
-        path.display()
-    );
-    for number in &lines {
-        if let Some(line) = content.lines().nth(number - 1) {
-            message.push_str(&format!("\n  {number}: {}", excerpt(line)));
-        }
-    }
-    if occurrences > LISTED {
-        message.push_str(&format!("\n  … and {} more", occurrences - LISTED));
-    }
-    message.push_str(
-        "\nExtend old_text with the lines that differ between the matches, so it \
-         names a single place.",
-    );
-    message
-}
-
-/// A miss is usually not a misunderstanding of the text but of its bytes: a
-/// blank line padded with spaces, a line number copied out of a listing, or an
-/// anchor from another file. Each has a distinct tell, and naming it is worth
-/// more than the bare refusal, which leaves the model retrying the same shape.
-fn not_found(path: &Path, content: &str, old_text: &str) -> String {
-    let mut message = format!(
-        "old_text not found in file: {} (nothing was written)",
-        path.display()
-    );
-    if let Some(hint) = numbering_hint(content, old_text) {
-        message.push_str(&hint);
-    } else if differs_only_in_spacing(content, old_text) {
-        message.push_str(
-            "\nThe file holds this text with different spacing — a blank line \
-             padded with spaces does not match an empty one. Copy the exact \
-             spacing, or anchor on one distinctive line.",
-        );
-    } else if let Some((number, line)) = nearest_line(content, old_text) {
-        message.push_str(&format!(
-            "\nThe nearest line is {number}: {}\nAnchor on a line the file really \
-             holds, or read the file again to copy it exactly.",
-            excerpt(line)
-        ));
-    } else {
-        message.push_str("\nRead the file again and copy its text exactly.");
-    }
-    message
-}
-
-/// The 1-based lines the first `limit` matches start on.
-///
-/// Bounded on purpose: an `old_text` of `""` matches every character boundary,
-/// and counting lines from each offset in turn is quadratic in the file size.
-/// The caller already knows the true total, so only the few it shows are found.
-fn match_lines(content: &str, needle: &str, limit: usize) -> Vec<usize> {
-    content
-        .match_indices(needle)
-        .take(limit)
-        .map(|(offset, _)| content[..offset].matches('\n').count() + 1)
+/// Each anchor located in the snapshot, or the first refusal. Every edit matches
+/// the original bytes — a batch cannot read its own writes — and one refusal is
+/// final: nothing is written unless every anchor names one place.
+fn locate_all(content: &str, edits: &[Replacement], path: &Path) -> Result<Vec<Found>, Refusal> {
+    edits
+        .iter()
+        .enumerate()
+        .map(
+            |(index, edit)| match matcher::locate(content, &edit.old_text) {
+                matcher::Located::Found { matcher, span } => Ok(Found { matcher, span }),
+                matcher::Located::Ambiguous {
+                    matcher: matched,
+                    places,
+                    lines,
+                } => {
+                    let shown = show::candidates(content, &lines);
+                    Err(Refusal::ambiguous(
+                        index,
+                        path,
+                        matched,
+                        places,
+                        &shown.lines,
+                        shown.hidden,
+                    ))
+                }
+                matcher::Located::Miss => {
+                    let hint = show::hint(content, &matcher::probes(content, &edit.old_text));
+                    Err(Refusal::miss(index, path, &hint))
+                }
+            },
+        )
         .collect()
 }
 
-/// A line trimmed to something a diagnostic can quote without becoming one.
-fn excerpt(line: &str) -> String {
-    const MAX_CHARS: usize = 96;
-
-    let line = line.trim_end();
-    match line.char_indices().nth(MAX_CHARS) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line.to_string(),
-    }
+/// One replacement that landed, as the receipt needs it: how the anchor was
+/// found, the bytes it covered, the text written there, and the line it starts
+/// on now.
+#[derive(Debug)]
+struct Applied<'a> {
+    found: Found,
+    text: &'a str,
+    line: usize,
 }
 
-/// `grep -n` writes `135-text` and some readers write `135:text`; no file
-/// contains either, so a numbered line can never match.
-///
-/// The hint needs proof, not just a shape: a changelog line may legitimately
-/// begin `2026-…`, so a prefix only counts when removing it yields a line the
-/// file actually holds.
-fn numbering_hint(content: &str, old_text: &str) -> Option<String> {
-    old_text.lines().find_map(|line| {
-        let stripped = strip_number_prefix(line)?;
-        let held = content
-            .lines()
-            .any(|candidate| candidate.trim() == stripped.trim());
-        held.then(|| {
-            format!(
-                "\nold_text looks copied from a numbered listing: `{}`. The `NNN-` or \
-                 `NNN:` prefix is not part of the file — remove it.",
-                excerpt(line)
-            )
+/// The replacements spliced into one snapshot, or the first colliding pair.
+fn splice_all<'a>(
+    content: &str,
+    edits: &'a [Replacement],
+    found: &[Found],
+    path: &Path,
+) -> Result<(String, Vec<Applied<'a>>), Refusal> {
+    let replacements = edits
+        .iter()
+        .zip(found)
+        .map(|(edit, found)| (found.span.clone(), edit.new_text.as_str()))
+        .collect::<Vec<_>>();
+    let (updated, landed) = matcher::splice(content, &replacements)
+        .map_err(|overlap| Refusal::overlap(overlap.earlier, overlap.later, path))?;
+
+    let applied = edits
+        .iter()
+        .zip(found)
+        .zip(landed)
+        .map(|((edit, found), line)| Applied {
+            found: found.clone(),
+            text: edit.new_text.as_str(),
+            line,
         })
-    })
+        .collect();
+    Ok((updated, applied))
 }
 
-/// The text after a leading `NNN-` or `NNN:`.
-fn strip_number_prefix(line: &str) -> Option<&str> {
-    let line = line.trim_start();
-    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    if digits == 0 {
-        return None;
+/// What the tool did: a line for each exact edit, the region for a fallback. Bounded
+/// in lines rather than edits because the result is re-sent every later turn; what
+/// does not fit is counted, so the model still learns the rest was applied.
+fn report(path: &Path, original: &str, applied: &[Applied]) -> String {
+    /// The most lines one result spends on receipts.
+    const LINES: usize = 24;
+
+    let count = applied.len();
+    let noun = if count == 1 { "edit" } else { "edits" };
+    let mut report = format!("applied {count} {noun} to {}", path.display());
+    let mut spent = 0;
+    let mut shown = 0;
+    for patch in applied {
+        let receipt = if patch.found.is_fallback() {
+            format!(
+                "{} at line {}:\n{}",
+                patch.found.matcher,
+                patch.line,
+                show::change(original, &patch.found.span, patch.text, patch.line)
+            )
+        } else {
+            format!("{} at line {}", patch.found.matcher, patch.line)
+        };
+        let cost = receipt.lines().count();
+        if spent + cost > LINES {
+            break;
+        }
+        spent += cost;
+        shown += 1;
+        report.push('\n');
+        report.push_str(&receipt);
     }
-    let rest = &line[digits..];
-    rest.strip_prefix('-')
-        .or_else(|| rest.strip_prefix(':'))
-        .map(str::trim_start)
-}
-
-/// The same text with each line trimmed. A blank line holding spaces and one
-/// holding nothing are the same line to a reader and different bytes to a
-/// match, which is exactly the miss this catches.
-fn differs_only_in_spacing(content: &str, old_text: &str) -> bool {
-    fn trimmed(text: &str) -> String {
-        text.lines().map(str::trim).collect::<Vec<_>>().join("\n")
+    if shown < count {
+        report.push_str(&format!("\n… and {} more regions", count - shown));
     }
-
-    let wanted = trimmed(old_text);
-    !wanted.trim().is_empty() && trimmed(content).contains(&wanted)
-}
-
-/// The file line sharing the longest prefix with the first line of `old_text`.
-///
-/// A short overlap (`/// `, `    `) matches half of any file, so only a long
-/// one is offered — this is a pointer to the right neighbourhood, not a guess
-/// at what was meant.
-fn nearest_line<'a>(content: &'a str, old_text: &str) -> Option<(usize, &'a str)> {
-    const MIN_SHARED_CHARS: usize = 12;
-
-    let needle = old_text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    content
-        .lines()
-        .enumerate()
-        .map(|(index, line)| (shared_prefix(needle, line.trim()), index + 1, line))
-        .filter(|(shared, _, _)| *shared >= MIN_SHARED_CHARS)
-        .max_by_key(|(shared, _, _)| *shared)
-        .map(|(_, number, line)| (number, line))
-}
-
-fn shared_prefix(a: &str, b: &str) -> usize {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(left, right)| left == right)
-        .count()
+    report
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn path() -> &'static Path {
-        Path::new("/repo/file.rs")
-    }
+    use std::path::PathBuf;
 
     /// A temp directory holding `file.txt`, so the tool is exercised the way
-    /// the agent calls it — through `execute`, not through the helpers.
-    fn dir_holding(name: &str, body: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneloop-edit-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// the agent calls it — through `execute`, not through the matcher.
+    fn dir_holding(name: &str, body: &str) -> PathBuf {
+        let dir = crate::config::test_dir(name, None);
         std::fs::write(dir.join("file.txt"), body).unwrap();
         dir
     }
 
-    async fn edit_error(cwd: &Path, edits: Value) -> String {
+    fn body(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join("file.txt")).unwrap()
+    }
+
+    async fn edit(cwd: &Path, edits: Value) -> String {
         let ctx = AgentContext {
             cwd: cwd.to_path_buf(),
         };
-        let input = json!({ "path": "file.txt", "edits": edits });
         EditTool
-            .execute(input, &ctx)
+            .execute(json!({ "path": "file.txt", "edits": edits }), &ctx)
             .await
-            .expect_err("the edit must be refused")
-            .to_string()
+            .expect("the edit must succeed")
+            .content
+    }
+
+    /// A refusal is an answered call, not a failed one: the result carries the
+    /// instruction and `is_error` is the only thing that differs, so the batch
+    /// does not prefix it with a report about the machine.
+    async fn refusal(cwd: &Path, edits: Value) -> String {
+        let ctx = AgentContext {
+            cwd: cwd.to_path_buf(),
+        };
+        let result = EditTool
+            .execute(json!({ "path": "file.txt", "edits": edits }), &ctx)
+            .await
+            .expect("a refusal must be answered, not returned as an error");
+        assert!(
+            result.is_error,
+            "a refusal must be marked: {}",
+            result.content
+        );
+        result.content
     }
 
     /// Independent replacements are all matched against the same original and
@@ -367,26 +354,146 @@ mod tests {
     #[tokio::test]
     async fn multiple_disjoint_edits_apply_together() {
         let dir = dir_holding("multiple", "alpha\nbeta\ngamma\n");
-        let ctx = AgentContext { cwd: dir.clone() };
-        let result = EditTool
-            .execute(
-                json!({
-                    "path": "file.txt",
-                    "edits": [
-                        {"old_text": "alpha", "new_text": "first"},
-                        {"old_text": "gamma", "new_text": "last"}
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .expect("both disjoint replacements should apply");
+        edit(
+            &dir,
+            json!([
+                {"old_text": "alpha", "new_text": "first"},
+                {"old_text": "gamma", "new_text": "last"}
+            ]),
+        )
+        .await;
+
+        assert_eq!(body(&dir), "first\nbeta\nlast\n");
+    }
+
+    /// Applying from the end preserves original offsets when an earlier edit
+    /// changes length, and an empty replacement deletes text in the same batch.
+    #[tokio::test]
+    async fn a_batch_handles_length_changes_and_deletions_together() {
+        let dir = dir_holding("batch-offsets-delete", "a middle z\n");
+        edit(
+            &dir,
+            json!([
+                {"old_text": "a", "new_text": "long beginning"},
+                {"old_text": " middle", "new_text": ""}
+            ]),
+        )
+        .await;
+
+        assert_eq!(body(&dir), "long beginning z\n");
+    }
+
+    /// Non-overlapping ranges are measured in the original file, even when one
+    /// replacement inserts text that another edit also names.
+    #[tokio::test]
+    async fn replacements_do_not_match_text_inserted_by_another_edit() {
+        let dir = dir_holding("batch-original", "first\nsecond\n");
+        edit(
+            &dir,
+            json!([
+                {"old_text": "first", "new_text": "second"},
+                {"old_text": "second", "new_text": "last"}
+            ]),
+        )
+        .await;
+
+        assert_eq!(body(&dir), "second\nlast\n");
+    }
+
+    #[tokio::test]
+    async fn a_unique_edit_rewrites_the_file() {
+        let dir = dir_holding("unique", "alpha\nbeta\n");
+        edit(&dir, json!([{ "old_text": "beta", "new_text": "gamma" }])).await;
+
+        assert_eq!(body(&dir), "alpha\ngamma\n");
+    }
+
+    /// An exact anchor is the text the model sent, so the receipt is the line it
+    /// landed on and nothing else: the file is not quoted back at the model that
+    /// just quoted it.
+    #[tokio::test]
+    async fn an_exact_edit_is_reported_as_one_line() {
+        let dir = dir_holding("report-exact", "alpha\nbeta\ngamma\n");
+        let report = edit(
+            &dir,
+            json!([{ "old_text": "beta", "new_text": "replaced" }]),
+        )
+        .await;
 
         assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "first\nbeta\nlast\n"
+            report,
+            format!(
+                "applied 1 edit to {}\nexact at line 2",
+                dir.join("file.txt").display()
+            )
         );
-        assert!(result.content.contains("2 edit(s)"), "{}", result.content);
+    }
+
+    /// A fallback is the one case worth quoting: it matched text the model did
+    /// not send, so the receipt shows the lines the file really held.
+    #[tokio::test]
+    async fn a_fallback_reports_the_region_it_changed() {
+        let dir = dir_holding("report-fallback", "alpha   \nbeta\n");
+        let report = edit(
+            &dir,
+            json!([{ "old_text": "alpha\nbeta", "new_text": "ALPHA\nBETA" }]),
+        )
+        .await;
+
+        assert!(report.contains("trailing whitespace ignored"), "{report}");
+        assert!(report.contains("   1 - alpha   "), "{report}");
+        assert!(report.contains("   1 + ALPHA"), "{report}");
+    }
+
+    /// A trailing space in the file is not a wrong anchor: the fallback matcher
+    /// lands the edit and the result says which one did.
+    #[tokio::test]
+    async fn trailing_whitespace_in_the_file_still_matches() {
+        let dir = dir_holding("trailing", "alpha   \nbeta\n");
+        let report = edit(
+            &dir,
+            json!([{ "old_text": "alpha\nbeta", "new_text": "alpha\nbeta\ngamma" }]),
+        )
+        .await;
+
+        assert_eq!(body(&dir), "alpha\nbeta\ngamma\n");
+        assert!(report.contains("trailing whitespace ignored"), "{report}");
+    }
+
+    /// A file that spells its lines CRLF is edited through an anchor copied from a
+    /// read, which carries only `\n`: the anchor is respelled, the replacement
+    /// written back the same way, and the report says `exact`, not whitespace.
+    #[tokio::test]
+    async fn a_crlf_file_is_edited_and_stays_crlf() {
+        let dir = dir_holding("crlf", "alpha\r\nbeta\r\ngamma\r\n");
+        let report = edit(&dir, json!([{ "old_text": "beta", "new_text": "B1\nB2" }])).await;
+
+        assert_eq!(body(&dir), "alpha\r\nB1\r\nB2\r\ngamma\r\n");
+        assert!(report.contains("exact at line 2"), "{report}");
+    }
+
+    /// An anchor whose indentation is off is refused, but the refusal names the
+    /// normalization that would have carried it, so the retry is a rewrite
+    /// rather than a re-read.
+    #[tokio::test]
+    async fn a_miss_names_the_normalization_that_would_have_matched() {
+        let dir = dir_holding("miss-indent", "fn main() {\n    let x = 1;\n}\n");
+        let error = refusal(
+            &dir,
+            json!([{ "old_text": "  fn main() {\n    let x = 1;\n}", "new_text": "x" }]),
+        )
+        .await;
+
+        assert!(error.contains("indentation ignored"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_anchor_leaves_the_file_untouched() {
+        let dir = dir_holding("untouched", "alpha\nbeta\n");
+        let error = refusal(&dir, json!([{ "old_text": "omega", "new_text": "x" }])).await;
+
+        assert!(error.contains("nothing was written"), "{error}");
+        assert_eq!(body(&dir), "alpha\nbeta\n");
     }
 
     /// An invalid member rejects the whole batch before any replacement is
@@ -394,7 +501,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_match_rejects_the_whole_edit_batch() {
         let dir = dir_holding("batch-missing", "alpha\nbeta\n");
-        let error = edit_error(
+        let error = refusal(
             &dir,
             json!([
                 {"old_text": "alpha", "new_text": "first"},
@@ -404,10 +511,30 @@ mod tests {
         .await;
 
         assert!(error.contains("edits[1]"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "alpha\nbeta\n"
-        );
+        assert_eq!(body(&dir), "alpha\nbeta\n");
+    }
+
+    /// Ambiguity is refused rather than resolved by array order, and the
+    /// refusal names both candidate lines.
+    #[tokio::test]
+    async fn an_ambiguous_edit_names_every_candidate_line() {
+        let dir = dir_holding("ambiguous", "same\nother\nsame\n");
+        let error = refusal(&dir, json!([{ "old_text": "same", "new_text": "x" }])).await;
+
+        assert!(error.contains("   1 | same"), "{error}");
+        assert!(error.contains("   3 | same"), "{error}");
+        assert_eq!(body(&dir), "same\nother\nsame\n");
+    }
+
+    /// A substring with overlapping starting positions is ambiguous even when
+    /// non-overlapping iteration would report only one occurrence.
+    #[tokio::test]
+    async fn a_self_overlapping_anchor_is_refused_without_writing() {
+        let dir = dir_holding("self-overlap", "aaa\n");
+        let error = refusal(&dir, json!([{ "old_text": "aa", "new_text": "x" }])).await;
+
+        assert!(error.contains("2 places"), "{error}");
+        assert_eq!(body(&dir), "aaa\n");
     }
 
     /// Match ranges that overlap in the original are rejected rather than
@@ -415,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn overlapping_edit_ranges_are_rejected_without_writing() {
         let dir = dir_holding("batch-overlap", "abcdef\n");
-        let error = edit_error(
+        let error = refusal(
             &dir,
             json!([
                 {"old_text": "abc", "new_text": "left"},
@@ -425,128 +552,36 @@ mod tests {
         .await;
 
         assert!(error.contains("overlap"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "abcdef\n"
-        );
+        assert_eq!(body(&dir), "abcdef\n");
     }
 
-    /// Applying from the end preserves original offsets when an earlier edit
-    /// changes length, and an empty replacement deletes text in the same batch.
-    #[tokio::test]
-    async fn a_batch_handles_length_changes_and_deletions_together() {
-        let dir = dir_holding("batch-offsets-delete", "a middle z\n");
-        let ctx = AgentContext { cwd: dir.clone() };
-        EditTool
-            .execute(
-                json!({
-                    "path": "file.txt",
-                    "edits": [
-                        {"old_text": "a", "new_text": "long beginning"},
-                        {"old_text": " middle", "new_text": ""}
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .expect("the disjoint replacement and deletion should apply");
+    /// The colliding pair is named by the position the model sent it in, which
+    /// is what tells it which two edits to combine.
+    #[test]
+    fn an_overlap_names_the_two_edits_to_combine() {
+        let edits = ["abc", "cde"].map(|old_text| Replacement {
+            old_text: old_text.to_string(),
+            new_text: "x".to_string(),
+        });
+        let found = [
+            Found {
+                matcher: matcher::EXACT,
+                span: 0..3,
+            },
+            Found {
+                matcher: matcher::EXACT,
+                span: 2..5,
+            },
+        ];
 
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "long beginning z\n"
-        );
-    }
+        let refusal = splice_all("abcdef\n", &edits, &found, Path::new("/repo/file.rs"))
+            .expect_err("the spans overlap");
 
-    /// A non-empty anchor still performs a unique replacement and reports the
-    /// number of edits applied.
-    #[tokio::test]
-    async fn a_unique_edit_rewrites_the_file() {
-        let dir = dir_holding("unique", "alpha\nbeta\n");
-        let ctx = AgentContext { cwd: dir.clone() };
-        let result = EditTool
-            .execute(
-                json!({ "path": "file.txt", "edits": [{ "old_text": "beta", "new_text": "gamma" }] }),
-                &ctx,
-            )
-            .await
-            .expect("the edit must succeed");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "alpha\ngamma\n"
-        );
-        assert_eq!(
-            result.content,
-            format!("applied 1 edit(s) to {}", dir.join("file.txt").display())
-        );
-    }
-
-    /// All matches are located before mutation, so repeated text in one
-    /// replacement is rejected rather than applying to an arbitrary occurrence.
-    #[tokio::test]
-    async fn an_ambiguous_member_rejects_the_whole_edit_batch() {
-        let dir = dir_holding("batch-ambiguous-single", "same\nother\nsame\n");
-        let error = edit_error(&dir, json!([{"old_text": "same", "new_text": "new"}])).await;
-
-        assert!(error.contains("edits[0]"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "same\nother\nsame\n"
-        );
-    }
-
-    /// A substring with overlapping starting positions is ambiguous even when
-    /// non-overlapping string iteration would report only one occurrence.
-    #[tokio::test]
-    async fn a_self_overlapping_anchor_is_refused_without_writing() {
-        let dir = dir_holding("self-overlap", "aaa\n");
-        let error = edit_error(&dir, json!([{"old_text": "aa", "new_text": "x"}])).await;
-
-        assert!(error.contains("overlapping matches"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "aaa\n"
-        );
-    }
-
-    /// Two identical edit entries target the same source range and therefore
-    /// overlap; reject both instead of letting array order decide the result.
-    #[tokio::test]
-    async fn duplicate_edit_ranges_are_rejected_without_writing() {
-        let dir = dir_holding("batch-duplicate", "same\n");
-        let error = edit_error(
-            &dir,
-            json!([
-                {"old_text": "same", "new_text": "first"},
-                {"old_text": "same", "new_text": "second"}
-            ]),
-        )
-        .await;
-
-        assert!(error.contains("overlap"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "same\n"
-        );
-    }
-
-    /// A later ambiguous member also rejects the whole call; earlier matches
-    /// are not applied before ambiguity validation completes.
-    #[tokio::test]
-    async fn a_later_ambiguous_edit_rejects_the_whole_batch() {
-        let dir = dir_holding("batch-ambiguous-later", "first\nsame\nother\nsame\n");
-        let error = edit_error(
-            &dir,
-            json!([
-                {"old_text": "first", "new_text": "changed"},
-                {"old_text": "same", "new_text": "new"}
-            ]),
-        )
-        .await;
-
-        assert!(error.contains("edits[1]"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "first\nsame\nother\nsame\n"
+        assert!(
+            refusal
+                .to_string()
+                .contains("edits[0] and edits[1] overlap"),
+            "{refusal}"
         );
     }
 
@@ -554,38 +589,75 @@ mod tests {
     #[tokio::test]
     async fn an_empty_edit_batch_is_refused() {
         let dir = dir_holding("batch-empty", "content\n");
-        let error = edit_error(&dir, json!([])).await;
+        let error = refusal(&dir, json!([])).await;
+
         assert!(error.contains("at least one replacement"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "content\n"
-        );
+        assert_eq!(body(&dir), "content\n");
     }
 
-    /// Non-overlapping ranges are measured in the original file, even when one
-    /// replacement inserts text that another edit also names.
     #[tokio::test]
-    async fn replacements_do_not_match_text_inserted_by_another_edit() {
-        let dir = dir_holding("batch-original", "first\nsecond\n");
+    async fn an_empty_old_text_is_refused_without_changing_the_file() {
+        let dir = dir_holding("empty-old-text", "alpha\nbeta\n");
+        let error = refusal(&dir, json!([{ "old_text": "", "new_text": "x" }])).await;
+
+        assert!(error.contains("old_text must not be empty"), "{error}");
+        assert_eq!(body(&dir), "alpha\nbeta\n");
+    }
+
+    /// A path that is not there is named as such, rather than as a read failure
+    /// whose io message the model has to decode.
+    #[tokio::test]
+    async fn a_missing_file_is_refused_by_name() {
+        let dir = crate::config::test_dir("edit-missing-file", None);
+        let error = refusal(&dir, json!([{ "old_text": "a", "new_text": "b" }])).await;
+
+        assert!(error.contains("file does not exist"), "{error}");
+    }
+
+    /// An anchor cannot be found in bytes the tool cannot decode, so the refusal
+    /// says what the file is instead of reporting a failed read.
+    #[tokio::test]
+    async fn a_file_that_is_not_text_is_refused_by_name() {
+        let dir = crate::config::test_dir("edit-binary", None);
+        std::fs::write(dir.join("file.txt"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let error = refusal(&dir, json!([{ "old_text": "a", "new_text": "b" }])).await;
+
+        assert!(error.contains("not a UTF-8 text file"), "{error}");
+    }
+
+    /// A path the tool cannot read for a reason it cannot explain — a directory
+    /// where a file should be — is a failure, not a refusal: it returns as an
+    /// error, so the trace says the tool broke.
+    #[tokio::test]
+    async fn an_unreadable_path_fails_instead_of_refusing() {
+        let dir = crate::config::test_dir("edit-unreadable", None);
+        std::fs::create_dir(dir.join("file.txt")).unwrap();
         let ctx = AgentContext { cwd: dir.clone() };
-        EditTool
+
+        let error = EditTool
             .execute(
-                json!({
-                    "path": "file.txt",
-                    "edits": [
-                        {"old_text": "first", "new_text": "second"},
-                        {"old_text": "second", "new_text": "last"}
-                    ]
-                }),
+                json!({ "path": "file.txt", "edits": [{ "old_text": "a", "new_text": "b" }] }),
                 &ctx,
             )
             .await
-            .expect("both original ranges are disjoint");
+            .expect_err("a path that cannot be read is a failure, not a refusal");
 
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "second\nlast\n"
+        assert!(
+            format!("{error:#}").contains("failed to read file"),
+            "{error:#}"
         );
+    }
+
+    /// Arguments that do not decode are a refusal like any other: the model is
+    /// told the shape it owed, not shown a deserializer's complaint alone.
+    #[tokio::test]
+    async fn malformed_arguments_are_refused_with_the_shape_expected() {
+        let dir = dir_holding("bad-input", "content\n");
+        let error = refusal(&dir, json!([{ "old_text": "content" }])).await;
+
+        assert!(error.contains("invalid edit input"), "{error}");
+        assert!(error.contains("new_text"), "{error}");
+        assert_eq!(body(&dir), "content\n");
     }
 
     #[test]
@@ -603,131 +675,41 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_empty_old_text_is_refused_without_changing_the_file() {
-        let dir = dir_holding("empty-old-text", "alpha\nbeta\n");
-        let ctx = AgentContext { cwd: dir.clone() };
+    /// A batch larger than the receipt budget is reported up to the budget and
+    /// counted beyond it, because the result is re-sent on every later turn.
+    #[test]
+    fn a_report_stops_at_the_line_budget_and_counts_the_rest() {
+        let applied = (1..=30)
+            .map(|line| Applied {
+                found: Found {
+                    matcher: matcher::EXACT,
+                    span: 0..1,
+                },
+                text: "x",
+                line,
+            })
+            .collect::<Vec<_>>();
+        let report = report(Path::new("/repo/file.rs"), "a\n", &applied);
 
-        let error = EditTool
-            .execute(
-                json!({"path": "file.txt", "edits": [{"old_text": "", "new_text": "replacement"}]}),
-                &ctx,
-            )
-            .await
-            .unwrap_err()
-            .to_string();
+        assert_eq!(report.matches("exact at line").count(), 24);
+        assert!(report.contains("… and 6 more regions"), "{report}");
+    }
 
-        assert!(error.contains("old_text must not be empty"), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "alpha\nbeta\n"
+    #[test]
+    fn one_edit_is_not_reported_as_edits() {
+        let applied = [Applied {
+            found: Found {
+                matcher: matcher::EXACT,
+                span: 0..1,
+            },
+            text: "x",
+            line: 1,
+        }];
+        let report = report(Path::new("/repo/file.rs"), "a\n", &applied);
+
+        assert!(
+            report.starts_with("applied 1 edit to /repo/file.rs"),
+            "{report}"
         );
-    }
-
-    /// The shape that cost ten attempts in one session: two identical blocks,
-    /// and a refusal that said only "2 matches".
-    #[tokio::test]
-    async fn an_ambiguous_edit_names_every_candidate_line() {
-        let dir = dir_holding("ambiguous", "same\nother\nsame\n");
-        let message = edit_error(&dir, json!([{"old_text": "same", "new_text": "x"}])).await;
-        assert!(message.contains("1: same"), "{message}");
-        assert!(message.contains("3: same"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn a_padded_blank_line_is_diagnosed_as_spacing() {
-        let dir = dir_holding("spacing", "a\n\nb\n");
-        let message = edit_error(&dir, json!([{"old_text": "a\n   \nb", "new_text": "x"}])).await;
-        assert!(message.contains("different spacing"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn a_failed_edit_leaves_the_file_untouched() {
-        let dir = dir_holding("untouched", "a\n\nb\n");
-        let _ = edit_error(&dir, json!([{"old_text": "a\n   \nb", "new_text": "x"}])).await;
-        assert_eq!(
-            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
-            "a\n\nb\n"
-        );
-    }
-
-    /// `grep -n` context lines reach the model as `135-text`; the prefix is not
-    /// file content and can never match, so the refusal names it.
-    #[test]
-    fn line_numbers_copied_from_a_listing_are_named() {
-        let message = not_found(
-            path(),
-            "atomic because it moves\n",
-            "135-atomic because it moves",
-        );
-        assert!(message.contains("numbered listing"), "{message}");
-    }
-
-    /// A line that merely starts with a date is not a copied line number: the
-    /// hint fires only when the file holds the text behind the prefix.
-    #[test]
-    fn a_date_prefixed_line_is_not_called_a_copied_line_number() {
-        let message = not_found(path(), "- something else\n", "2026-release notes");
-        assert!(!message.contains("numbered listing"), "{message}");
-    }
-
-    /// An anchor from a different file still points at the right
-    /// neighbourhood, which is the whole value of the nearest line.
-    #[test]
-    fn a_missing_anchor_names_the_nearest_line() {
-        let content = "first\n    /// A window that stops early must say where\nlast\n";
-        let message = not_found(
-            path(),
-            content,
-            "    /// A window that stops early must say where to resume",
-        );
-        assert!(message.contains("nearest line is 2"), "{message}");
-    }
-
-    /// Nothing similar is a plain refusal: a pointer invented from a shared
-    /// `/// ` would send the model to the wrong place with confidence.
-    #[test]
-    fn an_unrelated_anchor_stays_a_plain_refusal() {
-        let message = not_found(path(), "fn main() {}\n", "let x = 1;");
-        assert!(!message.contains("nearest line"), "{message}");
-    }
-
-    /// Only the listed matches are shown, but the count says how many there
-    /// really were, so a one-character anchor cannot paste a file back.
-    #[test]
-    fn a_refusal_summarises_matches_beyond_the_listed_ones() {
-        let content = "x\nx\nx\nx\nx\nx\n";
-        let message = not_unique(path(), content, "x", 6);
-        assert!(message.contains("… and 1 more"), "{message}");
-    }
-
-    /// Every refusal says nothing was written, so a failed edit is never
-    /// mistaken for a silent partial write.
-    #[test]
-    fn every_refusal_confirms_nothing_was_written() {
-        for message in [
-            not_found(path(), "fn main() {}\n", "let x = 1;"),
-            not_unique(path(), "same\nsame\n", "same", 2),
-        ] {
-            assert!(message.contains("nothing was written"), "{message}");
-        }
-    }
-
-    #[test]
-    fn a_line_is_measured_from_its_first_character() {
-        assert_eq!(match_lines("a\nb\na\n", "a", 5), vec![1, 3]);
-    }
-
-    /// Match-line reporting only examines the first `limit` matches.
-    #[test]
-    fn only_the_listed_matches_are_located() {
-        let content = "x\nx\nx\nx\nx\n";
-        assert_eq!(match_lines(content, "x", 2), vec![1, 2]);
-    }
-
-    #[test]
-    fn a_long_match_excerpt_is_shortened() {
-        let line = "x".repeat(200);
-        assert!(excerpt(&line).ends_with('…'));
     }
 }

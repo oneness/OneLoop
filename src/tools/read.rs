@@ -126,12 +126,9 @@ impl Tool for ReadTool {
             });
         }
 
-        // The cap holds even when the model asks for more: a call that carries
-        // 5000 lines is one huge message the conversation pays for on every
-        // remaining turn, whereas two calls over two turns carry the tail for
-        // one turn less. That deferral is what `offset` is for. The schema asks
-        // for at least one line, and a zero that arrives anyway is read as
-        // "unspecified" for the same reason a zero offset is.
+        // The cap holds even when the model asks for more: 5000 lines is one huge
+        // message paid for on every later turn, and two calls carry the tail for one
+        // turn less. That deferral is `offset`; a zero `limit` reads as unspecified.
         let limit = match input.limit {
             None | Some(0) => DEFAULT_MAX_LINES,
             Some(limit) => limit.min(DEFAULT_MAX_LINES),
@@ -155,10 +152,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn numbered_file(name: &str, lines: usize) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneloop-read-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::config::test_dir(name, None);
         let body: String = (1..=lines).map(|n| format!("line {n}\n")).collect();
         fs::write(dir.join("numbered.txt"), body).unwrap();
         dir

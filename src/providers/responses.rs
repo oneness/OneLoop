@@ -368,11 +368,9 @@ impl Turn {
                 }))
             }
             Some(Event::Failed { response }) => {
-                // The stream closed with an error event rather than a non-2xx.
-                // Built as the refusal a status would have been — the status is
-                // what the response carried, and the reason comes from the
-                // event's own error object — so nothing downstream has to know
-                // which of the three paths delivered it.
+                // The stream closed with an error event rather than a non-2xx. Built
+                // as the refusal a status would have been, so nothing downstream has
+                // to know which of the three paths delivered it.
                 let error = response.error;
                 Err(ProviderHttpError {
                     status,

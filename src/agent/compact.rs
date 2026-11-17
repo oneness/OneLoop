@@ -51,17 +51,14 @@ impl Agent {
         // Named when it starts and again when it ends: the summarizer is a
         // request, and a wait with nothing on screen cannot be told from a hang.
         output::running("compacting...");
-        // The same start and finish for the mode line, which has no spinner and
-        // no trace to read: it says `compacting` where a turn says
-        // `computing...`. Held across the whole of this rather than around the
-        // summarizer, because the name is still true while the session is
-        // replaced underneath it.
+        // The mode line has no spinner and no trace, so it says `compacting` where
+        // a turn says `computing...`. Held across the whole operation, because the
+        // name stays true while the session is replaced underneath it.
         let _compacting = status::Compacting::new();
 
-        // Measured around the whole operation, and around the failure too: the
-        // `?`s inside would otherwise return past any line written after them,
-        // and what a compaction spent before giving up is the first thing to
-        // look at when it did.
+        // Measured around the failure too: the `?`s inside would otherwise return
+        // past any line written after them, and what a compaction spent before
+        // giving up is the first thing to look at.
         let started = Instant::now();
         let before = self.size();
         let mut requests = 0;
@@ -151,10 +148,9 @@ impl Agent {
     async fn summarize(&self, mut text: String, requests: &mut usize) -> Result<String> {
         let budget = chunk_budget(self.models.active().context_window);
 
-        // A rendered conversation usually fits in one request, because rendering
-        // is where the compression happens. The rounds exist for the ones that
-        // do not: each hands over summaries rather than transcripts, so the next
-        // round's input is a fraction of this one's.
+        // A rendered conversation usually fits in one request, rendering being
+        // where the compression happens. The rounds exist for the ones that do not:
+        // each hands over summaries, so the next round's input is a fraction.
         for _ in 0..MAX_ROUNDS {
             let parts = chunk(&text, budget);
             if parts.len() <= 1 {
@@ -309,11 +305,9 @@ fn render(messages: &[Message]) -> String {
                 let body = if result.content.len() <= QUOTE_BYTES {
                     result.content.trim().to_string()
                 } else if result.is_error {
-                    // A failure is read for why it failed, and the payload over
-                    // the cap is usually exactly that: a build or a test run,
-                    // where the command is the first line and the verdict the
-                    // last. Dropping both would leave the next conversation the
-                    // size of the mistake with none of what it said.
+                    // A failure is read for why it failed, and that is usually the
+                    // ends: a build or test run whose verdict is the last line.
+                    // Dropping both leaves the size of the mistake and no reason.
                     both_ends(&result.content, QUOTE_BYTES)
                 } else {
                     format!("[{} bytes, elided]", result.content.len())

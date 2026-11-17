@@ -179,10 +179,9 @@ impl Session {
             .parent()
             .context("session file has no parent directory")?;
 
-        // Extract the base date (e.g. "2026-04-20" from "2026-04-20-002.jsonl"
-        // or "2026-04-20.jsonl"). Assumes date-shaped filenames: the first
-        // three dash-separated parts are the date, anything after is the
-        // rotation suffix.
+        // The base date: "2026-04-20" from either "2026-04-20.jsonl" or
+        // "2026-04-20-002.jsonl". The first three dash-separated parts are the
+        // date; anything after is the rotation suffix.
         let filename = self
             .path
             .file_stem()
@@ -380,12 +379,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A session of its own per test, named so that two of them cannot share an
+    /// id: `id` derives from the file's stem.
     fn temp_session(name: &str) -> Session {
-        let path = std::env::temp_dir().join(format!(
-            "oneloop-session-test-{}-{name}.jsonl",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
+        let path = crate::config::test_dir(name, None).join(format!("{name}.jsonl"));
         Session::for_test(Vec::new(), path, "oneloop")
     }
 

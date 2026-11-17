@@ -251,10 +251,9 @@ pub async fn complete(model: &Model, request: ProviderRequest) -> Result<Provide
     // with an `error` object instead of `choices`. Detect that first so we
     // surface the real message instead of "missing field choices".
     if let Some(provider_msg) = extract_provider_error(&text) {
-        // A 200 is not a success here, and the body is the only place the
-        // reason exists. Built as the refusal a status would have been, so
-        // nothing downstream has to know this arrived inside a success — the
-        // status stays 200 because that is what the server sent.
+        // A 200 is not a success here, and the body is the only place the reason
+        // exists. Built as the refusal a status would have been, so nothing
+        // downstream has to know — the status stays 200, which is what arrived.
         log_provider_failure(request.errors_log.as_deref(), &model.alias, status, &text);
         return Err(ProviderHttpError {
             status,
@@ -322,10 +321,9 @@ fn replayed_reasoning(reasoning: Option<String>, replaying: bool) -> Option<Stri
 }
 
 fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
-    // Once a provider has returned reasoning for any turn, it requires the
-    // reasoning of every assistant turn to be passed back — DeepSeek rejects
-    // the request otherwise, even for turns the model answered without
-    // reasoning. So the field is replayed on all of them.
+    // Once a provider has returned reasoning for any turn, it requires it back on
+    // every assistant turn — DeepSeek rejects the request otherwise, even for turns
+    // answered without it. So the field is replayed on all of them.
     let replaying = messages
         .iter()
         .any(|message| matches!(message, Message::Assistant(assistant) if assistant.reasoning_content.is_some()));
@@ -355,9 +353,8 @@ fn to_chat_messages(messages: Vec<Message>) -> Vec<ChatMessage> {
                     function: ChatToolFunction {
                         name: tool_call.name,
                         // Whatever shape it was stored in — `encode_arguments`
-                        // decides the wire form. Pre-encoding here with
-                        // `to_string` would encode a raw-text argument list a
-                        // second time and send back a string.
+                        // decides the wire form. Pre-encoding with `to_string` would
+                        // encode a raw-text list twice and send back a string.
                         arguments: tool_call.arguments,
                     },
                 };

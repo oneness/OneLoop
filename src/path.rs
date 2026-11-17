@@ -69,11 +69,9 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 // ── How a path is spelled in the trace ────────────────────────────────
 //
-// One rule for every tool that names a file: resolve the shape the model
-// sent, collapse `.` and `..`, then show only the part that carries
-// information — project-relative inside the working directory, `~/` inside
-// the home directory, absolute otherwise. A trace line repeats on every
-// call, so the prefix the reader already knows is the first thing to drop.
+// One rule for every tool that names a file: resolve, collapse `.` and `..`, then
+// show only the part that carries information — project-relative, `~/` inside home,
+// absolute otherwise. A trace line repeats, so a known prefix is the first to drop.
 
 /// The trace form of a model-supplied path: `src/main.rs` from all of
 /// `src/main.rs`, `./src/main.rs`, `@src/main.rs`, and the absolute path to

@@ -81,11 +81,12 @@ When to use `for` loops instead:
 
 ## Comments
 
-- Comments explain **why**, never **what**.
+Comments and docstrings follow one rule: say why, never what the code already
+says. One sentence preferred, three at most. A self-explanatory name beats a
+comment, and a paragraph belongs in a doc or an issue instead.
+
 - Use `// SAFETY:`, `// PERF:`, `// CONTEXT:` prefixes for specific concerns.
-- Keep comments short. If you need a paragraph, link to a doc or issue.
 - `// TODO(#42): description` — always reference an issue.
-- Replace long comments with well-named helper functions.
 
 ## Documentation
 

@@ -14,11 +14,9 @@ pub(super) struct SpinnerGuard {
 
 impl SpinnerGuard {
     pub fn new(label: &str) -> Self {
-        // In comint the rewrite reaches `comint-output-filter` on Emacs's
-        // one thread — 12.5 redraws a second against a filter chain that
-        // runs even with the buffer hidden. A plain newline would cost the
-        // same per frame and scroll the trace; silence costs nothing, and
-        // the trace lines already mark each event as it lands.
+        // In comint the rewrite reaches `comint-output-filter` on Emacs's one
+        // thread — 12.5 redraws a second against a filter chain that runs even when
+        // hidden. Silence costs nothing: the trace lines already mark each event.
         if !std::io::stderr().is_terminal() || output::plain() {
             return Self { abort: None };
         }

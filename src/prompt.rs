@@ -143,10 +143,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("oneloop-prompt-test-{}-{name}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::config::test_dir(name, None)
     }
 
     #[test]

@@ -10,11 +10,9 @@ pub const DEFAULT_MAX_LINES: usize = 1000;
 // status line: a color-scheme change, a `--no-color` flag, or `NO_COLOR`
 // support only ever touches this block.
 //
-// The streams are split by what the text *is*, not by how bad it is:
-// **stdout carries the model's answer and nothing else**, so
-// `ol "..." > answer.md` captures the answer while the tool trace, the
-// warnings, and the errors stay on the terminal where they are read.
-// Everything OneLoop says about itself goes to stderr.
+// The streams split by what the text *is*: **stdout carries the model's answer and
+// nothing else**, so `ol "..." > answer.md` captures it while the trace, warnings
+// and errors stay on the terminal. Everything OneLoop says about itself is stderr.
 
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
@@ -188,10 +186,9 @@ pub fn truncate_window(file_lines: &[&str], first: usize, last: usize, max_bytes
         shown -= 1;
     }
 
-    // One line wider than the whole byte budget. Dropping it would hand back
-    // an empty result and a resume offset that never advances — the next call
-    // would ask for the same line and get the same nothing — so return the
-    // widest slice that fits and say plainly that no window reaches the rest.
+    // One line wider than the whole budget: dropping it would hand back an empty
+    // result and a resume offset that never advances. Return the widest slice that
+    // fits and say plainly that no window reaches the rest.
     if shown == 0 {
         return format!(
             "{}\n[output truncated at the {max_bytes}-byte cap: line {first} alone exceeds \
@@ -348,11 +345,9 @@ fn with_notice(result: TruncationResult) -> String {
 
 // ── Trace lines ───────────────────────────────────────────────────────
 //
-// A tool names its own call — [`crate::tools::Tool::trace_label`] decides
-// what that call reads like — and these are the two shapes it can reach for:
-// a path stays whole, a command or an expression is cut. They live here
-// because they are rendering, and because a tool reaching into the agent for
-// them would point the dependency the wrong way.
+// The two shapes a tool's call label can reach for: a path stays whole, a command
+// or an expression is cut. They live here rather than in the agent so a tool does
+// not point the dependency the wrong way.
 
 /// How much of a command or expression the trace shows: enough of it to
 /// recognise what ran, not enough to fill the screen with a here-document.

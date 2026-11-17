@@ -234,10 +234,9 @@ pub struct ProviderHttpError {
 
 impl std::fmt::Display for ProviderHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // A refusal carried inside a 200 did not fail as a request — the
-        // request succeeded and the body said no — so naming its status would
-        // read as "request failed (200 OK)". The status is the marker: both
-        // paths are this type now, and only a body-carried one is a success.
+        // A refusal carried inside a 200 did not fail as a request, so naming its
+        // status would read as "request failed (200 OK)". The status is the marker:
+        // both paths are this type, and only a body-carried one is a success.
         if self.status.is_success() {
             return write!(f, "{} refused the request: {}", self.provider, self.message);
         }
@@ -331,11 +330,9 @@ fn overflow(error: &ProviderHttpError) -> bool {
         "max_model_len",
     ];
 
-    // What counts as a refusal about the body: the two statuses a server uses
-    // for one, and a body that carried its failure inside a success. A 403 is a
-    // refusal about *permission*, not about size, so no amount of window-talk
-    // in its message makes it a compaction — which is the whole point of
-    // checking the status before the words.
+    // A refusal about the body: the two statuses a server uses for one, and a body
+    // that carried its failure inside a success. A 403 is about *permission*, so
+    // window-talk in its message does not make it a compaction.
     let refused = matches!(
         error.status,
         reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::PAYLOAD_TOO_LARGE
@@ -344,13 +341,9 @@ fn overflow(error: &ProviderHttpError) -> bool {
         return false;
     }
 
-    // A code the convention defines settles it: the server named the reason in
-    // a closed vocabulary. Any other code names nothing about size — a gateway
-    // putting its error type there says only that the request was refused — so
-    // it is dropped instead of being read as a denial, and the message decides.
-    // Where there is no code at all — OpenRouter sends a number, and a
-    // body-carried refusal keeps the 200 it arrived with — the message was
-    // always the only signal, and this is the same path.
+    // A code the convention defines settles it: the server named the reason in a
+    // closed vocabulary. Any other code says nothing about size, so it is dropped
+    // and the message decides — which is the only signal when there is no code.
     if let Some(code) = error.code.as_deref()
         && OVERFLOW_CODES.contains(&code.to_lowercase().as_str())
     {
@@ -573,9 +566,7 @@ mod tests {
     /// A directory of its own per test, so two of these can run at once and
     /// neither writes into the other's log.
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("oneloop-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("errors.log")
+        crate::config::test_dir(name, None).join("errors.log")
     }
 
     /// Reads the log and clears the scratch directory. Parsing every line is

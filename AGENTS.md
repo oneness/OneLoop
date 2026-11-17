@@ -62,12 +62,6 @@ Reaching for it first is a wasted step, not a shortcut.
 
 ## Documentation
 
-A docstring says what the code cannot: the one-line contract, plus the
-why behind a choice that would otherwise look arbitrary. Aim for one
-line; never more than three. Don't restate the signature, the types,
-or the branches — the body is for that. How the design got here
-belongs in the commit message.
-
 A change is not finished until the docs say the same thing.
 
 - [`docs/index.html`](docs/index.html) — the product deck: one slide per mechanism. Update the slide a change touches in the same change.

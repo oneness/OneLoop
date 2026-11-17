@@ -13,11 +13,9 @@ use crate::review::{self, Cli, Review, SystemPrompt};
 
 pub use crate::review::{DEFAULT_INSTRUCTION, Request};
 
-// CLI args for non-interactive review mode
-// --input-format text: read the prompt from stdin (no --print; that flag
-//   demands a prompt argument and would trip the OS argument-size limit)
-// --output-format text: output raw text (not JSON)
-// --dangerously-skip-permissions: auto-approve tool permissions
+// CLI args for non-interactive review mode: stdin for the prompt (not `--print`,
+// which demands a prompt argument and would trip the argument-size limit), raw text
+// out, and tool permissions auto-approved.
 const CLI_ARGS: &[&str] = &[
     "--input-format",
     "text",

@@ -121,6 +121,43 @@ copy. That check walks the transcript on every batch, so `/clear` and a resumed
 session need no cache to invalidate, and a file that changed underneath cannot
 produce a matching digest.
 
+`edit` matches every `old_text` against one snapshot of the file and writes the
+batch or nothing. Finding an anchor is a table of matchers rather than a branch
+per failure: exact bytes first, then trailing whitespace ignored. The ladder
+stops at the first matcher that matches at all — an anchor naming several places
+is refused rather than handed to the next pass, because the passes do not nest:
+the whitespace matcher compares whole lines, so it cannot see the mid-line match
+that made the exact one ambiguous. A refusal names the normalization that
+*would* have carried the anchor (`indentation ignored`) alongside the lines to
+copy, so the next attempt is a rewrite and not a re-read; an anchor matching
+several places is refused with its candidate lines numbered, five of them and
+the rest counted.
+
+A refusal is an answered call, not a failed one: it returns as a tool result with
+`is_error` set, the convention `read` already uses for a missing file, so the
+batch does not prefix the instruction with `Tool execution failed:`. An error is
+kept for the tool's own failures — a file it could not read or write. Nothing is
+written unless every anchor names one place, and every refusal says so.
+
+Line endings are settled in the matcher rather than in the tool. A `read` renders
+a file without its `\r`, so an anchor copied from one arrives spelled with `\n`
+while the file holds `\r\n`; the anchor is therefore tried in the file's spelling
+before the literal one, and a replacement is written back the file's way. A CRLF
+file stays CRLF, and such an edit is reported as `exact` rather than as a
+whitespace fallback — which matters, because the report is the instrument that
+decides whether a fallback earns its row.
+
+The result spends tokens where the model's knowledge is uncertain. An exact
+anchor *is* the bytes the model sent, so its receipt is the line it landed on and
+nothing more. A fallback matched text the model did not send, so its receipt is
+the changed region: the lines the file really held, then the lines written over
+them. The whole receipt is bounded in lines rather than in edits — it is re-sent
+on every later turn — and what does not fit is counted rather than dropped in
+silence. A session log alone can therefore show whether a fallback earns its
+place before one is added to the table: the probes are rows that are never
+applied, and promoting one is a row moving into `MATCHERS`, which only a logged
+miss earns.
+
 `elisp` is for editor-only state that the filesystem tools cannot see: open or
 unsaved buffers, visible windows, cursor positions, diagnostics, and process
 output. It requires `emacsclient` and a running Emacs server. The bundled
@@ -823,7 +860,16 @@ src/
     elisp.rs        Emacs Lisp evaluation through a running Emacs server
     read.rs         File reading
     write.rs        File writing
-    edit.rs         Exact, non-overlapping replacements batched against one file snapshot
+    edit.rs         The tool as six steps: check the arguments, read the file, locate
+                    every anchor in that one snapshot, splice a non-overlapping batch,
+                    write it, and report what landed
+    edit/
+      matcher.rs    The matcher table (applied) and probes (reported on a miss), line
+                    ending parity for anchor and replacement, spans per anchor, splice
+      show.rs       Every line range the model reads: the excerpt around a place, the
+                    candidate lines of an ambiguity, and the region a fallback changed
+      refusal.rs    Why a call did not happen, as sentences: the model-facing half of a
+                    tool result with `is_error` set
     skill.rs        On-demand skill loader (scans .oneloop/skills/ and ~/.oneloop/skills/ for <name>/SKILL.md),
                     skill_file
   status.rs         Turn state, model title, and named work via OSC 7501 (Program Status

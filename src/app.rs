@@ -705,8 +705,7 @@ mod tests {
     /// written, and a prompt on the command line is not part of one.
     #[test]
     fn a_one_shot_run_holds_its_conversation_in_memory() {
-        let dir = std::env::temp_dir().join(format!("oneloop-app-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::config::test_dir("one-shot-run", None);
 
         let spec = super::assemble(&dir, &super::Run::OneShot("hi".to_string()))
             .expect("a one-shot must resolve");

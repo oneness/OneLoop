@@ -51,10 +51,9 @@ impl Agent {
     /// The one constructor. Every field the agent reads comes from the spec, so
     /// a second agent is a second spec rather than a second branch here.
     pub fn from_spec(spec: AgentSpec, models: Arc<ModelRegistry>) -> Result<Self> {
-        // Which model this agent works as is the registry's answer, so there is
-        // one place to ask: the mode line, the gauge and `/model` all read it.
-        // A spec that names none leaves the config's default active, which is
-        // what the default agent has always used.
+        // The registry answers which model this agent works as, so there is one
+        // place to ask: the mode line, the gauge and `/model` all read it. A spec
+        // that names none leaves the config's default active.
         if let Some(alias) = &spec.model {
             models.set_active(alias)?;
         }
