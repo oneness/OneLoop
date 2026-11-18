@@ -8,7 +8,7 @@ mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
 
 **Curious?**
 [Overview](https://www.birkey.co/oneloop/) ·
-[Architecture](docs/architecture.md)
+[Mental model](docs/mental-model.md)
 
 **Want to try?**
 ```bash
