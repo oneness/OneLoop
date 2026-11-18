@@ -242,4 +242,19 @@ mod tests {
         let hint = hint("fn main() {}\n", &[]);
         assert!(hint.contains("read it again"), "{hint}");
     }
+
+    /// A probe row exists to turn "nothing resembles this" into "here it is": the
+    /// hint shows the lines the rewrapped anchor was copied from.
+    #[test]
+    fn a_hint_names_the_line_breaks_a_rewrap_moved() {
+        let content = "alpha beta\ngamma delta\n";
+        let hint = hint(
+            content,
+            &matcher::probes(content, "alpha beta gamma\ndelta"),
+        );
+
+        assert!(hint.contains("line breaks ignored"), "{hint}");
+        assert!(hint.contains("   1 | alpha beta"), "{hint}");
+        assert!(hint.contains("   2 | gamma delta"), "{hint}");
+    }
 }

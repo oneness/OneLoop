@@ -487,6 +487,28 @@ mod tests {
         assert!(error.contains("indentation ignored"), "{error}");
     }
 
+    /// A rewrap is the miss a model makes when it edits its own prose: every word
+    /// is there and only the line ends moved. The refusal names the row that would
+    /// have carried it, on the lines to copy, so the retry is a rewrite and not a
+    /// re-read — and the file is left alone, as with any other miss.
+    #[tokio::test]
+    async fn a_miss_names_the_line_breaks_a_rewrap_moved() {
+        let content = "such flag. The answer is printed, then recorded as\nreference material.\n";
+        let dir = dir_holding("miss-breaks", content);
+        let error = refusal(
+            &dir,
+            json!([{
+                "old_text": "The answer is printed, then recorded as reference\nmaterial.",
+                "new_text": "x"
+            }]),
+        )
+        .await;
+
+        assert!(error.contains("line breaks ignored"), "{error}");
+        assert!(error.contains("   2 | reference material."), "{error}");
+        assert_eq!(body(&dir), content);
+    }
+
     #[tokio::test]
     async fn a_missing_anchor_leaves_the_file_untouched() {
         let dir = dir_holding("untouched", "alpha\nbeta\n");

@@ -34,10 +34,20 @@ const MATCHERS: &[Matcher] = &[
 ];
 
 /// Reported on a miss, never applied: each waits for a logged miss to earn it.
-const PROBES: &[Matcher] = &[Matcher {
-    name: "indentation ignored",
-    scan: indentation,
-}];
+///
+/// `line breaks ignored` is the row a rewrap earns. An anchor copied from what the
+/// text meant to say, in a file whose lines end somewhere else, matches no line at
+/// all, and every comparison above this table works in whole lines.
+const PROBES: &[Matcher] = &[
+    Matcher {
+        name: "indentation ignored",
+        scan: indentation,
+    },
+    Matcher {
+        name: "line breaks ignored",
+        scan: line_breaks,
+    },
+];
 
 /// What [`locate`] found.
 #[derive(Debug, PartialEq)]
@@ -161,6 +171,47 @@ fn trailing_whitespace(content: &str, old_text: &str) -> Vec<Span> {
 
 fn indentation(content: &str, old_text: &str) -> Vec<Span> {
     line_windows(content, old_text, str::trim)
+}
+
+/// Spans holding `old_text`'s words in `old_text`'s order, wherever the lines
+/// break: what a rewrap leaves behind, and what no whole-line comparison sees.
+/// Indentation and blank lines take part in neither side, so this is a probe and
+/// not a matcher — it says where the text is, and never writes over it.
+fn line_breaks(content: &str, old_text: &str) -> Vec<Span> {
+    let needle = old_text.split_whitespace().collect::<Vec<_>>();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let file = words(content);
+    if needle.len() > file.len() {
+        return Vec::new();
+    }
+    (0..=file.len() - needle.len())
+        .filter(|start| (0..needle.len()).all(|at| file[start + at].0 == needle[at]))
+        .map(|start| file[start].1.start..file[start + needle.len() - 1].1.end)
+        .collect()
+}
+
+/// Each run of non-whitespace in `text`, with the bytes it occupies. The same
+/// predicate `split_whitespace` uses, so an anchor's words and the file's are cut
+/// the same way whatever the file's own spacing is.
+fn words(text: &str) -> Vec<(&str, Span)> {
+    let mut out = Vec::new();
+    let mut from = None;
+    for (offset, at) in text.char_indices() {
+        match (at.is_whitespace(), from) {
+            (false, None) => from = Some(offset),
+            (true, Some(start)) => {
+                out.push((&text[start..offset], start..offset));
+                from = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = from {
+        out.push((&text[start..], start..text.len()));
+    }
+    out
 }
 
 /// Line windows matching `old_text` under `key`. A span stops before the last
@@ -335,6 +386,46 @@ mod tests {
         assert_eq!(indentation("    beta\n", "beta"), vec![0..8]);
     }
 
+    /// The row a rewrap earns: every word is there, in order, and only where the
+    /// lines end differs — which defeats `exact` and both whole-line fallbacks.
+    #[test]
+    fn the_line_breaks_probe_matches_text_wrapped_differently() {
+        let content = "such flag. The answer is printed, then recorded as\nreference material attributed to the user.\n";
+        let anchor =
+            "The answer is printed, then recorded as reference material\nattributed to the user.";
+
+        assert!(exact(content, anchor).is_empty());
+        assert!(trailing_whitespace(content, anchor).is_empty());
+        assert!(indentation(content, anchor).is_empty());
+
+        let spans = line_breaks(content, anchor);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(
+            &content[spans[0].clone()],
+            "The answer is printed, then recorded as\nreference material attributed to the user."
+        );
+    }
+
+    /// Only the breaks are forgiven: a word the file does not hold is still a miss,
+    /// or the hint would send the model to a region that does not say what it wants.
+    #[test]
+    fn the_line_breaks_probe_sees_a_changed_word() {
+        assert!(line_breaks("alpha beta\ngamma\n", "alpha beta delta").is_empty());
+    }
+
+    #[test]
+    fn the_line_breaks_probe_reports_every_window_in_order() {
+        assert_eq!(line_breaks("x\ny x y\n", "x y"), vec![0..3, 4..7]);
+    }
+
+    /// An anchor naming no word names no place: a blank line is the line matchers'
+    /// to describe, and there is nothing here for a word comparison to find.
+    #[test]
+    fn the_line_breaks_probe_ignores_an_anchor_of_whitespace() {
+        assert!(line_breaks("a\n\nb\n", "\n").is_empty());
+        assert!(line_breaks("a\n", "   ").is_empty());
+    }
+
     #[test]
     fn a_blank_line_anchor_reaches_the_first_line() {
         assert_eq!(trailing_whitespace("a\n\nb\n", "\n"), vec![2..3]);
@@ -465,13 +556,16 @@ mod tests {
     }
 
     /// The probes are handed on as data, so the refusal that renders them owns
-    /// only the sentence.
+    /// only the sentence. Both fire on this anchor: its indentation is wrong and
+    /// its words are nonetheless all there.
     #[test]
     fn a_probe_reports_its_name_and_first_place() {
         let found = probes("fn main() {\n    let x = 1;\n}\n", "  fn main() {");
-        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found.len(), 2, "{found:?}");
         assert_eq!(found[0].0, "indentation ignored");
         assert_eq!(found[0].1, 0..11);
+        assert_eq!(found[1].0, "line breaks ignored");
+        assert_eq!(found[1].1, 0..11);
     }
 
     #[test]
