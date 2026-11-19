@@ -105,7 +105,8 @@ switches the model only after that model answers.
             push_tool_call  (each, before)      |               |
             when_slow -> "▸ <what is running>"  |               |
             (7) batch.rs run: every call in     |               |
-                its own task, per-file lock     |               |
+                its own task; a lock per file   |               |
+                it names, taken in one order    |               |
             (8) metrics: tool_exec + calls[]    |               |
             (9) push_tool_result (each after)   |               |
                  "✓ <what ran> · 1.2s"          |               |
@@ -141,8 +142,11 @@ switches the model only after that model answers.
    session.
 7. Every call in one answer runs at once, each in its own task. Two calls that
    name the same file take turns behind a lock, so neither writes over the
-   other. Each call times itself, and that one measurement feeds both the `✓`
-   line and the metrics file. A turn, by contrast, sends one request at a time.
+   other. A call that names several files — one `edit` spanning them — holds all
+   of their locks, and takes them in one order every call uses, so two such
+   calls wait rather than each holding what the other needs. Each call times
+   itself, and that one measurement feeds both the `✓` line and the metrics
+   file. A turn, by contrast, sends one request at a time.
 8. The batch is recorded as one `tool_exec` entry: how long the whole batch
    took, and how long each call inside it took.
 9. Each result is written to the session and named on screen, then the loop goes

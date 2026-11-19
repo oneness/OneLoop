@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_window},
     path::resolve_path,
-    tools::{AgentContext, PATH_ARGUMENT, path_trace_label},
+    tools::{AgentContext, path_lock, path_trace_label},
 };
 
 use super::{Tool, ToolResult};
@@ -71,8 +71,8 @@ impl Tool for ReadTool {
         path_trace_label(arguments, cwd)
     }
 
-    fn lock_path(&self) -> Option<&'static str> {
-        Some(PATH_ARGUMENT)
+    fn lock_paths(&self, arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
+        path_lock(arguments, cwd)
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {

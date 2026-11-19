@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::messages::ToolDefinition;
 use crate::output::first_line;
-use crate::path::display_path;
+use crate::path::{display_path, normalize, resolve_path};
 
 /// What a tool is given besides its own arguments: where the agent works.
 ///
@@ -31,20 +31,34 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// The argument every path-taking tool names its file in. The three tools that
-/// read, write, and edit one file answer both of the trait's path questions
-/// from it — the label resolves it and the lock names it — so it is written
-/// once here rather than in three `lock_path` bodies. The schemas still spell
-/// `"path"` in their own JSON, because a `json!` key cannot be a constant.
+/// The argument every path-taking tool names its file in. `read` and `write`
+/// answer both of the trait's path questions from it — the label resolves it
+/// and the lock names it — so it is written once here rather than in two
+/// `lock_paths` bodies. `edit` reads the same key out of its parsed call, since
+/// one call may span several files, and answers both questions itself. The
+/// schemas still spell `"path"` in their own JSON, because a `json!` key cannot
+/// be a constant.
 pub const PATH_ARGUMENT: &str = "path";
+
+/// The lock answer of a tool whose call names one file: the path argument,
+/// resolved and normalized.
+pub fn path_lock(arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
+    arguments
+        .get(PATH_ARGUMENT)
+        .and_then(Value::as_str)
+        .map(|raw| normalize(&resolve_path(cwd, raw)))
+        .into_iter()
+        .collect()
+}
 
 /// The trace label and lock path shared by every tool that takes one file.
 ///
-/// A tool whose argument is a path answers both questions the same way — the
+/// A tool whose call names one file answers both questions the same way — the
 /// label resolves it against the working directory, and the lock names the
 /// argument it came from — so the rule lives here instead of being copied into
-/// each tool. [`Tool::trace_label`] and [`Tool::lock_path`] are the only
-/// per-tool knobs, and a tool that wants neither keeps the defaults.
+/// each tool. `read` and `write` are those tools. [`Tool::trace_label`] and
+/// [`Tool::lock_paths`] are the only per-tool knobs, and `edit` drives both
+/// itself, because one call may name several files.
 pub fn path_trace_label(arguments: &Value, cwd: &Path) -> Option<String> {
     Some(
         arguments
@@ -76,11 +90,13 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// The argument that names one file, for the batch lock. `None` for a tool
-    /// that cannot be reasoned about by path — bash and elisp can touch
-    /// anything, so no single path stands for them.
-    fn lock_path(&self) -> Option<&'static str> {
-        None
+    /// The files this call writes, resolved and normalized, for the batch lock:
+    /// a tool that names one file answers with it, and a call spanning several
+    /// files answers with all of them, so it holds every one of their locks.
+    /// Empty for a tool that cannot be reasoned about by path — bash and elisp
+    /// can touch anything, so no path stands for them.
+    fn lock_paths(&self, _arguments: &Value, _cwd: &Path) -> Vec<PathBuf> {
+        Vec::new()
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult>;

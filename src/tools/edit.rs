@@ -1,12 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::path::resolve_path;
-use crate::tools::{AgentContext, PATH_ARGUMENT, path_trace_label};
+use crate::output::first_line;
+use crate::path::{display_file, normalize, resolve_path};
+use crate::tools::AgentContext;
 
 use super::{Tool, ToolResult};
 use refusal::Refusal;
@@ -19,15 +20,26 @@ pub struct EditTool;
 
 #[derive(Debug, Deserialize)]
 struct EditInput {
-    path: String,
+    /// The file to edit. In a batch, the default for an edit that names no path.
+    path: Option<String>,
+    /// The single-edit form: what to replace.
+    old_text: Option<String>,
+    /// The single-edit form: what to replace it with.
+    new_text: Option<String>,
+    /// The batch form: one or more edits, each naming its own path.
+    #[serde(default)]
     edits: Vec<Replacement>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Replacement {
+    /// The file this replacement is in, when one call spans several.
+    path: Option<String>,
     old_text: String,
     new_text: String,
 }
+
+/// A call after its two forms are one: the edits, and the path they default to.
 
 #[async_trait]
 impl Tool for EditTool {
@@ -36,7 +48,9 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> String {
-        "Edit a file by replacing one or more blocks of text".to_string()
+        "Replace text in files: one edit as path, old_text and new_text, or \
+         several as edits"
+            .to_string()
     }
 
     fn schema(&self) -> Value {
@@ -45,24 +59,38 @@ impl Tool for EditTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to edit. Relative to the \
-                                    working directory unless absolute. `~` is \
-                                    expanded; pass it through as-is."
+                    "description": "Path to the file to edit, relative to the working \
+                                    directory unless absolute. In a batch it is the \
+                                    default for an edit that names none."
+                },
+                "old_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Non-empty text to replace, copied from the file: \
+                                    exact bytes first, then trailing whitespace ignored."
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text; empty deletes the match."
                 },
                 "edits": {
                     "type": "array",
                     "minItems": 1,
-                    "description": "One or more replacements, each matching one place in \
-                                    the original file and none of them overlapping another.",
+                    "description": "Several edits in one call, each naming its own path: \
+                                    one call may span files, and no two edits in the same \
+                                    file overlap.",
                     "items": {
                         "type": "object",
                         "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file this edit is in. Defaults to \
+                                                the call's `path`."
+                            },
                             "old_text": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Non-empty text to replace, copied from the \
-                                                file: exact bytes first, then trailing \
-                                                whitespace ignored."
+                                "description": "Text to replace, copied the same way as above."
                             },
                             "new_text": {
                                 "type": "string",
@@ -73,21 +101,36 @@ impl Tool for EditTool {
                     }
                 }
             },
-            "required": ["path", "edits"]
+            "anyOf": [
+                { "required": ["path", "old_text", "new_text"] },
+                { "required": ["edits"] }
+            ]
         })
     }
 
     /// The resolved path, spelled the way every other tool in the trace spells
-    /// it. A call that arrived without one says so.
+    /// it — or, for a call that spans files, the first two and a count. A call
+    /// whose arguments do not name a file at all says so.
     fn trace_label(&self, arguments: &Value, cwd: &Path) -> Option<String> {
-        path_trace_label(arguments, cwd)
+        let labels = call_paths(arguments, cwd)
+            .iter()
+            .map(|path| first_line(&display_file(cwd, path)))
+            .collect::<Vec<_>>();
+        Some(match labels.as_slice() {
+            [] => "?".to_string(),
+            [only] => only.clone(),
+            [first, second] => format!("{first}, {second}"),
+            [first, second, ..] => format!("{first}, {second} and {} more", labels.len() - 2),
+        })
     }
 
-    /// The batch holds this file's lock for the whole call, which is what makes
-    /// one snapshot safe to rewrite. A caller reaching `execute` without it — the
-    /// registry's own is one — does not get that guarantee.
-    fn lock_path(&self) -> Option<&'static str> {
-        Some(PATH_ARGUMENT)
+    /// Every file this call writes, resolved as the call itself resolves them. A
+    /// batch that spans several holds all of their locks, so two calls
+    /// overlapping on any one file still take turns instead of each writing over
+    /// the other's read. A call too malformed to name a file takes none, because
+    /// it writes none.
+    fn lock_paths(&self, arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
+        call_paths(arguments, cwd)
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {
@@ -127,37 +170,114 @@ impl From<anyhow::Error> for Fault {
     }
 }
 
-/// One call, as the steps it takes: check the arguments, read the file, locate
-/// every anchor in that one snapshot, splice a non-overlapping batch, write it,
+/// One call, as the steps it takes: check the arguments, group the edits by the
+/// file each one names, read every file, locate each group's anchors in that
+/// file's own snapshot, splice each non-overlapping batch, then write the files
 /// and report what landed.
 async fn edit(input: Value, cwd: &Path) -> Result<String, Fault> {
-    let input = parse_input(input)?;
-    let path = resolve_path(cwd, &input.path);
+    let targets = targets(input, cwd)?;
 
-    let content = read_text(&path).await?;
-    let found = locate_all(&content, &input.edits, &path)?;
-    let (updated, applied) = splice_all(&content, &input.edits, &found, &path)?;
+    // Every file is read, matched and spliced before any is written, which is
+    // what lets a refusal say nothing was written: a miss in the last file
+    // leaves the first ones alone.
+    let mut files = Vec::with_capacity(targets.len());
+    for target in &targets {
+        let original = read_text(&target.path).await?;
+        let found = locate_all(&original, &target.edits, &target.path)?;
+        let (updated, applied) = splice_all(&original, &target.edits, &found, &target.path)?;
+        files.push(Landed {
+            path: target.path.clone(),
+            original,
+            updated,
+            applied,
+        });
+    }
 
-    tokio::fs::write(&path, &updated)
-        .await
-        .with_context(|| format!("failed to write edited file: {}", path.display()))?;
+    for file in &files {
+        tokio::fs::write(&file.path, &file.updated)
+            .await
+            .with_context(|| format!("failed to write edited file: {}", file.path.display()))?;
+    }
 
-    Ok(report(&path, &content, &applied))
+    Ok(report(&files))
 }
 
-/// The arguments, checked for what a provider may ignore in the schema: an empty
-/// anchor would otherwise reach the matcher, where it matches once per byte and
-/// is reported as ambiguous rather than wrong.
-fn parse_input(input: Value) -> Result<EditInput, Refusal> {
+/// Every file the call writes, in the order it names them, without repeats —
+/// resolved and normalized, so two spellings of one file are one key. The one
+/// reading of a call's paths: the trace spells them and the batch locks them.
+/// A call that does not decode names no file, and writes none.
+fn call_paths(arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
+    targets(arguments.clone(), cwd)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|target| target.path)
+        .collect()
+}
+
+/// One file's share of the call: the path its edits name, and each edit at the
+/// position the model sent it in, so a refusal names the edit to look at.
+struct Target {
+    path: PathBuf,
+    edits: Vec<(usize, Replacement)>,
+}
+
+/// The call as the work it names: one target per file, in the order the files
+/// first appear. This is the one reading of a call — both forms desugar here,
+/// the paths resolve here — so what execution writes, what the trace spells and
+/// what the batch locks cannot disagree.
+///
+/// A group is one snapshot: its replacements are matched together, and two of
+/// them may not overlap. An empty anchor is refused first, because it would
+/// otherwise reach the matcher, where it matches once per byte and is reported
+/// as ambiguous rather than wrong.
+fn targets(input: Value, cwd: &Path) -> Result<Vec<Target>, Refusal> {
     let input: EditInput =
         serde_json::from_value(input).map_err(|error| Refusal::bad_input(&error.to_string()))?;
-    if input.edits.is_empty() {
-        return Err(Refusal::empty_batch());
+
+    // The two forms as one. One edit is `path`, `old_text` and `new_text`; a
+    // batch is `edits`, each entry carrying the path it belongs to, with the
+    // call's own path as their default. Sending both is not a bigger call, it is
+    // two answers to one question, so it is refused rather than guessed at.
+    let flat = input.old_text.is_some() || input.new_text.is_some();
+    if flat && !input.edits.is_empty() {
+        return Err(Refusal::both_forms());
     }
-    if let Some(index) = input.edits.iter().position(|edit| edit.old_text.is_empty()) {
+    let edits = match (input.old_text, input.new_text) {
+        (Some(old_text), Some(new_text)) => {
+            if input.path.is_none() {
+                return Err(Refusal::flat_needs_path());
+            }
+            vec![Replacement {
+                path: None,
+                old_text,
+                new_text,
+            }]
+        }
+        (None, None) if !input.edits.is_empty() => input.edits,
+        (None, None) => return Err(Refusal::no_edit()),
+        _ => return Err(Refusal::half_edit()),
+    };
+    if let Some(index) = edits.iter().position(|edit| edit.old_text.is_empty()) {
         return Err(Refusal::empty_anchor(index));
     }
-    Ok(input)
+
+    let mut targets: Vec<Target> = Vec::new();
+    for (index, mut edit) in edits.into_iter().enumerate() {
+        let raw = edit
+            .path
+            .take()
+            .or_else(|| input.path.clone())
+            .ok_or_else(|| Refusal::no_path(index))?;
+        let path = normalize(&resolve_path(cwd, &raw));
+        match targets.iter_mut().find(|target| target.path == path) {
+            Some(target) => target.edits.push((index, edit)),
+            None => targets.push(Target {
+                path,
+                edits: vec![(index, edit)],
+            }),
+        }
+    }
+    Ok(targets)
 }
 
 /// The file's contents, with a missing or undecodable file refused and anything
@@ -192,13 +312,16 @@ impl Found {
     }
 }
 
-/// Each anchor located in the snapshot, or the first refusal. Every edit matches
-/// the original bytes — a batch cannot read its own writes — and one refusal is
-/// final: nothing is written unless every anchor names one place.
-fn locate_all(content: &str, edits: &[Replacement], path: &Path) -> Result<Vec<Found>, Refusal> {
+/// Each anchor of this file located in the snapshot, or the first refusal. Every
+/// edit matches the original bytes — a batch cannot read its own writes — and
+/// one refusal is final: nothing is written unless every anchor names one place.
+fn locate_all(
+    content: &str,
+    edits: &[(usize, Replacement)],
+    path: &Path,
+) -> Result<Vec<Found>, Refusal> {
     edits
         .iter()
-        .enumerate()
         .map(
             |(index, edit)| match matcher::locate(content, &edit.old_text) {
                 matcher::Located::Found { matcher, span } => Ok(Found { matcher, span }),
@@ -209,7 +332,7 @@ fn locate_all(content: &str, edits: &[Replacement], path: &Path) -> Result<Vec<F
                 } => {
                     let shown = show::candidates(content, &lines);
                     Err(Refusal::ambiguous(
-                        index,
+                        *index,
                         path,
                         matched,
                         places,
@@ -219,7 +342,7 @@ fn locate_all(content: &str, edits: &[Replacement], path: &Path) -> Result<Vec<F
                 }
                 matcher::Located::Miss => {
                     let hint = show::hint(content, &matcher::probes(content, &edit.old_text));
-                    Err(Refusal::miss(index, path, &hint))
+                    Err(Refusal::miss(*index, path, &hint))
                 }
             },
         )
@@ -236,26 +359,38 @@ struct Applied<'a> {
     line: usize,
 }
 
-/// The replacements spliced into one snapshot, or the first colliding pair.
+/// One file after its share of the batch landed: the bytes it held, the bytes it
+/// holds now, and the receipts for what landed where.
+struct Landed<'a> {
+    path: PathBuf,
+    original: String,
+    updated: String,
+    applied: Vec<Applied<'a>>,
+}
+
+/// The replacements spliced into this file's snapshot, or the first colliding
+/// pair — named by the positions the model sent them in, not by position in the
+/// group, which is not a number it ever wrote.
 fn splice_all<'a>(
     content: &str,
-    edits: &'a [Replacement],
+    edits: &'a [(usize, Replacement)],
     found: &[Found],
     path: &Path,
 ) -> Result<(String, Vec<Applied<'a>>), Refusal> {
     let replacements = edits
         .iter()
         .zip(found)
-        .map(|(edit, found)| (found.span.clone(), edit.new_text.as_str()))
+        .map(|((_, edit), found)| (found.span.clone(), edit.new_text.as_str()))
         .collect::<Vec<_>>();
-    let (updated, landed) = matcher::splice(content, &replacements)
-        .map_err(|overlap| Refusal::overlap(overlap.earlier, overlap.later, path))?;
+    let (updated, landed) = matcher::splice(content, &replacements).map_err(|overlap| {
+        Refusal::overlap(edits[overlap.earlier].0, edits[overlap.later].0, path)
+    })?;
 
     let applied = edits
         .iter()
         .zip(found)
         .zip(landed)
-        .map(|((edit, found), line)| Applied {
+        .map(|(((_index, edit), found), line)| Applied {
             found: found.clone(),
             text: edit.new_text.as_str(),
             line,
@@ -264,40 +399,51 @@ fn splice_all<'a>(
     Ok((updated, applied))
 }
 
-/// What the tool did: a line for each exact edit, the region for a fallback. Bounded
-/// in lines rather than edits because the result is re-sent every later turn; what
-/// does not fit is counted, so the model still learns the rest was applied.
-fn report(path: &Path, original: &str, applied: &[Applied]) -> String {
-    /// The most lines one result spends on receipts.
+/// What the tool did, a block per file: a line for each exact edit, the region for
+/// a fallback. Bounded in lines rather than edits because the result is re-sent
+/// every later turn; what does not fit is counted, so the model still learns the
+/// rest was applied. A call that changed one file says exactly what it said
+/// before it could change several.
+fn report(files: &[Landed]) -> String {
+    /// The most lines one result spends on receipts, across every file in it.
     const LINES: usize = 24;
 
-    let count = applied.len();
-    let noun = if count == 1 { "edit" } else { "edits" };
-    let mut report = format!("applied {count} {noun} to {}", path.display());
+    let mut report = String::new();
     let mut spent = 0;
-    let mut shown = 0;
-    for patch in applied {
-        let receipt = if patch.found.is_fallback() {
-            format!(
-                "{} at line {}:\n{}",
-                patch.found.matcher,
-                patch.line,
-                show::change(original, &patch.found.span, patch.text, patch.line)
-            )
-        } else {
-            format!("{} at line {}", patch.found.matcher, patch.line)
-        };
-        let cost = receipt.lines().count();
-        if spent + cost > LINES {
-            break;
+    for file in files {
+        let count = file.applied.len();
+        let noun = if count == 1 { "edit" } else { "edits" };
+        if !report.is_empty() {
+            report.push('\n');
         }
-        spent += cost;
-        shown += 1;
-        report.push('\n');
-        report.push_str(&receipt);
-    }
-    if shown < count {
-        report.push_str(&format!("\n… and {} more regions", count - shown));
+        report.push_str(&format!(
+            "applied {count} {noun} to {}",
+            file.path.display()
+        ));
+        let mut shown = 0;
+        for patch in &file.applied {
+            let receipt = if patch.found.is_fallback() {
+                format!(
+                    "{} at line {}:\n{}",
+                    patch.found.matcher,
+                    patch.line,
+                    show::change(&file.original, &patch.found.span, patch.text, patch.line)
+                )
+            } else {
+                format!("{} at line {}", patch.found.matcher, patch.line)
+            };
+            let cost = receipt.lines().count();
+            if spent + cost > LINES {
+                break;
+            }
+            spent += cost;
+            shown += 1;
+            report.push('\n');
+            report.push_str(&receipt);
+        }
+        if shown < count {
+            report.push_str(&format!("\n… and {} more regions", count - shown));
+        }
     }
     report
 }
@@ -317,6 +463,55 @@ mod tests {
 
     fn body(dir: &Path) -> String {
         std::fs::read_to_string(dir.join("file.txt")).unwrap()
+    }
+
+    /// A temp directory holding each of `files`, for the calls that span more
+    /// than one.
+    fn dir_with(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = crate::config::test_dir(name, None);
+        for (file, text) in files {
+            std::fs::write(dir.join(file), text).unwrap();
+        }
+        dir
+    }
+
+    fn text_of(dir: &Path, file: &str) -> String {
+        std::fs::read_to_string(dir.join(file)).unwrap()
+    }
+
+    /// One file's landed batch, for the report tests, which care about the shape
+    /// of the answer rather than how the bytes got there.
+    fn landed(path: &str, applied: Vec<Applied<'static>>) -> Landed<'static> {
+        Landed {
+            path: PathBuf::from(path),
+            original: "a\n".to_string(),
+            updated: String::new(),
+            applied,
+        }
+    }
+
+    /// One exact replacement that landed on `line`.
+    fn exact(line: usize) -> Applied<'static> {
+        Applied {
+            found: Found {
+                matcher: matcher::EXACT,
+                span: 0..1,
+            },
+            text: "x",
+            line,
+        }
+    }
+
+    /// Any arguments at all, answered: for the calls whose arguments are what is
+    /// under test, rather than the text they change.
+    async fn call(cwd: &Path, arguments: Value) -> ToolResult {
+        let ctx = AgentContext {
+            cwd: cwd.to_path_buf(),
+        };
+        EditTool
+            .execute(arguments, &ctx)
+            .await
+            .expect("the call must be answered")
     }
 
     async fn edit(cwd: &Path, edits: Value) -> String {
@@ -364,6 +559,101 @@ mod tests {
         .await;
 
         assert_eq!(body(&dir), "first\nbeta\nlast\n");
+    }
+
+    /// One call carries a change through every file it names: each file's batch is
+    /// matched against its own original, and all of them are written together.
+    #[tokio::test]
+    async fn one_call_edits_several_files() {
+        let dir = dir_with(
+            "multi-file",
+            &[("a.rs", "fn a() {}\n"), ("b.rs", "fn b() {}\n")],
+        );
+        let report = call(
+            &dir,
+            json!({
+                "edits": [
+                    {"path": "a.rs", "old_text": "fn a() {}", "new_text": "fn a() { 1; }"},
+                    {"path": "b.rs", "old_text": "fn b() {}", "new_text": "fn b() { 2; }"}
+                ]
+            }),
+        )
+        .await;
+
+        assert!(!report.is_error, "{}", report.content);
+        assert_eq!(text_of(&dir, "a.rs"), "fn a() { 1; }\n");
+        assert_eq!(text_of(&dir, "b.rs"), "fn b() { 2; }\n");
+        assert!(
+            report.content.contains("applied 1 edit to"),
+            "{}",
+            report.content
+        );
+    }
+
+    /// A call's own `path` is the default for every edit that names none, which
+    /// keeps the one-file call exactly as short as it was.
+    #[tokio::test]
+    async fn the_call_path_is_the_default_for_an_edit() {
+        let dir = dir_with("default-path", &[("a.rs", "one\n"), ("b.rs", "two\n")]);
+        call(
+            &dir,
+            json!({
+                "path": "a.rs",
+                "edits": [
+                    {"old_text": "one", "new_text": "first"},
+                    {"path": "b.rs", "old_text": "two", "new_text": "second"}
+                ]
+            }),
+        )
+        .await;
+
+        assert_eq!(text_of(&dir, "a.rs"), "first\n");
+        assert_eq!(text_of(&dir, "b.rs"), "second\n");
+    }
+
+    /// A refusal in one file writes none of the others: "nothing was written" is
+    /// true of the whole call, not just of the file that missed.
+    #[tokio::test]
+    async fn a_refusal_in_one_file_leaves_every_file_alone() {
+        let dir = dir_with(
+            "multi-file-refusal",
+            &[("a.rs", "one\n"), ("b.rs", "two\n")],
+        );
+        let refusal = call(
+            &dir,
+            json!({
+                "edits": [
+                    {"path": "a.rs", "old_text": "one", "new_text": "first"},
+                    {"path": "b.rs", "old_text": "missing", "new_text": "second"}
+                ]
+            }),
+        )
+        .await;
+
+        assert!(refusal.is_error, "{}", refusal.content);
+        assert!(refusal.content.contains("edits[1]"), "{}", refusal.content);
+        assert_eq!(text_of(&dir, "a.rs"), "one\n");
+        assert_eq!(text_of(&dir, "b.rs"), "two\n");
+    }
+
+    /// An edit that names no file, in a call that names no default, is refused by
+    /// position before anything is read.
+    #[tokio::test]
+    async fn an_edit_with_no_path_anywhere_is_refused() {
+        let dir = dir_holding("no-path", "alpha\n");
+        let refusal = call(
+            &dir,
+            json!({"edits": [{"old_text": "alpha", "new_text": "beta"}]}),
+        )
+        .await;
+
+        assert!(refusal.is_error, "{}", refusal.content);
+        assert!(
+            refusal.content.contains("edits[0] names no path"),
+            "{}",
+            refusal.content
+        );
+        assert_eq!(body(&dir), "alpha\n");
     }
 
     /// Applying from the end preserves original offsets when an earlier edit
@@ -578,13 +868,18 @@ mod tests {
     }
 
     /// The colliding pair is named by the position the model sent it in, which
-    /// is what tells it which two edits to combine.
+    /// is what tells it which two edits to combine — not by its position in the
+    /// group, which is a number the model never wrote.
     #[test]
     fn an_overlap_names_the_two_edits_to_combine() {
-        let edits = ["abc", "cde"].map(|old_text| Replacement {
-            old_text: old_text.to_string(),
-            new_text: "x".to_string(),
-        });
+        let mut edits = ["abc", "cde"]
+            .map(|old_text| Replacement {
+                path: None,
+                old_text: old_text.to_string(),
+                new_text: "x".to_string(),
+            })
+            .into_iter();
+        let group = [(1, edits.next().unwrap()), (2, edits.next().unwrap())];
         let found = [
             Found {
                 matcher: matcher::EXACT,
@@ -596,25 +891,122 @@ mod tests {
             },
         ];
 
-        let refusal = splice_all("abcdef\n", &edits, &found, Path::new("/repo/file.rs"))
+        let refusal = splice_all("abcdef\n", &group, &found, Path::new("/repo/file.rs"))
             .expect_err("the spans overlap");
 
         assert!(
             refusal
                 .to_string()
-                .contains("edits[0] and edits[1] overlap"),
+                .contains("edits[1] and edits[2] overlap"),
             "{refusal}"
         );
     }
 
-    /// Empty batches are rejected before reading or writing a path.
+    /// A call with neither form is refused before reading or writing a path:
+    /// an empty `edits` is not a batch of zero, it is a call with no edit.
     #[tokio::test]
-    async fn an_empty_edit_batch_is_refused() {
+    async fn a_call_with_no_edit_is_refused() {
         let dir = dir_holding("batch-empty", "content\n");
         let error = refusal(&dir, json!([])).await;
 
-        assert!(error.contains("at least one replacement"), "{error}");
+        assert!(error.contains("carries no edit"), "{error}");
         assert_eq!(body(&dir), "content\n");
+    }
+
+    /// The core shape: one edit, three fields. No array, no nesting, nothing the
+    /// single most common call has to spell out twice.
+    #[tokio::test]
+    async fn one_edit_is_path_old_and_new() {
+        let dir = dir_holding("flat", "alpha\nbeta\n");
+        let report = call(
+            &dir,
+            json!({"path": "file.txt", "old_text": "beta", "new_text": "gamma"}),
+        )
+        .await;
+
+        assert!(!report.is_error, "{}", report.content);
+        assert_eq!(body(&dir), "alpha\ngamma\n");
+        assert!(
+            report.content.contains("applied 1 edit to"),
+            "{}",
+            report.content
+        );
+    }
+
+    /// The batch is the same edit repeated, so one edit sent either way must land
+    /// the same bytes and read the same in the receipt.
+    #[tokio::test]
+    async fn the_two_forms_do_the_same_thing() {
+        let flat = dir_holding("flat-vs-batch", "alpha\nbeta\n");
+        let batch = dir_holding("flat-vs-batch-two", "alpha\nbeta\n");
+
+        let one = call(
+            &flat,
+            json!({"path": "file.txt", "old_text": "beta", "new_text": "gamma"}),
+        )
+        .await;
+        let other = call(
+            &batch,
+            json!({"path": "file.txt", "edits": [
+                {"old_text": "beta", "new_text": "gamma"}
+            ]}),
+        )
+        .await;
+
+        assert_eq!(body(&flat), body(&batch));
+        assert_eq!(
+            one.content.replace(&flat.display().to_string(), "DIR"),
+            other.content.replace(&batch.display().to_string(), "DIR")
+        );
+    }
+
+    /// Both forms in one call is two answers to one question: refused by name,
+    /// rather than resolved by a precedence rule the model cannot see.
+    #[tokio::test]
+    async fn a_call_with_both_forms_is_refused() {
+        let dir = dir_holding("both-forms", "alpha\n");
+        let error = call(
+            &dir,
+            json!({
+                "path": "file.txt",
+                "old_text": "alpha",
+                "new_text": "beta",
+                "edits": [{"old_text": "alpha", "new_text": "gamma"}]
+            }),
+        )
+        .await;
+
+        assert!(error.is_error, "{}", error.content);
+        assert!(error.content.contains("not both"), "{}", error.content);
+        assert_eq!(body(&dir), "alpha\n");
+    }
+
+    /// Half an edit names nothing to write, and the refusal says which halves a
+    /// single edit has.
+    #[tokio::test]
+    async fn a_call_with_half_an_edit_is_refused() {
+        let dir = dir_holding("half-edit", "alpha\n");
+        let error = call(&dir, json!({"path": "file.txt", "old_text": "alpha"})).await;
+
+        assert!(error.is_error, "{}", error.content);
+        assert!(
+            error.content.contains("needs both old_text and new_text"),
+            "{}",
+            error.content
+        );
+        assert_eq!(body(&dir), "alpha\n");
+    }
+
+    /// The single form has no array to put a path in, so a missing `path` is the
+    /// edit naming no file at all.
+    #[tokio::test]
+    async fn a_flat_edit_with_no_path_is_refused() {
+        let dir = dir_holding("flat-no-path", "alpha\n");
+        let error = call(&dir, json!({"old_text": "alpha", "new_text": "beta"})).await;
+
+        assert!(error.is_error, "{}", error.content);
+        assert!(error.content.contains("needs `path`"), "{}", error.content);
+        assert_eq!(body(&dir), "alpha\n");
     }
 
     #[tokio::test]
@@ -690,28 +1082,60 @@ mod tests {
             schema["properties"]["edits"]["items"]["properties"]["old_text"]["minLength"],
             1
         );
-        assert_eq!(schema["required"], json!(["path", "edits"]));
+        assert_eq!(schema["properties"]["old_text"]["minLength"], 1);
         assert_eq!(
             schema["properties"]["edits"]["items"]["required"],
             json!(["old_text", "new_text"])
         );
     }
 
+    /// The schema states the two forms as the two required sets it accepts: one
+    /// edit's three fields, or `edits`. An edit in a batch carries its own path,
+    /// which is what lets one call span files.
+    #[test]
+    fn the_schema_states_both_forms() {
+        let schema = EditTool.schema();
+        let edit = &schema["properties"]["edits"]["items"];
+
+        assert_eq!(
+            schema["anyOf"],
+            json!([
+                {"required": ["path", "old_text", "new_text"]},
+                {"required": ["edits"]}
+            ])
+        );
+        assert_eq!(edit["properties"]["path"]["type"], "string");
+        assert!(
+            schema["required"].is_null(),
+            "the forms are stated by anyOf, not by one required set: {schema}"
+        );
+    }
+
+    /// The trace names the files a call spans once each, by first appearance, and
+    /// counts the rest — a label is one line, however many files it covers.
+    #[test]
+    fn the_trace_names_every_file_once() {
+        let label = EditTool.trace_label(
+            &json!({
+                "edits": [
+                    {"path": "b.rs", "old_text": "b", "new_text": "B"},
+                    {"path": "a.rs", "old_text": "a", "new_text": "A"},
+                    {"path": "./b.rs", "old_text": "c", "new_text": "C"},
+                    {"path": "c.rs", "old_text": "c", "new_text": "C"}
+                ]
+            }),
+            Path::new("/repo"),
+        );
+
+        assert_eq!(label, Some("b.rs, a.rs and 1 more".to_string()));
+    }
+
     /// A batch larger than the receipt budget is reported up to the budget and
     /// counted beyond it, because the result is re-sent on every later turn.
     #[test]
     fn a_report_stops_at_the_line_budget_and_counts_the_rest() {
-        let applied = (1..=30)
-            .map(|line| Applied {
-                found: Found {
-                    matcher: matcher::EXACT,
-                    span: 0..1,
-                },
-                text: "x",
-                line,
-            })
-            .collect::<Vec<_>>();
-        let report = report(Path::new("/repo/file.rs"), "a\n", &applied);
+        let applied = (1..=30).map(exact).collect::<Vec<_>>();
+        let report = report(&[landed("/repo/file.rs", applied)]);
 
         assert_eq!(report.matches("exact at line").count(), 24);
         assert!(report.contains("… and 6 more regions"), "{report}");
@@ -719,19 +1143,24 @@ mod tests {
 
     #[test]
     fn one_edit_is_not_reported_as_edits() {
-        let applied = [Applied {
-            found: Found {
-                matcher: matcher::EXACT,
-                span: 0..1,
-            },
-            text: "x",
-            line: 1,
-        }];
-        let report = report(Path::new("/repo/file.rs"), "a\n", &applied);
+        let report = report(&[landed("/repo/file.rs", vec![exact(1)])]);
 
         assert!(
             report.starts_with("applied 1 edit to /repo/file.rs"),
             "{report}"
         );
+    }
+
+    /// A call that changed two files reports both, one block each: the count is
+    /// per file, so "applied 1 edit" twice is two files, not a batch of two.
+    #[test]
+    fn a_report_names_every_file_it_changed() {
+        let report = report(&[
+            landed("/repo/a.rs", vec![exact(1)]),
+            landed("/repo/b.rs", vec![exact(1), exact(2)]),
+        ]);
+
+        assert!(report.contains("applied 1 edit to /repo/a.rs"), "{report}");
+        assert!(report.contains("applied 2 edits to /repo/b.rs"), "{report}");
     }
 }

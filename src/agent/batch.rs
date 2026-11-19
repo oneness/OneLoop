@@ -12,7 +12,6 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::messages::ToolCall;
-use crate::path::{normalize, resolve_path};
 use crate::tools::{AgentContext, ToolRegistry, ToolResult};
 
 /// One tool call: its result, and the span it covered.
@@ -52,7 +51,9 @@ pub fn span(calls: &[Called]) -> Duration {
 /// Runs one batch of tool calls. Calls that name the same file take turns —
 /// each holds that file's lock for the whole call — so a batch of edits to one
 /// file applies one at a time instead of each reading the original and
-/// overwriting the rest. Calls on different files, and tools that cannot be
+/// overwriting the rest. A call naming several files holds all of their locks,
+/// and takes them in one canonical order, so two such calls cannot each hold
+/// what the other waits for. Calls on different files, and tools that cannot be
 /// reasoned about by path (bash, elisp), still run together.
 pub async fn run(tool_registry: ToolRegistry, tool_calls: &[ToolCall], cwd: &Path) -> Vec<Called> {
     let mut locks: HashMap<PathBuf, Arc<Mutex<()>>> = HashMap::new();
@@ -70,14 +71,19 @@ pub async fn run(tool_registry: ToolRegistry, tool_calls: &[ToolCall], cwd: &Pat
                 cwd: cwd.to_path_buf(),
             };
             let registry = tool_registry.clone();
-            let lock = file_key(&tool_registry, cwd, &tc.name, &tc.arguments)
-                .map(|key| locks.entry(key).or_default().clone());
+            let locks = file_keys(&tool_registry, cwd, &tc.name, &tc.arguments)
+                .into_iter()
+                .map(|key| locks.entry(key).or_default().clone())
+                .collect::<Vec<_>>();
             tokio::spawn(async move {
                 let started = Instant::now();
-                let _held = match lock {
-                    Some(lock) => Some(lock.lock_owned().await),
-                    None => None,
-                };
+                // Taken in the order `file_keys` sorted them, which every call
+                // sorts the same way, so two calls sharing a file wait rather
+                // than deadlock.
+                let mut held = Vec::with_capacity(locks.len());
+                for lock in locks {
+                    held.push(lock.lock_owned().await);
+                }
                 // An error rather than an early return: the span has to come
                 // back with the outcome, so every path out of this task is the
                 // same shape.
@@ -125,28 +131,34 @@ pub async fn run(tool_registry: ToolRegistry, tool_calls: &[ToolCall], cwd: &Pat
         .collect()
 }
 
-/// The lock key for a tool call: the file it names, resolved and normalized,
-/// for a tool that operates on one path. `None` for the rest, and for a name no
-/// tool in the registry answers to.
+/// The lock keys for a tool call: the files the tool itself names, already
+/// resolved and normalized, sorted and without repeats. Empty for a tool that
+/// operates on no path, and for a name no tool in the registry answers to.
 ///
-/// The tool decides — [`Tool::lock_path`] — because the key has to agree with
-/// the argument that tool actually reads. A name-keyed table here would be a
-/// second place to teach, and the first place to forget.
-pub fn file_key(
+/// The tool decides — [`Tool::lock_paths`] — because the keys have to be the
+/// files it will write: one reading of its arguments, shared with its own
+/// execution, instead of a second one here that could disagree. A name-keyed
+/// table would be a second place to teach, and the first place to forget.
+pub fn file_keys(
     registry: &ToolRegistry,
     cwd: &Path,
     name: &str,
     arguments: &Value,
-) -> Option<PathBuf> {
-    let field = registry.get(name)?.lock_path()?;
-    let raw = arguments.get(field)?.as_str()?;
-    Some(normalize(&resolve_path(cwd, raw)))
+) -> Vec<PathBuf> {
+    let Some(tool) = registry.get(name) else {
+        return Vec::new();
+    };
+    let mut keys = tool.lock_paths(arguments, cwd);
+    // One order for every call, so a call holding two of these cannot wait on a
+    // call holding the other one.
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::Tool;
     use std::fs;
 
     fn project_dir(name: &str) -> PathBuf {
@@ -257,42 +269,102 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The lock key is the tool's own answer: the argument it reads, resolved
+    /// A call that spans files holds every one of their locks, so a call sharing
+    /// just one of them still waits. Without that, both would read the shared
+    /// file and the later write would drop the earlier change in silence.
+    #[tokio::test]
+    async fn a_multi_file_edit_holds_every_file_it_names() {
+        let dir = project_dir("edit-multi-lock");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(dir.join(file), "x").unwrap();
+        }
+
+        let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
+        let call = |id: &str, spanned: [&str; 2]| ToolCall {
+            id: id.to_string(),
+            name: "edit".to_string(),
+            arguments: serde_json::json!({
+                "edits": spanned.map(|path| serde_json::json!({
+                    "path": path,
+                    "old_text": "x",
+                    "new_text": "y"
+                }))
+            }),
+            parse_error: None,
+        };
+        let calls = vec![
+            call("call-1", ["a.txt", "b.txt"]),
+            call("call-2", ["b.txt", "c.txt"]),
+        ];
+
+        let results = run(registry, &calls, &dir).await;
+        let errors = results.iter().filter(|call| call.result.is_error).count();
+
+        assert_eq!(errors, 1, "the shared file must make the calls take turns");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The lock keys are the tool's own answer: the arguments it reads, resolved
     /// against the working directory. A tool that names no file takes no lock,
     /// and a name nothing answers to is not a file either.
     #[test]
-    fn the_lock_key_is_the_argument_the_tool_names() {
+    fn the_lock_keys_are_the_arguments_the_tool_names() {
         let dir = project_dir("lock-key");
         let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
 
         assert_eq!(
-            file_key(
+            file_keys(
                 &registry,
                 &dir,
                 "read",
                 &serde_json::json!({"path": "sub/../a.txt"})
             ),
-            Some(dir.join("a.txt"))
+            vec![dir.join("a.txt")]
         );
         assert!(
-            file_key(
+            file_keys(
                 &registry,
                 &dir,
                 "bash",
                 &serde_json::json!({"command": "ls"})
             )
-            .is_none()
+            .is_empty()
         );
         assert!(
-            file_key(
+            file_keys(
                 &registry,
                 &dir,
                 "nonesuch",
                 &serde_json::json!({"path": "a.txt"})
             )
-            .is_none()
+            .is_empty()
         );
-        assert_eq!(registry.get("edit").and_then(Tool::lock_path), Some("path"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A call that edits several files holds a key for each of them, so a second
+    /// call naming any one of those files still takes turns behind it. The keys
+    /// come back sorted: two calls sharing a file must take it in the same order
+    /// or they can each hold what the other waits for.
+    #[test]
+    fn a_multi_file_edit_locks_every_file_it_names() {
+        let dir = project_dir("lock-key-many");
+        let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
+
+        let keys = file_keys(
+            &registry,
+            &dir,
+            "edit",
+            &serde_json::json!({
+                "edits": [
+                    {"path": "b.txt", "old_text": "b", "new_text": "B"},
+                    {"path": "a.txt", "old_text": "a", "new_text": "A"},
+                    {"path": "sub/../b.txt", "old_text": "c", "new_text": "C"}
+                ]
+            }),
+        );
+
+        assert_eq!(keys, vec![dir.join("a.txt"), dir.join("b.txt")]);
         let _ = fs::remove_dir_all(&dir);
     }
 }

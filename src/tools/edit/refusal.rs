@@ -15,14 +15,57 @@ impl Refusal {
     /// model the reason it was wrong.
     pub fn bad_input(reason: &str) -> Self {
         Self(format!(
-            "invalid edit input; expected {{ path: string, edits: [{{ old_text: \
-             non-empty string, new_text: string }}] }} ({reason})"
+            "invalid edit input; expected one edit {{ path: string, old_text: \
+             non-empty string, new_text: string }} or a batch {{ edits: [that same \
+             object] }} ({reason})"
         ))
     }
 
-    /// `edits` was empty.
-    pub fn empty_batch() -> Self {
-        Self("edits must contain at least one replacement".to_string())
+    /// Neither form was filled in, so the call carries no edit at all.
+    pub fn no_edit() -> Self {
+        Self(
+            "a call carries no edit: give one as { path, old_text, new_text } or \
+             several as { edits: [{ path, old_text, new_text }, …] } (nothing was \
+             written)"
+                .to_string(),
+        )
+    }
+
+    /// One field of a single edit, without the other.
+    pub fn half_edit() -> Self {
+        Self(
+            "an edit needs both old_text and new_text: this call had only one of \
+             them (nothing was written)"
+                .to_string(),
+        )
+    }
+
+    /// A single edit and a batch in the same call: two answers to one question.
+    pub fn both_forms() -> Self {
+        Self(
+            "a call is either one edit (path, old_text, new_text) or a batch \
+             (edits), not both: put the single edit in `edits` too, or drop `edits` \
+             (nothing was written)"
+                .to_string(),
+        )
+    }
+
+    /// The single-edit form, with no file named for it to land in.
+    pub fn flat_needs_path() -> Self {
+        Self(
+            "one edit needs `path` beside old_text and new_text; to change a file by \
+             name, send all three (nothing was written)"
+                .to_string(),
+        )
+    }
+
+    /// An edit named no file, and the call had no path to default to, so there is
+    /// nothing to read.
+    pub fn no_path(index: usize) -> Self {
+        Self(format!(
+            "edits[{index}] names no path, and the call has no `path` to default to \
+             (nothing was written)"
+        ))
     }
 
     /// An anchor was empty, which names no place in any file.
@@ -143,7 +186,41 @@ mod tests {
     #[test]
     fn a_bad_input_names_the_shape_it_expected() {
         let text = Refusal::bad_input("missing field `edits`").to_string();
-        assert!(text.contains("expected { path: string, edits:"), "{text}");
+        assert!(text.contains("expected one edit { path:"), "{text}");
+        assert!(text.contains("or a batch { edits:"), "{text}");
         assert!(text.contains("missing field `edits`"), "{text}");
+    }
+
+    /// The refusal a model sees after sending no edit at all spells out both
+    /// shapes, because it guessed and the answer is which two it has.
+    #[test]
+    fn a_call_with_no_edit_is_told_both_shapes() {
+        let text = Refusal::no_edit().to_string();
+        assert!(text.contains("{ path, old_text, new_text }"), "{text}");
+        assert!(
+            text.contains("edits: [{ path, old_text, new_text }"),
+            "{text}"
+        );
+        assert!(text.contains("nothing was written"), "{text}");
+    }
+
+    /// Two forms in one call is refused with the fix named, not merged silently.
+    #[test]
+    fn both_forms_names_the_fix() {
+        let text = Refusal::both_forms().to_string();
+        assert!(text.contains("not both"), "{text}");
+        assert!(
+            text.contains("put the single edit in `edits` too"),
+            "{text}"
+        );
+    }
+
+    /// An edit that names no file is refused by the position it was sent in, so
+    /// the model knows which member of the batch to fix.
+    #[test]
+    fn a_pathless_edit_is_refused_by_position() {
+        let text = Refusal::no_path(2).to_string();
+        assert!(text.contains("edits[2] names no path"), "{text}");
+        assert!(text.contains("no `path` to default to"), "{text}");
     }
 }
