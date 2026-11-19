@@ -7,14 +7,16 @@ pub mod write;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::io::AsyncWriteExt;
 
 use crate::messages::ToolDefinition;
 use crate::output::first_line;
-use crate::path::{display_path, normalize, resolve_path};
+use crate::path::display_path;
 
 /// What a tool is given besides its own arguments: where the agent works.
 ///
@@ -31,34 +33,110 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// The argument every path-taking tool names its file in. `read` and `write`
-/// answer both of the trait's path questions from it — the label resolves it
-/// and the lock names it — so it is written once here rather than in two
-/// `lock_paths` bodies. `edit` reads the same key out of its parsed call, since
-/// one call may span several files, and answers both questions itself. The
-/// schemas still spell `"path"` in their own JSON, because a `json!` key cannot
-/// be a constant.
+/// The argument every path-taking tool names its file in. The four tools that
+/// read, write, and edit one file answer both of the trait's path questions
+/// from it — the label resolves it and the lock names it — so it is written
+/// once here rather than in four `lock_path` bodies. The schemas still spell
+/// `"path"` in their own JSON, because a `json!` key cannot be a constant.
 pub const PATH_ARGUMENT: &str = "path";
 
-/// The lock answer of a tool whose call names one file: the path argument,
-/// resolved and normalized.
-pub fn path_lock(arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
-    arguments
-        .get(PATH_ARGUMENT)
-        .and_then(Value::as_str)
-        .map(|raw| normalize(&resolve_path(cwd, raw)))
-        .into_iter()
-        .collect()
+/// How the `path` property is described to the model, by every tool that names
+/// one file. One sentence in one place: four tools asking for the same argument
+/// must not teach four versions of the rule.
+pub const PATH_DESCRIPTION: &str = "Path to the file. Relative to the working \
+                                    directory unless absolute. `~` is expanded; \
+                                    pass it through as-is.";
+
+/// How many temporary files this process has named. With the pid it makes the
+/// name a call picks its own, so the file that call creates is one no other
+/// call — or another process — is writing.
+static TEMP_FILES: AtomicU64 = AtomicU64::new(0);
+
+/// Write `contents` to `path` by way of a temporary file beside it, so a call
+/// that dies mid-write leaves the old bytes instead of half of the new ones.
+///
+/// The file is replaced, not truncated: its mode is carried over to the
+/// replacement, and a symlink is followed so that editing through a link edits
+/// the file the link names. A path that is a directory, or a file whose mode
+/// forbids writing it, fails here rather than being written into — renaming
+/// would otherwise slip past the permission the file carried.
+///
+/// A process killed between the write and the rename leaves its temporary file
+/// behind, and the old bytes intact: that is the trade this makes.
+pub async fn replace_file(path: &Path, contents: &str) -> Result<()> {
+    // Following a symlink here is what keeps the link itself in place: renaming
+    // over the link would replace it with the file it pointed at.
+    let target = tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| path.to_path_buf());
+    let existing = tokio::fs::metadata(&target).await.ok();
+    if existing.as_ref().is_some_and(std::fs::Metadata::is_dir) {
+        bail!(
+            "that path is a directory, not a file to write: {}",
+            target.display()
+        );
+    }
+    if existing
+        .as_ref()
+        .is_some_and(|metadata| metadata.permissions().readonly())
+    {
+        bail!("that file is read-only: {}", target.display());
+    }
+
+    let name = target
+        .file_name()
+        .map_or_else(|| "file".to_string(), |name| name.to_string_lossy().into());
+    let dir = target
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temp = dir.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        TEMP_FILES.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let replaced = write_and_rename(&temp, &target, contents, existing.as_ref()).await;
+    if replaced.is_err() {
+        // A failed write or rename leaves nothing behind: the old file is
+        // intact, and a temporary file beside it would be one more surprise.
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    replaced.with_context(|| format!("failed to write file: {}", target.display()))
+}
+
+/// The write itself, kept apart so every failure leaves the temporary file for
+/// the caller to remove.
+async fn write_and_rename(
+    temp: &Path,
+    target: &Path,
+    contents: &str,
+    existing: Option<&std::fs::Metadata>,
+) -> Result<()> {
+    // Created new: whatever already sits at this path is not this call's to
+    // truncate, and clobbering it is the one outcome this dance exists to avoid.
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .await?;
+    file.write_all(contents.as_bytes()).await?;
+    // Closed before the rename, so the path is not swapped under an open handle.
+    drop(file);
+    if let Some(existing) = existing {
+        tokio::fs::set_permissions(temp, existing.permissions()).await?;
+    }
+    tokio::fs::rename(temp, target).await?;
+    Ok(())
 }
 
 /// The trace label and lock path shared by every tool that takes one file.
 ///
-/// A tool whose call names one file answers both questions the same way — the
+/// A tool whose argument is a path answers both questions the same way — the
 /// label resolves it against the working directory, and the lock names the
 /// argument it came from — so the rule lives here instead of being copied into
-/// each tool. `read` and `write` are those tools. [`Tool::trace_label`] and
-/// [`Tool::lock_paths`] are the only per-tool knobs, and `edit` drives both
-/// itself, because one call may name several files.
+/// each tool. [`Tool::trace_label`] and [`Tool::lock_path`] are the only
+/// per-tool knobs, and a tool that wants neither keeps the defaults.
 pub fn path_trace_label(arguments: &Value, cwd: &Path) -> Option<String> {
     Some(
         arguments
@@ -90,13 +168,11 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// The files this call writes, resolved and normalized, for the batch lock:
-    /// a tool that names one file answers with it, and a call spanning several
-    /// files answers with all of them, so it holds every one of their locks.
-    /// Empty for a tool that cannot be reasoned about by path — bash and elisp
-    /// can touch anything, so no path stands for them.
-    fn lock_paths(&self, _arguments: &Value, _cwd: &Path) -> Vec<PathBuf> {
-        Vec::new()
+    /// The argument that names one file, for the batch lock. `None` for a tool
+    /// that cannot be reasoned about by path — bash and elisp can touch
+    /// anything, so no single path stands for them.
+    fn lock_path(&self) -> Option<&'static str> {
+        None
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult>;
@@ -109,7 +185,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// A set given outright. Without this an agent can only ever have the
-    /// builtin six, and a domain tool set is the whole point.
+    /// builtin seven, and a domain tool set is the whole point.
     pub fn from_tools(tools: Vec<Arc<dyn Tool>>) -> Self {
         Self { tools }
     }
@@ -119,6 +195,7 @@ impl ToolRegistry {
             Arc::new(read::ReadTool),
             Arc::new(write::WriteTool),
             Arc::new(edit::EditTool),
+            Arc::new(edit::MultiEditTool),
             Arc::new(bash::BashTool),
             Arc::new(elisp::ElispTool),
         ];
@@ -175,6 +252,23 @@ impl ToolRegistry {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The temporary file is created, never reused: whatever already sits at that
+    /// name is not this call's to truncate, and the failure must leave it alone.
+    #[tokio::test]
+    async fn a_file_already_at_the_temporary_name_is_not_truncated() {
+        let dir = crate::config::test_dir("replace-file-taken", None);
+        let temp = dir.join(".note.txt.1.tmp");
+        std::fs::write(&temp, "theirs").unwrap();
+
+        let error = write_and_rename(&temp, &dir.join("note.txt"), "mine", None)
+            .await
+            .expect_err("a taken name must not be written into");
+
+        assert!(format!("{error}").contains("exists"), "{error}");
+        assert_eq!(std::fs::read_to_string(&temp).unwrap(), "theirs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn unknown_tool_error_lists_available_tools() {

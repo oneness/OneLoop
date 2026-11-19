@@ -26,8 +26,8 @@ mod tests {
     use super::*;
     use crate::output::TRACE_WIDTH;
     use crate::tools::{
-        bash::BashTool, edit::EditTool, elisp::ElispTool, read::ReadTool, skill::SkillTool,
-        write::WriteTool,
+        bash::BashTool, edit::EditTool, edit::MultiEditTool, elisp::ElispTool, read::ReadTool,
+        skill::SkillTool, write::WriteTool,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -114,9 +114,7 @@ mod tests {
     }
 
     /// The point of the rule: one file, one spelling. Five shapes of the same
-    /// path and three tools that touch it all print the same line. `edit` reads
-    /// its path out of a complete call rather than a lone `path`, so the
-    /// arguments differ; the spelling must not.
+    /// path and four tools that touch it all print the same line.
     #[test]
     fn every_shape_of_one_path_is_spelled_the_same_way() {
         for path in [
@@ -126,18 +124,19 @@ mod tests {
             "/repo/src/main.rs",
             "src/../src/main.rs",
         ] {
-            for &tool in &[&ReadTool as &dyn Tool, &WriteTool, &EditTool] {
+            for &tool in &[
+                &ReadTool as &dyn Tool,
+                &WriteTool,
+                &EditTool,
+                &MultiEditTool,
+            ] {
                 let name = tool.name();
-                let arguments = match name {
-                    "edit" => serde_json::json!({
-                        "path": path,
-                        "old_text": "a",
-                        "new_text": "b"
-                    }),
-                    _ => serde_json::json!({ "path": path }),
-                };
                 assert_eq!(
-                    format_tool_call(tool, &arguments, Path::new("/repo")),
+                    format_tool_call(
+                        tool,
+                        &serde_json::json!({ "path": path }),
+                        Path::new("/repo")
+                    ),
                     format!("{name}: src/main.rs"),
                     "{name} was given {path}"
                 );

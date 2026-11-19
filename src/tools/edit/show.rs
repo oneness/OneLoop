@@ -17,24 +17,42 @@ const LISTED: usize = 5;
 /// The most lines of either side a changed region shows.
 const SIDE: usize = 4;
 
-/// One numbered line, marked by what it is: `|` for context, `-` for text the
-/// edit removed, `+` for text it wrote.
-fn marked(number: usize, marker: char, text: &str) -> String {
-    let text = text.chars().take(MAX_CHARS).collect::<String>();
-    format!("{number:4} {marker} {text}")
+/// One line, marked by what it is: `|` for context, `-` for text the edit
+/// removed, `+` for text it wrote — numbered where the number is what the model
+/// acts on, and bare in a change, where the marks already say which side a line
+/// is on. A line too long to show whole ends in `…`: half a line is not one to
+/// copy, and pasting one back is how a retry fails twice.
+fn marked(number: Option<usize>, marker: char, text: &str) -> String {
+    let mut shown: String = text.chars().take(MAX_CHARS).collect();
+    // A prefix shorter than the line it came from is a line that was cut.
+    if shown.len() < text.len() {
+        shown.push('…');
+    }
+    match number {
+        Some(number) => format!("{number:4} {marker} {shown}"),
+        None => format!("{marker} {shown}"),
+    }
 }
 
-/// The lines either side of `line` (1-based), numbered.
-fn lines_around(content: &str, line: usize) -> String {
+/// The lines either side of `line` (1-based), numbered, and whether one was too
+/// long to show whole.
+fn lines_around(content: &str, line: usize) -> (String, bool) {
     let file = matcher::file_lines(content);
     let first = line.saturating_sub(1 + AROUND);
-    file.iter()
+    let shown = file
+        .iter()
         .skip(first)
         .take(AROUND * 2 + 1)
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>();
+    let cut = shown.iter().any(|text| text.chars().count() > MAX_CHARS);
+    let lines = shown
+        .iter()
         .enumerate()
-        .map(|(offset, (_, text))| marked(first + offset + 1, '|', text))
+        .map(|(offset, text)| marked(Some(first + offset + 1), '|', text))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (lines, cut)
 }
 
 /// The candidate lines a refusal shows, and how many it left out: one value rather
@@ -54,7 +72,7 @@ pub fn candidates(content: &str, numbers: &[usize]) -> Excerpt {
         .iter()
         .filter_map(|number| {
             file.get(number.saturating_sub(1))
-                .map(|(_, text)| marked(*number, '|', text))
+                .map(|(_, text)| marked(Some(*number), '|', text))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -66,28 +84,30 @@ pub fn candidates(content: &str, numbers: &[usize]) -> Excerpt {
 
 /// The region an edit changed: the lines it replaced, then the lines it wrote.
 /// This is what a fallback receipt is for — an exact anchor needs no evidence,
-/// but a fallback matched text the model did not send.
-pub fn change(original: &str, span: &Span, text: &str, line: usize) -> String {
+/// but a fallback matched text the model did not send. Unnumbered: the marks say
+/// which side a line is on, and in a call with several edits no one line number
+/// is right for all of them.
+pub fn change(original: &str, span: &Span, text: &str) -> String {
     let mut out = Vec::new();
     let removed = removed_lines(original, span);
-    for (number, text) in removed.iter().take(SIDE) {
-        out.push(marked(*number, '-', text));
+    for text in removed.iter().take(SIDE) {
+        out.push(marked(None, '-', text));
     }
     if removed.len() > SIDE {
-        out.push(format!("       … {} more removed", removed.len() - SIDE));
+        out.push(format!("  … {} more removed", removed.len() - SIDE));
     }
     let added = added_lines(text);
-    for (offset, text) in added.iter().take(SIDE).enumerate() {
-        out.push(marked(line + offset, '+', text));
+    for text in added.iter().take(SIDE) {
+        out.push(marked(None, '+', text));
     }
     if added.len() > SIDE {
-        out.push(format!("       … {} more written", added.len() - SIDE));
+        out.push(format!("  … {} more written", added.len() - SIDE));
     }
     out.join("\n")
 }
 
-/// The lines of `content` that `span` covers, with the file's own numbering.
-fn removed_lines<'a>(content: &'a str, span: &Span) -> Vec<(usize, &'a str)> {
+/// The lines of `content` that `span` covers.
+fn removed_lines<'a>(content: &'a str, span: &Span) -> Vec<&'a str> {
     if span.start >= span.end {
         return Vec::new();
     }
@@ -105,8 +125,7 @@ fn removed_lines<'a>(content: &'a str, span: &Span) -> Vec<(usize, &'a str)> {
         .iter()
         .skip(first - 1)
         .take(count)
-        .enumerate()
-        .map(|(offset, (_, text))| (first + offset, *text))
+        .map(|(_, text)| *text)
         .collect()
 }
 
@@ -128,7 +147,7 @@ fn added_lines(text: &str) -> Vec<&str> {
 /// to copy. A model corrects an anchor from this instead of reading the file.
 pub fn hint(content: &str, probes: &[(&'static str, Span)]) -> String {
     let Some((_, span)) = probes.first() else {
-        return "Nothing in the file resembles old_text; read it again and copy the block."
+        return "Nothing in the file resembles old_str; read it again and copy the block."
             .to_string();
     };
     let ignored = probes
@@ -136,10 +155,16 @@ pub fn hint(content: &str, probes: &[(&'static str, Span)]) -> String {
         .map(|(name, _)| *name)
         .collect::<Vec<_>>()
         .join(" and ");
-    format!(
-        "The file holds this text with {ignored}. Copy these lines exactly:\n{}",
-        lines_around(content, matcher::line_of(content, span.start))
-    )
+    let line = matcher::line_of(content, span.start);
+    let (excerpt, cut) = lines_around(content, line);
+    // A line cut to `MAX_CHARS` cannot be copied back, so the hint asks for the
+    // file instead of handing the model an anchor that is bound to miss.
+    let advice = if cut {
+        format!("Read the file at line {line} and copy the block from there:")
+    } else {
+        "Copy these lines exactly:".to_string()
+    };
+    format!("The file holds this text with {ignored}. {advice}\n{excerpt}")
 }
 
 #[cfg(test)]
@@ -149,21 +174,46 @@ mod tests {
     #[test]
     fn lines_around_shows_the_lines_either_side() {
         assert_eq!(
-            lines_around("a\nb\nc\nd\ne\n", 3),
+            lines_around("a\nb\nc\nd\ne\n", 3).0,
             "   1 | a\n   2 | b\n   3 | c\n   4 | d\n   5 | e"
         );
     }
 
     #[test]
     fn lines_around_the_first_line_starts_at_the_first_line() {
-        assert_eq!(lines_around("a\nb\nc\n", 1), "   1 | a\n   2 | b\n   3 | c");
+        assert_eq!(
+            lines_around("a\nb\nc\n", 1).0,
+            "   1 | a\n   2 | b\n   3 | c"
+        );
+    }
+
+    /// A line longer than the excerpt shows ends in `…`, and the flag says so:
+    /// a truncated line is not one the model can copy back.
+    #[test]
+    fn a_cut_line_ends_in_an_ellipsis_and_is_marked_as_cut() {
+        let long = "a".repeat(MAX_CHARS + 10);
+        let (excerpt, cut) = lines_around(&long, 1);
+
+        assert!(cut);
+        assert!(excerpt.ends_with('…'), "{excerpt}");
+        assert_eq!(excerpt.chars().count(), 7 + MAX_CHARS + 1);
+    }
+
+    /// A line that fits is not marked as cut, so the hint can keep telling the
+    /// model to copy it without hedging.
+    #[test]
+    fn a_line_that_fits_is_not_marked_as_cut() {
+        let (excerpt, cut) = lines_around("alpha\n", 1);
+
+        assert!(!cut);
+        assert!(!excerpt.contains('…'), "{excerpt}");
     }
 
     /// A CRLF file renders without its `\r`: an excerpt is for copying, and the
     /// carriage return is invisible anyway.
     #[test]
     fn an_excerpt_hides_carriage_returns() {
-        assert!(!lines_around("alpha\r\nbeta\r\n", 1).contains('\r'));
+        assert!(!lines_around("alpha\r\nbeta\r\n", 1).0.contains('\r'));
     }
 
     #[test]
@@ -187,28 +237,28 @@ mod tests {
     /// the whole reason this receipt exists.
     #[test]
     fn a_change_shows_what_was_replaced_and_what_was_written() {
-        let change = change("alpha   \nbeta\n", &(0..8), "alpha", 1);
-        assert_eq!(change, "   1 - alpha   \n   1 + alpha");
+        let change = change("alpha   \nbeta\n", &(0..8), "alpha");
+        assert_eq!(change, "- alpha   \n+ alpha");
     }
 
-    /// A deletion shows only what it removed, and a replacement of several lines
-    /// numbers the new ones from where they landed.
+    /// Both sides keep the file's order: every removed line first, then every
+    /// written one, which is what the marks mean.
     #[test]
-    fn a_change_numbers_lines_from_where_they_landed() {
-        let change = change("a\nb\nc\n", &(2..3), "B1\nB2", 2);
-        assert_eq!(change, "   2 - b\n   2 + B1\n   3 + B2");
+    fn a_change_shows_what_was_written_after_what_it_replaced() {
+        let change = change("a\nb\nc\n", &(2..3), "B1\nB2");
+        assert_eq!(change, "- b\n+ B1\n+ B2");
     }
 
     #[test]
     fn a_deletion_shows_only_what_it_removed() {
-        assert_eq!(change("a\nb\nc\n", &(2..4), "", 2), "   2 - b");
+        assert_eq!(change("a\nb\nc\n", &(2..4), ""), "- b");
     }
 
     /// Both sides of a receipt drop `\r`: one reads the file's lines and the other
     /// the replacement it was sent, but a reader sees neither carriage return.
     #[test]
     fn a_change_into_a_crlf_file_shows_no_carriage_return() {
-        let change = change("alpha   \r\n", &(0..8), "A1\r\nA2", 1);
+        let change = change("alpha   \r\n", &(0..8), "A1\r\nA2");
         assert!(!change.contains('\r'), "{change:?}");
     }
 
@@ -221,7 +271,7 @@ mod tests {
             .map(|n| format!("new{n}\n"))
             .collect::<Vec<_>>()
             .join("");
-        let change = change(&original, &(0..original.len()), &written, 1);
+        let change = change(&original, &(0..original.len()), &written);
 
         assert!(change.contains("… 5 more removed"), "{change}");
         assert!(change.contains("… 5 more written"), "{change}");
@@ -241,6 +291,18 @@ mod tests {
     fn a_hint_without_a_probe_asks_for_a_fresh_copy() {
         let hint = hint("fn main() {}\n", &[]);
         assert!(hint.contains("read it again"), "{hint}");
+    }
+
+    /// A line cut to `MAX_CHARS` cannot be copied back, so the hint stops asking
+    /// for a copy and names the line to read instead.
+    #[test]
+    fn a_hint_over_a_cut_line_asks_for_the_file() {
+        let long = format!("let x = \"{}\";", "a".repeat(MAX_CHARS + 10));
+        let content = format!("    {long}\n");
+        let hint = hint(&content, &matcher::probes(&content, long.as_str()));
+
+        assert!(hint.contains("Read the file at line 1"), "{hint}");
+        assert!(!hint.contains("Copy these lines exactly"), "{hint}");
     }
 
     /// A probe row exists to turn "nothing resembles this" into "here it is": the

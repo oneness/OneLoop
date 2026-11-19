@@ -1,6 +1,8 @@
 //! Finding an edit's anchor, and splicing its replacement — with line endings
-//! settled here, not in the tool. Matchers are a table; the ladder stops at the
-//! first pass that matches at all, so an ambiguous anchor is refused, not passed on.
+//! settled here, not in the tool. Matchers are a table, and the ladder stops at
+//! the first pass that matches at all, so an ambiguous anchor is refused rather
+//! than handed to a coarser pass. The two spellings of an anchor are a separate
+//! matter: they are tried until one names exactly one place.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -12,7 +14,7 @@ pub type Span = Range<usize>;
 /// say that a fallback was not needed.
 pub const EXACT: &str = "exact";
 
-/// One way of finding `old_text` in a file.
+/// One way of finding `old_str` in a file.
 #[derive(Debug)]
 struct Matcher {
     /// How a result and a refusal name it, so a session log can count it.
@@ -67,49 +69,45 @@ pub enum Located {
     Miss,
 }
 
-/// Two replacements that collide, named by their positions in the batch so a
-/// refusal can say which two the model has to combine.
-#[derive(Debug, PartialEq)]
-pub struct Overlap {
-    /// The replacement already written when the collision was seen.
-    pub earlier: usize,
-    /// The replacement that overlapped it.
-    pub later: usize,
-}
-
-/// The place `old_text` names, or how it fell short. `old_text` must not be
+/// The place `old_str` names, or how it fell short. `old_str` must not be
 /// empty — the tool refuses that first, and an empty anchor matches per byte.
-pub fn locate(content: &str, old_text: &str) -> Located {
+pub fn locate(content: &str, old_str: &str) -> Located {
     debug_assert!(
-        !old_text.is_empty(),
+        !old_str.is_empty(),
         "an empty anchor is refused before it reaches the matcher"
     );
-    for anchor in anchors(old_text, file_eol(content)) {
+    // The file's spelling first, then the literal one. An ambiguity in a
+    // spelling this module invented does not end the search: it names no place,
+    // and the bytes the model actually sent may name one, which is the better
+    // evidence of what it meant.
+    let mut ambiguous = None;
+    for anchor in anchors(old_str, file_eol(content)) {
         match ladder(content, &anchor) {
-            // Only a miss is worth respelling: a file that mixes endings keeps a
-            // literal spelling worth trying, and every other outcome is final.
             Located::Miss => {}
-            found => return found,
+            found @ Located::Found { .. } => return found,
+            unsettled @ Located::Ambiguous { .. } => {
+                ambiguous.get_or_insert(unsettled);
+            }
         }
     }
-    Located::Miss
+    ambiguous.unwrap_or(Located::Miss)
 }
 
-/// The spellings of `old_text` worth trying in a file that spells its lines
+/// The spellings of `old_str` worth trying in a file that spells its lines
 /// `eol`: the file's, then the literal one. They differ only when the two
 /// disagree about `\r`, so a file that already agrees is searched once.
-fn anchors<'a>(old_text: &'a str, eol: &str) -> Vec<Cow<'a, str>> {
-    let spelled = with_eol(old_text, eol);
-    if spelled == old_text {
+fn anchors<'a>(old_str: &'a str, eol: &str) -> Vec<Cow<'a, str>> {
+    let spelled = with_eol(old_str, eol);
+    if spelled == old_str {
         return vec![spelled];
     }
-    vec![spelled, Cow::Borrowed(old_text)]
+    vec![spelled, Cow::Borrowed(old_str)]
 }
 
 /// The table, applied in order: the first matcher to find anything decides.
-fn ladder(content: &str, old_text: &str) -> Located {
+fn ladder(content: &str, old_str: &str) -> Located {
     for matcher in MATCHERS {
-        match (matcher.scan)(content, old_text).as_slice() {
+        match (matcher.scan)(content, old_str).as_slice() {
             [span] => {
                 return Located::Found {
                     matcher: matcher.name,
@@ -137,48 +135,48 @@ fn ladder(content: &str, old_text: &str) -> Located {
     Located::Miss
 }
 
-/// The probes that would have carried `old_text`, and the first place each one
+/// The probes that would have carried `old_str`, and the first place each one
 /// found. Data rather than a sentence: the refusal renders it.
-pub fn probes(content: &str, old_text: &str) -> Vec<(&'static str, Span)> {
+pub fn probes(content: &str, old_str: &str) -> Vec<(&'static str, Span)> {
     PROBES
         .iter()
         .filter_map(|probe| {
-            let span = (probe.scan)(content, old_text).into_iter().next()?;
+            let span = (probe.scan)(content, old_str).into_iter().next()?;
             Some((probe.name, span))
         })
         .collect()
 }
 
-/// Every occurrence of `old_text`, one character past the last start so that an
+/// Every occurrence of `old_str`, one character past the last start so that an
 /// anchor overlapping itself (`aa` in `aaa`) reports two places rather than one.
-fn exact(content: &str, old_text: &str) -> Vec<Span> {
+fn exact(content: &str, old_str: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut from = 0;
     while from <= content.len() {
-        let Some(at) = content[from..].find(old_text) else {
+        let Some(at) = content[from..].find(old_str) else {
             break;
         };
         let start = from + at;
-        spans.push(start..start + old_text.len());
+        spans.push(start..start + old_str.len());
         from = start + content[start..].chars().next().map_or(1, char::len_utf8);
     }
     spans
 }
 
-fn trailing_whitespace(content: &str, old_text: &str) -> Vec<Span> {
-    line_windows(content, old_text, str::trim_end)
+fn trailing_whitespace(content: &str, old_str: &str) -> Vec<Span> {
+    line_windows(content, old_str, str::trim_end)
 }
 
-fn indentation(content: &str, old_text: &str) -> Vec<Span> {
-    line_windows(content, old_text, str::trim)
+fn indentation(content: &str, old_str: &str) -> Vec<Span> {
+    line_windows(content, old_str, str::trim)
 }
 
-/// Spans holding `old_text`'s words in `old_text`'s order, wherever the lines
+/// Spans holding `old_str`'s words in `old_str`'s order, wherever the lines
 /// break: what a rewrap leaves behind, and what no whole-line comparison sees.
 /// Indentation and blank lines take part in neither side, so this is a probe and
 /// not a matcher — it says where the text is, and never writes over it.
-fn line_breaks(content: &str, old_text: &str) -> Vec<Span> {
-    let needle = old_text.split_whitespace().collect::<Vec<_>>();
+fn line_breaks(content: &str, old_str: &str) -> Vec<Span> {
+    let needle = old_str.split_whitespace().collect::<Vec<_>>();
     if needle.is_empty() {
         return Vec::new();
     }
@@ -214,11 +212,11 @@ fn words(text: &str) -> Vec<(&str, Span)> {
     out
 }
 
-/// Line windows matching `old_text` under `key`. A span stops before the last
+/// Line windows matching `old_str` under `key`. A span stops before the last
 /// line's break — keeping it when the anchor claimed one — so line counts survive.
-fn line_windows(content: &str, old_text: &str, key: fn(&str) -> &str) -> Vec<Span> {
-    let needle = old_text.strip_suffix('\n').unwrap_or(old_text);
-    let claims_break = needle.len() != old_text.len();
+fn line_windows(content: &str, old_str: &str, key: fn(&str) -> &str) -> Vec<Span> {
+    let needle = old_str.strip_suffix('\n').unwrap_or(old_str);
+    let claims_break = needle.len() != old_str.len();
     let file = file_lines(content);
     // `split`, not `lines`: an anchor of one newline is one blank line, and
     // `lines` would hand back no lines at all for it.
@@ -288,46 +286,22 @@ pub(super) fn line_of(content: &str, offset: usize) -> usize {
     content[..offset].matches('\n').count() + 1
 }
 
-/// `content` with every span replaced in one pass — no offset adjusted after a
-/// length change — and the line each replacement landed on. Spans may sit end to
-/// end but not overlap, or the result would depend on which was applied first.
-pub fn splice(
-    content: &str,
-    replacements: &[(Span, &str)],
-) -> Result<(String, Vec<usize>), Overlap> {
-    let mut order = (0..replacements.len()).collect::<Vec<_>>();
-    order.sort_unstable_by_key(|index| replacements[*index].0.start);
-
-    let eol = file_eol(content);
-    let mut updated = String::with_capacity(content.len());
-    let mut landed = vec![0; replacements.len()];
-    // The span written last, as its index and where it ended: the running cursor
-    // and the name a collision needs, so there is no second variable to keep in
-    // agreement and no sentinel index standing for "nothing written yet".
-    let mut placed: Option<(usize, usize)> = None;
-    for &index in &order {
-        let (span, text) = &replacements[index];
-        debug_assert!(
-            span.end <= content.len(),
-            "a matcher returned a span outside the file"
-        );
-        let cursor = match placed {
-            Some((earlier, end)) if span.start < end => {
-                return Err(Overlap {
-                    earlier,
-                    later: index,
-                });
-            }
-            Some((_, end)) => end,
-            None => 0,
-        };
-        updated.push_str(&content[cursor..span.start]);
-        landed[index] = line_of(&updated, updated.len());
-        updated.push_str(&with_eol(text, eol));
-        placed = Some((index, span.end));
-    }
-    updated.push_str(&content[placed.map_or(0, |(_, end)| end)..]);
-    Ok((updated, landed))
+/// `content` with `span` replaced, the replacement respelled in the file's own
+/// line endings, and the line it starts on in what was written.
+pub fn splice(content: &str, span: &Span, text: &str) -> (String, usize) {
+    debug_assert!(
+        span.end <= content.len(),
+        "a matcher returned a span outside the file"
+    );
+    let mut updated = String::with_capacity(content.len() + text.len());
+    updated.push_str(&content[..span.start]);
+    // Where the replacement begins, measured in what is being assembled rather
+    // than in the original: the bytes before it are unchanged either way, and
+    // this is the number the receipt quotes.
+    let line = line_of(&updated, updated.len());
+    updated.push_str(&with_eol(text, file_eol(content)));
+    updated.push_str(&content[span.end..]);
+    (updated, line)
 }
 
 #[cfg(test)]
@@ -533,6 +507,37 @@ mod tests {
         );
     }
 
+    /// A spelling this module invented names no place when it names two: the
+    /// bytes the model actually sent may still name one, and those are the better
+    /// evidence of what it meant.
+    #[test]
+    fn an_ambiguous_respelling_does_not_hide_a_literal_match() {
+        let content = "a\r\nb\r\na\r\nb\r\nz a\nb\n";
+        let Located::Found { matcher, span } = locate(content, "a\nb") else {
+            panic!(
+                "the literal spelling must land: {:?}",
+                locate(content, "a\nb")
+            );
+        };
+
+        assert_eq!(matcher, EXACT);
+        assert_eq!(&content[span], "a\nb");
+    }
+
+    /// When no spelling names one place, the file's own spelling is the one the
+    /// refusal describes: it is what the file looks like.
+    #[test]
+    fn the_first_spelling_names_the_ambiguity_when_no_spelling_lands() {
+        assert_eq!(
+            locate("a\r\nb\r\na\r\nb\r\n", "a\nb"),
+            Located::Ambiguous {
+                matcher: EXACT,
+                places: 2,
+                lines: vec![1, 3],
+            }
+        );
+    }
+
     /// A file that already spells its lines the way the anchor does is searched
     /// once, not twice.
     #[test]
@@ -573,94 +578,25 @@ mod tests {
         assert!(probes("fn main() {}\n", "let x = 1;").is_empty());
     }
 
-    /// Both replacements land as written when an earlier one changed length,
-    /// because the string is assembled from the original offsets.
     #[test]
-    fn splice_assembles_from_the_top_without_adjusting_offsets() {
-        let (updated, landed) =
-            splice("a middle z\n", &[(0..1, "long beginning"), (1..8, "")]).unwrap();
-        assert_eq!(updated, "long beginning z\n");
-        assert_eq!(landed, vec![1, 1]);
-    }
-
-    #[test]
-    fn splice_names_the_line_each_replacement_landed_on() {
-        let (_, landed) = splice("a\nb\nc\n", &[(4..5, "C"), (0..1, "A")]).unwrap();
-        assert_eq!(landed, vec![3, 1]);
-    }
-
-    /// Two ranges measured in the same original collide whatever their order in
-    /// the list, and the message can name both.
-    #[test]
-    fn splice_names_the_colliding_pair() {
-        assert_eq!(
-            splice("abcdef\n", &[(6..7, "x"), (0..4, "y"), (2..7, "z")]),
-            Err(Overlap {
-                earlier: 1,
-                later: 2
-            })
-        );
-    }
-
-    /// Adjacent spans are two edits sitting end to end, not a collision.
-    #[test]
-    fn disjoint_replacements_do_not_collide() {
-        assert!(splice("ab\n", &[(0..1, "x"), (1..2, "y")]).is_ok());
+    fn splice_replaces_the_span_and_names_its_line() {
+        let (updated, line) = splice("alpha\nbeta\ngamma\n", &(6..10), "BETA");
+        assert_eq!(updated, "alpha\nBETA\ngamma\n");
+        assert_eq!(line, 2);
     }
 
     /// A replacement is spelled the way the file spells its lines, so writing
     /// multiline text into a CRLF file does not split its endings.
     #[test]
     fn a_replacement_takes_the_files_line_endings() {
-        let (updated, _) = splice("alpha\r\nbeta\r\n", &[(7..13, "B1\nB2\n")]).unwrap();
+        let (updated, _) = splice("alpha\r\nbeta\r\n", &(7..13), "B1\nB2\n");
         assert_eq!(updated, "alpha\r\nB1\r\nB2\r\n");
     }
 
     /// An LF file stays LF even when the replacement arrived carrying CRLF.
     #[test]
     fn a_replacement_into_an_lf_file_drops_carriage_returns() {
-        let (updated, _) = splice("alpha\nbeta\n", &[(6..11, "B1\r\nB2\r\n")]).unwrap();
+        let (updated, _) = splice("alpha\nbeta\n", &(6..11), "B1\r\nB2\r\n");
         assert_eq!(updated, "alpha\nB1\nB2\n");
-    }
-
-    /// The blame is a running cursor, so the pair named is only right while spans
-    /// are ordered by start. Every ordered triple over a six-byte file is checked
-    /// outright: either nothing collides, or the pair blamed really does.
-    #[test]
-    fn the_overlap_check_blames_a_pair_that_really_collides() {
-        fn collides(one: &Span, other: &Span) -> bool {
-            one.start < other.end && other.start < one.end
-        }
-        fn any_collision(spans: &[Span]) -> bool {
-            spans
-                .iter()
-                .enumerate()
-                .any(|(at, one)| spans[at + 1..].iter().any(|other| collides(one, other)))
-        }
-
-        let every_span = (0..6)
-            .flat_map(|start| ((start + 1)..=6).map(move |end| start..end))
-            .collect::<Vec<_>>();
-        for first in &every_span {
-            for second in &every_span {
-                for third in &every_span {
-                    let spans = [first.clone(), second.clone(), third.clone()];
-                    let replacements = spans
-                        .iter()
-                        .cloned()
-                        .map(|span| (span, "x"))
-                        .collect::<Vec<_>>();
-                    match splice("abcdef", &replacements) {
-                        Ok(_) => {
-                            assert!(!any_collision(&spans), "an overlap was accepted: {spans:?}")
-                        }
-                        Err(overlap) => assert!(
-                            collides(&spans[overlap.earlier], &spans[overlap.later]),
-                            "a pair was blamed that does not collide: {spans:?} -> {overlap:?}"
-                        ),
-                    }
-                }
-            }
-        }
     }
 }

@@ -10,7 +10,7 @@ answers without asking for anything.
 - **turn** — your line and everything that follows it, until the model stops
   asking for work. A turn that runs one tool makes two model requests.
 - **tool call** — the model asking OneLoop to run one tool: `read`, `write`,
-  `edit`, `bash`, `elisp`, `skill`.
+  `edit`, `multi_edit`, `bash`, `elisp`, `skill`.
 - **session** — the conversation: every message in order, in one append-only
   file. Each request sends it to the model, together with the system prompt and
   the tool schemas.
@@ -105,8 +105,7 @@ switches the model only after that model answers.
             push_tool_call  (each, before)      |               |
             when_slow -> "▸ <what is running>"  |               |
             (7) batch.rs run: every call in     |               |
-                its own task; a lock per file   |               |
-                it names, taken in one order    |               |
+                its own task, per-file lock     |               |
             (8) metrics: tool_exec + calls[]    |               |
             (9) push_tool_result (each after)   |               |
                  "✓ <what ran> · 1.2s"          |               |
@@ -142,11 +141,11 @@ switches the model only after that model answers.
    session.
 7. Every call in one answer runs at once, each in its own task. Two calls that
    name the same file take turns behind a lock, so neither writes over the
-   other. A call that names several files — one `edit` spanning them — holds all
-   of their locks, and takes them in one order every call uses, so two such
-   calls wait rather than each holding what the other needs. Each call times
-   itself, and that one measurement feeds both the `✓` line and the metrics
-   file. A turn, by contrast, sends one request at a time.
+   other. A tool that changes a file replaces it — a temporary file beside it,
+   then a rename — so a crash mid-write leaves the old bytes, and the file's
+   mode comes along with them. Each call times itself, and that one measurement
+   feeds both the `✓` line and the metrics file. A turn, by contrast, sends one
+   request at a time.
 8. The batch is recorded as one `tool_exec` entry: how long the whole batch
    took, and how long each call inside it took.
 9. Each result is written to the session and named on screen, then the loop goes

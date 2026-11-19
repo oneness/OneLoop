@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     output::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_window},
     path::resolve_path,
-    tools::{AgentContext, path_lock, path_trace_label},
+    tools::{AgentContext, PATH_ARGUMENT, PATH_DESCRIPTION, path_trace_label},
 };
 
 use super::{Tool, ToolResult};
@@ -16,6 +16,7 @@ use super::{Tool, ToolResult};
 pub struct ReadTool;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadInput {
     path: String,
     /// 1-based first line. Defaults to the start of the file.
@@ -40,9 +41,7 @@ impl Tool for ReadTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to read. Relative to the \
-                                    working directory unless absolute. `~` is \
-                                    expanded; pass it through as-is."
+                    "description": PATH_DESCRIPTION
                 },
                 "offset": {
                     "type": "integer",
@@ -61,7 +60,8 @@ impl Tool for ReadTool {
                     )
                 }
             },
-            "required": ["path"]
+            "required": ["path"],
+            "additionalProperties": false
         })
     }
 
@@ -71,8 +71,8 @@ impl Tool for ReadTool {
         path_trace_label(arguments, cwd)
     }
 
-    fn lock_paths(&self, arguments: &Value, cwd: &Path) -> Vec<PathBuf> {
-        path_lock(arguments, cwd)
+    fn lock_path(&self) -> Option<&'static str> {
+        Some(PATH_ARGUMENT)
     }
 
     async fn execute(&self, input: Value, ctx: &AgentContext) -> Result<ToolResult> {

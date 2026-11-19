@@ -9,82 +9,58 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct Refusal(String);
 
+/// The prefix a refusal uses when the call carried several edits: `edits[2]: `,
+/// or nothing when there is only one edit and no position to count to.
+fn at_prefix(at: Option<usize>) -> String {
+    at.map_or_else(String::new, |index| format!("edits[{index}]: "))
+}
+
 impl Refusal {
     /// The arguments did not decode, so the call named no work. The shape is
     /// spelled out because a provider that ignored the schema still owes the
     /// model the reason it was wrong.
     pub fn bad_input(reason: &str) -> Self {
         Self(format!(
-            "invalid edit input; expected one edit {{ path: string, old_text: \
-             non-empty string, new_text: string }} or a batch {{ edits: [that same \
-             object] }} ({reason})"
+            "invalid edit input; expected {{ path: string, old_str: non-empty \
+             string, new_str: string }} ({reason})"
         ))
     }
 
-    /// Neither form was filled in, so the call carries no edit at all.
-    pub fn no_edit() -> Self {
-        Self(
-            "a call carries no edit: give one as { path, old_text, new_text } or \
-             several as { edits: [{ path, old_text, new_text }, …] } (nothing was \
-             written)"
-                .to_string(),
-        )
-    }
-
-    /// One field of a single edit, without the other.
-    pub fn half_edit() -> Self {
-        Self(
-            "an edit needs both old_text and new_text: this call had only one of \
-             them (nothing was written)"
-                .to_string(),
-        )
-    }
-
-    /// The single edit's anchor was empty, which names no place in any file. Not
-    /// [`Refusal::empty_anchor`]: there is no batch to give a position in.
-    pub fn empty_old_text() -> Self {
-        Self(
-            "old_text must not be empty: it names no place in the file (nothing was \
-             written)"
-                .to_string(),
-        )
-    }
-
-    /// A single edit and a batch in the same call: two answers to one question.
-    pub fn both_forms() -> Self {
-        Self(
-            "a call is either one edit (path, old_text, new_text) or a batch \
-             (edits), not both: put the single edit in `edits` too, or drop `edits` \
-             (nothing was written)"
-                .to_string(),
-        )
-    }
-
-    /// The single-edit form, with no file named for it to land in.
-    pub fn flat_needs_path() -> Self {
-        Self(
-            "one edit needs `path` beside old_text and new_text; to change a file by \
-             name, send all three (nothing was written)"
-                .to_string(),
-        )
-    }
-
-    /// An edit named no file, and the call had no path to default to, so there is
-    /// nothing to read.
-    pub fn no_path(index: usize) -> Self {
+    /// A call whose edits did not decode. Its own shape, because the fix is to
+    /// give each edit the two fields rather than to change the tool.
+    pub fn bad_multi_input(reason: &str) -> Self {
         Self(format!(
-            "edits[{index}] names no path, and the call has no `path` to default to \
-             (nothing was written)"
+            "invalid multi_edit input; expected {{ path: string, edits: [{{ old_str: \
+             non-empty string, new_str: string }}] }} ({reason})"
         ))
     }
 
-    /// An anchor was empty, which names no place in any file.
-    pub fn empty_anchor(index: usize) -> Self {
-        Self(format!("edits[{index}].old_text must not be empty"))
+    /// `edits` was empty, which names no work.
+    pub fn no_edits() -> Self {
+        Self("edits must contain at least one replacement (nothing was written)".to_string())
     }
 
-    /// The path is not there. Nothing has been written yet, because every file is
-    /// read before any is written.
+    /// The anchor was empty, which names no place in any file. Named by position
+    /// when the call carried several edits, and told, like every other refusal
+    /// that answered a call, that nothing was written.
+    pub fn empty_anchor(at: Option<usize>) -> Self {
+        Self(match at {
+            None => "old_str must not be empty: it names no place in the file (nothing \
+                     was written)"
+                .to_string(),
+            Some(index) => {
+                format!("edits[{index}].old_str must not be empty (nothing was written)")
+            }
+        })
+    }
+
+    /// The path is blank, which resolves to no file at all.
+    pub fn no_path() -> Self {
+        Self("path must name a file: it was blank (nothing was written)".to_string())
+    }
+
+    /// The path is not there. Nothing has been written, because the file is read
+    /// before it is written.
     pub fn not_found(path: &Path) -> Self {
         Self(format!(
             "file does not exist: {} (nothing was written)",
@@ -101,20 +77,29 @@ impl Refusal {
         ))
     }
 
-    /// An anchor matched nothing. The hint names the lines that almost carried
-    /// it, so the retry is a rewrite rather than a re-read.
-    pub fn miss(index: usize, path: &Path, hint: &str) -> Self {
+    /// The path is a directory, so there is no file to read or to edit.
+    pub fn not_a_file(path: &Path) -> Self {
         Self(format!(
-            "edits[{index}]: old_text not found in file: {} (nothing was written)\n{hint}",
+            "that path is a directory, not a file to edit: {} (nothing was written)",
             path.display()
         ))
     }
 
-    /// An anchor matched several places, so it names no single one. `places`
+    /// The anchor matched nothing. The hint names the lines that almost carried
+    /// it, so the retry is a rewrite rather than a re-read.
+    pub fn miss(at: Option<usize>, path: &Path, hint: &str) -> Self {
+        Self(format!(
+            "{}old_str not found in file: {} (nothing was written)\n{hint}",
+            at_prefix(at),
+            path.display()
+        ))
+    }
+
+    /// The anchor matched several places, so it names no single one. `places`
     /// counts matches and the excerpt shows the lines they start on, which is
     /// why the two can disagree.
     pub fn ambiguous(
-        index: usize,
+        at: Option<usize>,
         path: &Path,
         matcher: &str,
         places: usize,
@@ -122,8 +107,9 @@ impl Refusal {
         hidden: usize,
     ) -> Self {
         let mut message = format!(
-            "edits[{index}]: old_text matches {places} places in file: {} under \
-             {matcher} (nothing was written)\n{excerpt}",
+            "{}old_str matches {places} places in file: {} under {matcher} (nothing \
+             was written)\n{excerpt}",
+            at_prefix(at),
             path.display()
         );
         if hidden > 0 {
@@ -133,20 +119,10 @@ impl Refusal {
             ));
         }
         message.push_str(
-            "\nExtend old_text with the lines that differ between the matches, \
+            "\nExtend old_str with the lines that differ between the matches, \
              so it names one place.",
         );
         Self(message)
-    }
-
-    /// Two edits claimed the same bytes of the original, so the result would
-    /// depend on which was applied first.
-    pub fn overlap(earlier: usize, later: usize, path: &Path) -> Self {
-        Self(format!(
-            "edits[{earlier}] and edits[{later}] overlap in file: {} (nothing was \
-             written); combine overlapping changes into one edit",
-            path.display()
-        ))
     }
 }
 
@@ -169,8 +145,8 @@ mod tests {
     #[test]
     fn a_miss_names_the_path_and_the_absence_of_a_write() {
         assert_eq!(
-            Refusal::miss(2, file(), "look at line 4").to_string(),
-            "edits[2]: old_text not found in file: /repo/file.rs (nothing was written)\n\
+            Refusal::miss(None, file(), "look at line 4").to_string(),
+            "old_str not found in file: /repo/file.rs (nothing was written)\n\
              look at line 4"
         );
     }
@@ -179,7 +155,7 @@ mod tests {
     /// disagree; the tail counts the lines the excerpt left out.
     #[test]
     fn an_ambiguous_refusal_counts_the_lines_it_did_not_show() {
-        let text = Refusal::ambiguous(0, file(), "exact", 7, "   1 | x", 3).to_string();
+        let text = Refusal::ambiguous(None, file(), "exact", 7, "   1 | x", 3).to_string();
         assert!(text.contains("matches 7 places"), "{text}");
         assert!(text.contains("… and 3 more lines not shown"), "{text}");
     }
@@ -187,54 +163,49 @@ mod tests {
     /// One hidden line reads as a line, because the sentence is quoted back.
     #[test]
     fn a_single_hidden_line_is_not_pluralised() {
-        let text = Refusal::ambiguous(0, file(), "exact", 2, "   1 | x", 1).to_string();
+        let text = Refusal::ambiguous(None, file(), "exact", 2, "   1 | x", 1).to_string();
         assert!(text.contains("… and 1 more line not shown"), "{text}");
     }
 
     #[test]
-    fn an_overlap_names_the_pair_to_combine() {
-        let text = Refusal::overlap(0, 3, file()).to_string();
-        assert!(text.contains("edits[0] and edits[3] overlap"), "{text}");
-    }
-
-    #[test]
     fn a_bad_input_names_the_shape_it_expected() {
-        let text = Refusal::bad_input("missing field `edits`").to_string();
-        assert!(text.contains("expected one edit { path:"), "{text}");
-        assert!(text.contains("or a batch { edits:"), "{text}");
-        assert!(text.contains("missing field `edits`"), "{text}");
+        let text = Refusal::bad_input("missing field `old_str`").to_string();
+        assert!(text.contains("expected { path: string, old_str:"), "{text}");
+        assert!(text.contains("missing field `old_str`"), "{text}");
     }
 
-    /// The refusal a model sees after sending no edit at all spells out both
-    /// shapes, because it guessed and the answer is which two it has.
+    /// In a call with several edits, the position is what tells the model which
+    /// one to fix, so it goes in front of the sentence.
     #[test]
-    fn a_call_with_no_edit_is_told_both_shapes() {
-        let text = Refusal::no_edit().to_string();
-        assert!(text.contains("{ path, old_text, new_text }"), "{text}");
-        assert!(
-            text.contains("edits: [{ path, old_text, new_text }"),
-            "{text}"
+    fn a_position_prefixes_the_sentence() {
+        assert_eq!(
+            Refusal::miss(Some(2), file(), "look").to_string(),
+            "edits[2]: old_str not found in file: /repo/file.rs (nothing was written)\nlook"
         );
-        assert!(text.contains("nothing was written"), "{text}");
-    }
-
-    /// Two forms in one call is refused with the fix named, not merged silently.
-    #[test]
-    fn both_forms_names_the_fix() {
-        let text = Refusal::both_forms().to_string();
-        assert!(text.contains("not both"), "{text}");
-        assert!(
-            text.contains("put the single edit in `edits` too"),
-            "{text}"
+        assert_eq!(
+            Refusal::empty_anchor(Some(1)).to_string(),
+            "edits[1].old_str must not be empty (nothing was written)"
         );
     }
 
-    /// An edit that names no file is refused by the position it was sent in, so
-    /// the model knows which member of the batch to fix.
+    /// An empty anchor and a blank path read differently because the fix for one
+    /// is not the fix for the other, and both say the file was left alone.
     #[test]
-    fn a_pathless_edit_is_refused_by_position() {
-        let text = Refusal::no_path(2).to_string();
-        assert!(text.contains("edits[2] names no path"), "{text}");
-        assert!(text.contains("no `path` to default to"), "{text}");
+    fn an_empty_anchor_and_a_blank_path_read_differently() {
+        assert!(
+            Refusal::empty_anchor(None)
+                .to_string()
+                .contains("old_str must not be empty")
+        );
+        assert!(
+            Refusal::no_path()
+                .to_string()
+                .contains("path must name a file")
+        );
+        assert!(
+            Refusal::empty_anchor(Some(1))
+                .to_string()
+                .contains("nothing was written")
+        );
     }
 }

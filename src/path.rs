@@ -14,14 +14,20 @@ use std::path::{Component, Path, PathBuf};
 /// `PathBuf::join` treats the tilde as an ordinary component, so a write of
 /// `~/notes.md` would silently create a directory literally named `~` under
 /// the cwd rather than touching the home directory.
+///
+/// The surrounding space is trimmed, because a padded path names a different
+/// file rather than the one the model meant: ` src/main.rs` would otherwise
+/// create a file whose name starts with a space.
 pub fn resolve_path(cwd: &Path, raw: &str) -> PathBuf {
     resolve_with_home(cwd, raw, env::var("HOME").ok().as_deref())
 }
 
 /// The resolution itself, with `HOME` passed in so it can be tested without
-/// mutating the process environment out from under every other test.
+/// mutating the process environment out from under every other test. The trim is
+/// here rather than in the caller so that the path a tool resolves and the path
+/// the trace names are the same path.
 fn resolve_with_home(cwd: &Path, raw: &str, home: Option<&str>) -> PathBuf {
-    let trimmed = raw.trim_start_matches('@');
+    let trimmed = raw.trim().trim_start_matches('@');
 
     if let Some(home) = home {
         if trimmed == "~" {
@@ -164,6 +170,22 @@ mod tests {
         assert_eq!(
             resolved("~alice/notes.md"),
             PathBuf::from("/home/kasim/.dotfiles/~alice/notes.md")
+        );
+    }
+
+    /// A padded path is the path it was padded around: joining the raw string
+    /// onto the cwd would name a file whose name starts with a space, which is
+    /// never the file the model meant.
+    #[test]
+    fn a_padded_path_is_trimmed_before_it_is_resolved() {
+        assert_eq!(
+            resolved("  src/main.rs\n"),
+            PathBuf::from("/home/kasim/.dotfiles/src/main.rs")
+        );
+        assert_eq!(resolved("  "), PathBuf::from("/home/kasim/.dotfiles"));
+        assert_eq!(
+            resolved(" ~/notes.md "),
+            PathBuf::from("/home/kasim/notes.md")
         );
     }
 
