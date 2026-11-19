@@ -193,10 +193,18 @@ async fn edit(input: Value, cwd: &Path) -> Result<String, Fault> {
         });
     }
 
-    for file in &files {
+    for (written, file) in files.iter().enumerate() {
         tokio::fs::write(&file.path, &file.updated)
             .await
-            .with_context(|| format!("failed to write edited file: {}", file.path.display()))?;
+            .with_context(|| {
+                format!(
+                    "failed to write edited file: {} ({} of {} files were written \
+                     before it)",
+                    file.path.display(),
+                    written,
+                    files.len()
+                )
+            })?;
     }
 
     Ok(report(&files))
@@ -244,7 +252,7 @@ fn targets(input: Value, cwd: &Path) -> Result<Vec<Target>, Refusal> {
     }
     let edits = match (input.old_text, input.new_text) {
         (Some(old_text), Some(new_text)) => {
-            if input.path.is_none() {
+            if named(&input.path).is_none() {
                 return Err(Refusal::flat_needs_path());
             }
             vec![Replacement {
@@ -258,17 +266,21 @@ fn targets(input: Value, cwd: &Path) -> Result<Vec<Target>, Refusal> {
         _ => return Err(Refusal::half_edit()),
     };
     if let Some(index) = edits.iter().position(|edit| edit.old_text.is_empty()) {
-        return Err(Refusal::empty_anchor(index));
+        // The single form has no batch to give a position in, so its refusal
+        // names the field instead of a member of an array it never sent.
+        return Err(if flat {
+            Refusal::empty_old_text()
+        } else {
+            Refusal::empty_anchor(index)
+        });
     }
 
     let mut targets: Vec<Target> = Vec::new();
-    for (index, mut edit) in edits.into_iter().enumerate() {
-        let raw = edit
-            .path
-            .take()
-            .or_else(|| input.path.clone())
+    for (index, edit) in edits.into_iter().enumerate() {
+        let raw = named(&edit.path)
+            .or_else(|| named(&input.path))
             .ok_or_else(|| Refusal::no_path(index))?;
-        let path = normalize(&resolve_path(cwd, &raw));
+        let path = normalize(&resolve_path(cwd, raw));
         match targets.iter_mut().find(|target| target.path == path) {
             Some(target) => target.edits.push((index, edit)),
             None => targets.push(Target {
@@ -278,6 +290,12 @@ fn targets(input: Value, cwd: &Path) -> Result<Vec<Target>, Refusal> {
         }
     }
     Ok(targets)
+}
+
+/// A path the call named, or nothing: an empty or blank string names no file, and
+/// a directory is not a file to read.
+fn named(path: &Option<String>) -> Option<&str> {
+    path.as_deref().filter(|raw| !raw.trim().is_empty())
 }
 
 /// The file's contents, with a missing or undecodable file refused and anything
@@ -390,7 +408,7 @@ fn splice_all<'a>(
         .iter()
         .zip(found)
         .zip(landed)
-        .map(|(((_index, edit), found), line)| Applied {
+        .map(|(((_, edit), found), line)| Applied {
             found: found.clone(),
             text: edit.new_text.as_str(),
             line,
@@ -442,7 +460,11 @@ fn report(files: &[Landed]) -> String {
             report.push_str(&receipt);
         }
         if shown < count {
-            report.push_str(&format!("\n… and {} more regions", count - shown));
+            let rest = count - shown;
+            report.push_str(&format!(
+                "\n… and {rest} more {}",
+                if rest == 1 { "region" } else { "regions" }
+            ));
         }
     }
     report
@@ -634,6 +656,87 @@ mod tests {
         assert!(refusal.content.contains("edits[1]"), "{}", refusal.content);
         assert_eq!(text_of(&dir, "a.rs"), "one\n");
         assert_eq!(text_of(&dir, "b.rs"), "two\n");
+    }
+
+    /// Two spellings of one file are one snapshot: the second edit's line number
+    /// is measured in the file both of them saw, not in a second copy of it.
+    #[tokio::test]
+    async fn one_file_named_twice_is_one_snapshot() {
+        let dir = dir_with("one-file-twice", &[("a.txt", "one\ntwo\n")]);
+        let report = call(
+            &dir,
+            json!({"edits": [
+                {"path": "a.txt", "old_text": "one", "new_text": "1"},
+                {"path": "./a.txt", "old_text": "two", "new_text": "2"}
+            ]}),
+        )
+        .await;
+
+        assert!(!report.is_error, "{}", report.content);
+        assert_eq!(text_of(&dir, "a.txt"), "1\n2\n");
+        assert!(
+            report.content.contains("exact at line 1"),
+            "{}",
+            report.content
+        );
+        assert!(
+            report.content.contains("exact at line 2"),
+            "{}",
+            report.content
+        );
+    }
+
+    /// The same anchor twice names one place, so the batch is refused as an
+    /// overlap rather than applying whichever came first.
+    #[tokio::test]
+    async fn the_same_anchor_twice_is_refused() {
+        let dir = dir_with("same-anchor-twice", &[("a.txt", "one\n")]);
+        let refusal = call(
+            &dir,
+            json!({"edits": [
+                {"path": "a.txt", "old_text": "one", "new_text": "x"},
+                {"path": "a.txt", "old_text": "one", "new_text": "y"}
+            ]}),
+        )
+        .await;
+
+        assert!(refusal.is_error, "{}", refusal.content);
+        assert!(
+            refusal.content.contains("edits[0] and edits[1]"),
+            "{}",
+            refusal.content
+        );
+        assert_eq!(text_of(&dir, "a.txt"), "one\n");
+    }
+
+    /// A fallback receipt quotes the file it landed in: in a call spanning files,
+    /// that is that file's own bytes, not the first file's.
+    #[tokio::test]
+    async fn a_fallback_in_a_later_file_quotes_that_file() {
+        let dir = dir_with(
+            "fallback-later-file",
+            &[("a.txt", "one\n"), ("b.txt", "alpha   \nbeta\n")],
+        );
+        let report = call(
+            &dir,
+            json!({"edits": [
+                {"path": "a.txt", "old_text": "one", "new_text": "1"},
+                {"path": "b.txt", "old_text": "alpha\nbeta", "new_text": "ALPHA\nBETA"}
+            ]}),
+        )
+        .await;
+
+        assert!(!report.is_error, "{}", report.content);
+        assert!(
+            report.content.contains("   1 - alpha   "),
+            "{}",
+            report.content
+        );
+        assert!(
+            report.content.contains("   1 + ALPHA"),
+            "{}",
+            report.content
+        );
     }
 
     /// An edit that names no file, in a call that names no default, is refused by
@@ -1018,6 +1121,62 @@ mod tests {
         assert_eq!(body(&dir), "alpha\nbeta\n");
     }
 
+    /// The single form has no array to give a position in, so its refusal names
+    /// the field rather than `edits[0]`, which the model never sent.
+    #[tokio::test]
+    async fn an_empty_anchor_in_the_single_form_names_the_field() {
+        let dir = dir_holding("empty-old-text-flat", "alpha\n");
+        let error = call(
+            &dir,
+            json!({"path": "file.txt", "old_text": "", "new_text": "x"}),
+        )
+        .await;
+
+        assert!(error.is_error, "{}", error.content);
+        assert!(
+            error.content.contains("old_text must not be empty"),
+            "{}",
+            error.content
+        );
+        assert!(!error.content.contains("edits[0]"), "{}", error.content);
+        assert_eq!(body(&dir), "alpha\n");
+    }
+
+    /// A blank path names no file, so an edit carrying one lands in the call's
+    /// own path instead of resolving the blank against the working directory and
+    /// failing to read a directory.
+    #[tokio::test]
+    async fn a_blank_path_falls_back_to_the_call_path() {
+        let dir = dir_holding("blank-path", "alpha\n");
+        let report = call(
+            &dir,
+            json!({
+                "path": "file.txt",
+                "edits": [{"path": "", "old_text": "alpha", "new_text": "beta"}]
+            }),
+        )
+        .await;
+
+        assert!(!report.is_error, "{}", report.content);
+        assert_eq!(body(&dir), "beta\n");
+    }
+
+    /// The same is true of the call's own path in the single form: blank is not a
+    /// file, so the edit names none.
+    #[tokio::test]
+    async fn a_blank_call_path_is_refused() {
+        let dir = dir_holding("blank-call-path", "alpha\n");
+        let error = call(
+            &dir,
+            json!({"path": "  ", "old_text": "alpha", "new_text": "beta"}),
+        )
+        .await;
+
+        assert!(error.is_error, "{}", error.content);
+        assert!(error.content.contains("needs `path`"), "{}", error.content);
+        assert_eq!(body(&dir), "alpha\n");
+    }
+
     /// A path that is not there is named as such, rather than as a read failure
     /// whose io message the model has to decode.
     #[tokio::test]
@@ -1149,6 +1308,16 @@ mod tests {
             report.starts_with("applied 1 edit to /repo/file.rs"),
             "{report}"
         );
+    }
+
+    /// One region left out is a region, not "1 more regions": the count is the
+    /// sentence the model reads.
+    #[test]
+    fn a_report_pluralises_the_one_region_it_left_out() {
+        let applied = (1..=25).map(exact).collect::<Vec<_>>();
+        let report = report(&[landed("/repo/file.rs", applied)]);
+
+        assert!(report.ends_with("… and 1 more region"), "{report}");
     }
 
     /// A call that changed two files reports both, one block each: the count is

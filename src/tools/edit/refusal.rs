@@ -40,6 +40,16 @@ impl Refusal {
         )
     }
 
+    /// The single edit's anchor was empty, which names no place in any file. Not
+    /// [`Refusal::empty_anchor`]: there is no batch to give a position in.
+    pub fn empty_old_text() -> Self {
+        Self(
+            "old_text must not be empty: it names no place in the file (nothing was \
+             written)"
+                .to_string(),
+        )
+    }
+
     /// A single edit and a batch in the same call: two answers to one question.
     pub fn both_forms() -> Self {
         Self(
@@ -73,9 +83,13 @@ impl Refusal {
         Self(format!("edits[{index}].old_text must not be empty"))
     }
 
-    /// The path is not there.
+    /// The path is not there. Nothing has been written yet, because every file is
+    /// read before any is written.
     pub fn not_found(path: &Path) -> Self {
-        Self(format!("file does not exist: {}", path.display()))
+        Self(format!(
+            "file does not exist: {} (nothing was written)",
+            path.display()
+        ))
     }
 
     /// The bytes are not UTF-8, so an anchor cannot be found in them.
