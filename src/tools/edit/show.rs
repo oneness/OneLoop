@@ -292,8 +292,14 @@ mod tests {
     #[test]
     fn a_hint_without_a_probe_asks_for_a_fresh_copy() {
         let hint = hint("fn main() {}\n", &[]);
-        assert!(hint.contains("re-read the file and copy the block again"), "{hint}");
-        assert!(hint.contains("an edit since that read may have changed it"), "{hint}");
+        assert!(
+            hint.contains("re-read the file and copy the block again"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("an edit since that read may have changed it"),
+            "{hint}"
+        );
     }
 
     /// A line cut to `MAX_CHARS` cannot be copied back, so the hint stops asking
