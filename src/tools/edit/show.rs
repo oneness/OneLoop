@@ -147,7 +147,9 @@ fn added_lines(text: &str) -> Vec<&str> {
 /// to copy. A model corrects an anchor from this instead of reading the file.
 pub fn hint(content: &str, probes: &[(&'static str, Span)]) -> String {
     let Some((_, span)) = probes.first() else {
-        return "Nothing in the file resembles old_str; read it again and copy the block."
+        return "old_str matched no line. If you copied it from an earlier read, re-read \
+                the file and copy the block again: an edit since that read may have \
+                changed it."
             .to_string();
     };
     let ignored = probes
@@ -290,7 +292,8 @@ mod tests {
     #[test]
     fn a_hint_without_a_probe_asks_for_a_fresh_copy() {
         let hint = hint("fn main() {}\n", &[]);
-        assert!(hint.contains("read it again"), "{hint}");
+        assert!(hint.contains("re-read the file and copy the block again"), "{hint}");
+        assert!(hint.contains("an edit since that read may have changed it"), "{hint}");
     }
 
     /// A line cut to `MAX_CHARS` cannot be copied back, so the hint stops asking
