@@ -26,8 +26,8 @@ mod tests {
     use super::*;
     use crate::output::TRACE_WIDTH;
     use crate::tools::{
-        bash::BashTool, edit::EditTool, edit::MultiEditTool, elisp::ElispTool, read::ReadTool,
-        skill::SkillTool, write::WriteTool,
+        bash::BashTool, edit::EditTool, elisp::ElispTool, read::ReadTool, skill::SkillTool,
+        write::WriteTool,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -114,7 +114,7 @@ mod tests {
     }
 
     /// The point of the rule: one file, one spelling. Five shapes of the same
-    /// path and four tools that touch it all print the same line.
+    /// path and the three tools that touch it all print the same line.
     #[test]
     fn every_shape_of_one_path_is_spelled_the_same_way() {
         for path in [
@@ -124,12 +124,7 @@ mod tests {
             "/repo/src/main.rs",
             "src/../src/main.rs",
         ] {
-            for &tool in &[
-                &ReadTool as &dyn Tool,
-                &WriteTool,
-                &EditTool,
-                &MultiEditTool,
-            ] {
+            for &tool in &[&ReadTool as &dyn Tool, &WriteTool, &EditTool] {
                 let name = tool.name();
                 assert_eq!(
                     format_tool_call(

@@ -93,6 +93,77 @@ pub fn locate(content: &str, old_str: &str) -> Located {
     ambiguous.unwrap_or(Located::Miss)
 }
 
+/// What [`locate_all`] found.
+#[derive(Debug, PartialEq)]
+pub enum LocatedAll {
+    /// Every place the anchor names, in file order, with the pass that found them.
+    Found {
+        matcher: &'static str,
+        spans: Vec<Span>,
+    },
+    /// Occurrences overlap, so "replace all" names no single set of writes.
+    Ambiguous {
+        matcher: &'static str,
+        places: usize,
+        lines: Vec<usize>,
+    },
+    /// No pass found the anchor.
+    Miss,
+}
+
+/// Every place `old_str` names, or why it names no writable set. The first pass
+/// with a hit decides, as in [`locate`], so a fallback is used only when the
+/// exact bytes are absent. An overlap ends that spelling the way an ambiguity
+/// ends the ladder: a coarser pass compares whole lines, so it would name a set
+/// that shares no bytes with the overlapping one. An overlap is reported rather
+/// than half replaced.
+pub fn locate_all(content: &str, old_str: &str) -> LocatedAll {
+    debug_assert!(
+        !old_str.is_empty(),
+        "an empty anchor is refused before it reaches the matcher"
+    );
+    let mut ambiguous = None;
+    for anchor in anchors(old_str, file_eol(content)) {
+        for pass in MATCHERS {
+            let spans = (pass.scan)(content, &anchor);
+            match spans.as_slice() {
+                [] => {}
+                [span] => {
+                    return LocatedAll::Found {
+                        matcher: pass.name,
+                        spans: vec![span.clone()],
+                    };
+                }
+                found => {
+                    if found.windows(2).any(|pair| pair[0].end > pair[1].start) {
+                        let mut lines = found
+                            .iter()
+                            .map(|span| line_of(content, span.start))
+                            .collect::<Vec<_>>();
+                        lines.sort_unstable();
+                        lines.dedup();
+                        ambiguous.get_or_insert(LocatedAll::Ambiguous {
+                            matcher: pass.name,
+                            places: found.len(),
+                            lines,
+                        });
+                        // No place here is one this call may write, so the
+                        // spelling is done. The pass below reads whole lines
+                        // and its set would be a different one.
+                        break;
+                    } else {
+                        return LocatedAll::Found {
+                            matcher: pass.name,
+                            spans: found.to_vec(),
+                        };
+                    }
+                }
+            }
+        }
+    }
+    ambiguous.unwrap_or(LocatedAll::Miss)
+}
+
 /// The spellings of `old_str` worth trying in a file that spells its lines
 /// `eol`: the file's, then the literal one. They differ only when the two
 /// disagree about `\r`, so a file that already agrees is searched once.
@@ -286,22 +357,24 @@ pub(super) fn line_of(content: &str, offset: usize) -> usize {
     content[..offset].matches('\n').count() + 1
 }
 
-/// `content` with `span` replaced, the replacement respelled in the file's own
-/// line endings, and the line it starts on in what was written.
-pub fn splice(content: &str, span: &Span, text: &str) -> (String, usize) {
+/// `content` with every `span` replaced by `text`, respelled in the file's own
+/// line endings. The spans are disjoint and in file order — the matchers return
+/// them that way — so every replacement is assembled from the one snapshot.
+pub fn splice(content: &str, spans: &[Span], text: &str) -> String {
     debug_assert!(
-        span.end <= content.len(),
-        "a matcher returned a span outside the file"
+        spans.windows(2).all(|pair| pair[0].end <= pair[1].start)
+            && spans.last().is_none_or(|span| span.end <= content.len()),
+        "a matcher returned overlapping or out-of-range spans"
     );
-    let mut updated = String::with_capacity(content.len() + text.len());
-    updated.push_str(&content[..span.start]);
-    // Where the replacement begins, measured in what is being assembled rather
-    // than in the original: the bytes before it are unchanged either way, and
-    // this is the number the receipt quotes.
-    let line = line_of(&updated, updated.len());
-    updated.push_str(&with_eol(text, file_eol(content)));
-    updated.push_str(&content[span.end..]);
-    (updated, line)
+    let mut updated = String::with_capacity(content.len() + text.len() * spans.len());
+    let mut from = 0;
+    for span in spans {
+        updated.push_str(&content[from..span.start]);
+        updated.push_str(&with_eol(text, file_eol(content)));
+        from = span.end;
+    }
+    updated.push_str(&content[from..]);
+    updated
 }
 
 #[cfg(test)]
@@ -579,24 +652,105 @@ mod tests {
     }
 
     #[test]
-    fn splice_replaces_the_span_and_names_its_line() {
-        let (updated, line) = splice("alpha\nbeta\ngamma\n", &(6..10), "BETA");
-        assert_eq!(updated, "alpha\nBETA\ngamma\n");
-        assert_eq!(line, 2);
+    fn splice_replaces_the_span() {
+        assert_eq!(
+            splice(
+                "alpha\nbeta\ngamma\n",
+                std::slice::from_ref(&(6..10)),
+                "BETA"
+            ),
+            "alpha\nBETA\ngamma\n"
+        );
+    }
+
+    /// All the spans are replaced from one snapshot, so a replacement that is
+    /// longer than its anchor cannot move the next one.
+    #[test]
+    fn splice_replaces_every_span_from_the_original() {
+        assert_eq!(splice("aaXaa", &[0..2, 3..5], "LONG"), "LONGXLONG");
     }
 
     /// A replacement is spelled the way the file spells its lines, so writing
     /// multiline text into a CRLF file does not split its endings.
     #[test]
     fn a_replacement_takes_the_files_line_endings() {
-        let (updated, _) = splice("alpha\r\nbeta\r\n", &(7..13), "B1\nB2\n");
-        assert_eq!(updated, "alpha\r\nB1\r\nB2\r\n");
+        assert_eq!(
+            splice(
+                "alpha\r\nbeta\r\n",
+                std::slice::from_ref(&(7..13)),
+                "B1\nB2\n"
+            ),
+            "alpha\r\nB1\r\nB2\r\n"
+        );
     }
 
     /// An LF file stays LF even when the replacement arrived carrying CRLF.
     #[test]
     fn a_replacement_into_an_lf_file_drops_carriage_returns() {
-        let (updated, _) = splice("alpha\nbeta\n", &(6..11), "B1\r\nB2\r\n");
-        assert_eq!(updated, "alpha\nB1\nB2\n");
+        assert_eq!(
+            splice(
+                "alpha\nbeta\n",
+                std::slice::from_ref(&(6..11)),
+                "B1\r\nB2\r\n"
+            ),
+            "alpha\nB1\nB2\n"
+        );
+    }
+
+    #[test]
+    fn locate_all_names_every_occurrence() {
+        assert_eq!(
+            locate_all("a\nb\na\nb\n", "a\nb"),
+            LocatedAll::Found {
+                matcher: EXACT,
+                spans: vec![0..3, 4..7],
+            }
+        );
+    }
+
+    #[test]
+    fn locate_all_uses_the_fallback_when_exact_bytes_are_absent() {
+        let span = 0..17;
+        assert_eq!(
+            locate_all("alpha   \nalpha   \n", "alpha\nalpha"),
+            LocatedAll::Found {
+                matcher: "trailing whitespace ignored",
+                spans: vec![span],
+            }
+        );
+    }
+
+    /// `replace all` cannot choose between occurrences that share bytes, so the
+    /// same refusal a single edit gets is the answer here too.
+    #[test]
+    fn locate_all_refuses_overlapping_occurrences() {
+        assert_eq!(
+            locate_all("aaa\n", "aa"),
+            LocatedAll::Ambiguous {
+                matcher: EXACT,
+                places: 2,
+                lines: vec![1],
+            }
+        );
+    }
+
+    /// An overlap ends the spelling it was found in. `trailing_whitespace`
+    /// compares whole lines, so here it names the second line alone: falling
+    /// through would rewrite that line and report the anchor was replaced.
+    #[test]
+    fn locate_all_does_not_fall_through_an_overlap_to_a_coarser_pass() {
+        assert_eq!(
+            locate_all("aaaa\naa\n", "aa"),
+            LocatedAll::Ambiguous {
+                matcher: EXACT,
+                places: 4,
+                lines: vec![1, 2],
+            }
+        );
+    }
+
+    #[test]
+    fn locate_all_misses_when_nothing_matches() {
+        assert_eq!(locate_all("alpha\n", "omega"), LocatedAll::Miss);
     }
 }

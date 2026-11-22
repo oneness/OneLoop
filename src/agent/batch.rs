@@ -202,8 +202,7 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "note.txt",
-                    "old_str": "foo",
-                    "new_str": "bar"
+                    "edits": [{"old_str": "foo", "new_str": "bar"}]
                 }),
                 parse_error: None,
             },
@@ -212,47 +211,6 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "sub/../note.txt",
-                    "old_str": "foo",
-                    "new_str": "baz"
-                }),
-                parse_error: None,
-            },
-        ];
-
-        let results = run(registry, &calls, &dir).await;
-        let errors = results.iter().filter(|call| call.result.is_error).count();
-        let final_content = fs::read_to_string(dir.join("note.txt")).unwrap();
-
-        assert_eq!(errors, 1);
-        assert!(final_content == "bar" || final_content == "baz");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// `edit` and `multi_edit` answer the same lock key, so two calls naming one
-    /// file take turns whichever tool each of them used. Without that, both would
-    /// read the original and the later write would drop the earlier change.
-    #[tokio::test]
-    async fn edit_and_multi_edit_on_one_file_take_turns() {
-        let dir = project_dir("edit-multi-shared-lock");
-        fs::write(dir.join("note.txt"), "foo\n").unwrap();
-
-        let registry = ToolRegistry::with_builtin_tools(&dir).unwrap();
-        let calls = vec![
-            ToolCall {
-                id: "call-1".to_string(),
-                name: "edit".to_string(),
-                arguments: serde_json::json!({
-                    "path": "note.txt",
-                    "old_str": "foo",
-                    "new_str": "bar"
-                }),
-                parse_error: None,
-            },
-            ToolCall {
-                id: "call-2".to_string(),
-                name: "multi_edit".to_string(),
-                arguments: serde_json::json!({
-                    "path": "note.txt",
                     "edits": [{"old_str": "foo", "new_str": "baz"}]
                 }),
                 parse_error: None,
@@ -264,7 +222,7 @@ mod tests {
         let final_content = fs::read_to_string(dir.join("note.txt")).unwrap();
 
         assert_eq!(errors, 1);
-        assert!(final_content == "bar\n" || final_content == "baz\n");
+        assert!(final_content == "bar" || final_content == "baz");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -283,8 +241,10 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "note.txt",
-                    "old_str": format!("l{n}\n"),
-                    "new_str": format!("L{n}\n")
+                    "edits": [{
+                        "old_str": format!("l{n}\n"),
+                        "new_str": format!("L{n}\n")
+                    }]
                 }),
                 parse_error: None,
             })

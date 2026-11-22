@@ -33,16 +33,17 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// The argument every path-taking tool names its file in. The four tools that
+/// The argument every path-taking tool names its file in. The three tools that
 /// read, write, and edit one file answer both of the trait's path questions
 /// from it — the label resolves it and the lock names it — so it is written
-/// once here rather than in four `lock_path` bodies. The schemas still spell
-/// `"path"` in their own JSON, because a `json!` key cannot be a constant.
+/// once here rather than in three `lock_path` bodies. The schemas still
+/// spell `"path"` in their own JSON, because a `json!` key cannot be a
+/// constant.
 pub const PATH_ARGUMENT: &str = "path";
 
 /// How the `path` property is described to the model, by every tool that names
-/// one file. One sentence in one place: four tools asking for the same argument
-/// must not teach four versions of the rule.
+/// one file. One sentence in one place: three tools asking for the same
+/// argument must not teach three versions of the rule.
 pub const PATH_DESCRIPTION: &str = "Path to the file. Relative to the working \
                                     directory unless absolute. `~` is expanded; \
                                     pass it through as-is.";
@@ -185,7 +186,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// A set given outright. Without this an agent can only ever have the
-    /// builtin seven, and a domain tool set is the whole point.
+    /// builtin six, and a domain tool set is the whole point.
     pub fn from_tools(tools: Vec<Arc<dyn Tool>>) -> Self {
         Self { tools }
     }
@@ -195,7 +196,6 @@ impl ToolRegistry {
             Arc::new(read::ReadTool),
             Arc::new(write::WriteTool),
             Arc::new(edit::EditTool),
-            Arc::new(edit::MultiEditTool),
             Arc::new(bash::BashTool),
             Arc::new(elisp::ElispTool),
         ];

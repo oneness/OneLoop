@@ -32,7 +32,7 @@ impl Tool for WriteTool {
 
     fn description(&self) -> String {
         "Create or overwrite a whole file with the full content it must hold. To change \
-         part of an existing file, use `edit` or `multi_edit` instead."
+         part of an existing file, use `edit` instead."
             .to_string()
     }
 
@@ -122,8 +122,9 @@ mod tests {
     }
 
     /// The call a model makes when it means `edit`: a replacement it expected to
-    /// be applied to the file it named. Written, that call would be a whole file
-    /// where the anchor was the point, so it is refused by the field instead.
+    /// be applied to the file it named, carried in a field `write` does not name.
+    /// Written as a whole file, that call would destroy the text it meant to
+    /// change, so it is refused by the field instead.
     #[tokio::test]
     async fn a_field_the_schema_does_not_name_is_refused() {
         let cwd = dir("write-unknown-field");
@@ -131,7 +132,11 @@ mod tests {
 
         let error = call(
             &cwd,
-            json!({"path": "note.txt", "content": "x", "old_str": "keep", "new_str": "gone"}),
+            json!({
+                "path": "note.txt",
+                "content": "x",
+                "edits": [{"old_str": "keep", "new_str": "gone"}]
+            }),
         )
         .await
         .expect_err("a call carrying edit's fields must not be written");

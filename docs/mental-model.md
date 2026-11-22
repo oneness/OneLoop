@@ -10,7 +10,7 @@ answers without asking for anything.
 - **turn** — your line and everything that follows it, until the model stops
   asking for work. A turn that runs one tool makes two model requests.
 - **tool call** — the model asking OneLoop to run one tool: `read`, `write`,
-  `edit`, `multi_edit`, `bash`, `elisp`, `skill`.
+  `edit`, `bash`, `elisp`, `skill`.
 - **session** — the conversation: every message in order, in one append-only
   file. Each request sends it to the model, together with the system prompt and
   the tool schemas.
