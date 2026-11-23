@@ -40,6 +40,14 @@ impl Refusal {
         ))
     }
 
+    /// The replacement equals the anchor, which names no change at all.
+    pub fn no_op(at: usize) -> Self {
+        Self(format!(
+            "edits[{at}]: old_str and new_str are identical, so there is nothing \
+             to change (nothing was written)"
+        ))
+    }
+
     /// The path is blank, which resolves to no file at all.
     pub fn no_path() -> Self {
         Self("path must name a file: it was blank (nothing was written)".to_string())

@@ -46,6 +46,19 @@ Do not silence warnings with `#[allow(...)]`. Fix them. If truly necessary, use 
 - One assertion per test when practical.
 - `#[cfg(test)] mod tests {}` in the same file.
 
+## Edit calls
+
+Use `edit` for one file at a time. Read the file with `read` immediately
+before editing it: the anchor has to come from the lines the read actually
+showed, not from memory.
+
+- **One file per call, one array per file.** Group every hunk for that file
+  into the same `edits` list. Edits apply in order, each against what the
+  previous one wrote, so a later hunk can anchor on an earlier one.
+- **Never send `old_str` equal to `new_str`.** The tool refuses no-ops.
+- **Prefer one `write` when the whole file is changing.** Many hunks are one
+  call to `write`, not many calls to `edit`.
+
 ## Search
 
 Every repository question starts with OneSearch, not grep. Read

@@ -76,8 +76,8 @@ impl Tool for EditTool {
          one before it wrote, so a later edit can anchor on what an earlier one \
          wrote. An edit with `replace_all` rewrites every occurrence of its \
          anchor; without it the anchor must match one place. If any edit is \
-         refused, nothing is written. Prefer this tool over `write` for an \
-         existing file."
+         refused, nothing is written. Group every hunk in one file into one call; \
+         prefer this tool over `write` for an existing file."
             .to_string()
     }
 
@@ -91,8 +91,9 @@ impl Tool for EditTool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "Ordered list of search-and-replace operations, applied \
-                                    one after another in this order.",
+                    "description": "Every change for this file, in order. Each edit is \
+                                    matched against what the previous one wrote, so a \
+                                    later hunk can anchor on an earlier one.",
                     "minItems": 1,
                     "items": {
                         "type": "object",
@@ -228,6 +229,13 @@ fn parse_input(input: Value) -> Result<EditInput, Refusal> {
     }
     if let Some(at) = input.edits.iter().position(|edit| edit.old_str.is_empty()) {
         return Err(Refusal::empty_anchor(at));
+    }
+    if let Some(at) = input
+        .edits
+        .iter()
+        .position(|edit| edit.old_str == edit.new_str)
+    {
+        return Err(Refusal::no_op(at));
     }
     Ok(input)
 }
@@ -448,6 +456,38 @@ mod tests {
         let error = refusal(&dir, json!([{"old_str": "aa", "new_str": "x"}])).await;
 
         assert!(error.contains("2 places"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_no_op_edit_is_refused() {
+        let dir = dir_holding("no-op", "alpha\n");
+        let error = refusal(
+            &dir,
+            json!([
+                {"old_str": "alpha", "new_str": "alpha"}
+            ]),
+        )
+        .await;
+
+        assert!(
+            error.contains("old_str and new_str are identical"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_no_op_edit_leaves_the_file_untouched() {
+        let dir = dir_holding("no-op-untouched", "alpha\n");
+        refusal(
+            &dir,
+            json!([
+                {"old_str": "alpha", "new_str": "BETA"},
+                {"old_str": "x", "new_str": "x"}
+            ]),
+        )
+        .await;
+
+        assert_eq!(body(&dir), "alpha\n");
     }
 
     #[tokio::test]
@@ -997,7 +1037,7 @@ mod tests {
                     },
                     "edits": {
                         "type": "array",
-                        "description": "Ordered list of search-and-replace operations, applied one after another in this order.",
+                        "description": "Every change for this file, in order. Each edit is matched against what the previous one wrote, so a later hunk can anchor on an earlier one.",
                         "minItems": 1,
                         "items": {
                             "type": "object",
