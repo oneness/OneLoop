@@ -15,15 +15,16 @@ the prose.
 1. Run `./project-map/generate`. It writes `.oneloop/project-map.json`, a
    gitignored build artifact. Read it — do not hand-edit it.
 2. Read the current `docs/mental-model.md`.
-3. Rewrite **only** that file. Keep the one-page shape: a five-beat flow, a
-   diagram, one table row per module grouped by layer, boundaries, and where
-   to start reading. Stay within 100 lines. Describe contracts and direction,
-   not implementation detail.
-4. Cite every claim using ids from the artifact:
+3. Rewrite **only** that file. Keep the three-part shape: the loop paragraph,
+   one ASCII picture of the flow, and `Where to start reading`. Each box in
+   the picture names a contract; arrows show the direction. No tables, no
+   layer headings, no separate boundaries section — at most one caption line
+   for files and streams. Stay within 100 lines.
+4. Cite the boxes and arrows using ids from the artifact:
    `<!-- module: agent::turn -->`, `<!-- edge: app>agent -->`,
    `<!-- fact: config::DEFAULT_MAX_RETRIES = 10 -->`. An asserted fact value is
-   checked as text; omit `= value` when only the id matters. Every module must
-   be cited, and no named fact or module may be left uncited.
+   checked as text; omit `= value` when only the id matters. Every box and
+   arrow must be cited, and no named fact or module may be left uncited.
 5. Run `./project-map/generate --check`. Fix every error it reports, then show
    the diff. Touch no other document.
 
