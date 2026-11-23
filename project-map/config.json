@@ -1,0 +1,7 @@
+{
+  "adapter": "rust",
+  "roots": ["src"],
+  "entry_points": ["src/main.rs"],
+  "artifact": ".oneloop/project-map.json",
+  "doc": "docs/mental-model.md"
+}

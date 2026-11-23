@@ -119,11 +119,13 @@ comment, and a paragraph belongs in a doc or an issue instead.
 
 ### Dependency direction and cycles
 
-Rust modules form a tree of containment; their imports form a separate dependency
-graph. Keep that graph acyclic, and prefer dependencies that point from
-orchestration toward lower-level, more stable responsibilities. For example,
-`app` may depend on `agent`, the second-opinion backends, and shared mechanisms;
-those mechanisms must not depend back on `app`.
+Rust modules form a tree of containment; their imports and cross-module paths
+form a separate dependency graph. Keep that graph acyclic, and prefer
+dependencies that point from orchestration toward lower-level, more stable
+responsibilities. Rust permits cycles between modules in one crate; this is a
+project rule, not a compiler requirement. Cargo forbids cycles between packages.
+For example, `app` may depend on `agent`, the second-opinion backends, and
+shared mechanisms; those mechanisms must not depend back on `app`.
 
 - **Avoid cycles.** If two modules need each other, move the shared contract or
   behavior to a module both can depend on, or revise the boundary. A DAG may

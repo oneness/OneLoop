@@ -70,3 +70,13 @@ A change is not finished until the docs say the same thing.
 
 When behavior, a tool, the module layout, or the shape of the loop moves, one
 of these is wrong until you fix it.
+
+A change that moves a module, a public contract or a dependency direction also
+regenerates the mental model:
+
+1. Run `./project-map/generate` — writes the gitignored `.oneloop/project-map.json`.
+2. Use the `mental-model` skill to rewrite `docs/mental-model.md` from that artifact.
+3. Run `./project-map/generate --check` and fix every error before finishing.
+
+The check validates citations, not truth: the model still owns the prose. Never
+hand-edit the artifact.

@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Build a deterministic map of modules and their contracts.
+
+This driver owns only orchestration, the dependency graph and the output
+format. Source parsing lives in a language adapter under project-map/adapters/,
+so another language can be added without changing what a consumer reads.
+"""
+
+import argparse
+import importlib.util
+import json
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+ADAPTER_DIR = HERE / "adapters"
+CONFIG_FILE = HERE / "config.json"
+CITATION = re.compile(r"<!--\s*(?P<kind>[a-z]+)\s*:\s*(?P<target>.*?)\s*-->")
+
+# Adapters are loaded from files, and their bytecode would be the only build
+# artifact this tool leaves in the source tree.
+sys.dont_write_bytecode = True
+
+
+def load_adapter(name):
+    """Load a language adapter by name, or fail with the path that was tried."""
+    path = ADAPTER_DIR / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"project_map_{name}", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"project-map: cannot load adapter {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_edges(modules):
+    """Edges for declarations, imports and fully qualified cross-module paths."""
+    edges = {}
+    for module in modules:
+        for target in module["declares"]:
+            if target != module["id"]:
+                edges.setdefault((module["id"], target, "declares"), set()).add("mod")
+        for kind in ("imports", "paths"):
+            for target, statements in sorted(module[kind].items()):
+                if target == module["id"]:
+                    continue
+                edge_kind = "uses" if kind == "imports" else "path"
+                key = (module["id"], target, edge_kind)
+                edges.setdefault(key, set()).update(statements)
+    return [
+        {"from": source, "to": target, "kind": kind, "via": sorted(statements)}
+        for (source, target, kind), statements in sorted(edges.items())
+    ]
+
+
+def build_layers(modules, edges):
+    """Topological layers from leaves upward; anything unresolved is reported."""
+    ids = {module["id"] for module in modules}
+    dependencies = {module_id: set() for module_id in ids}
+    for edge in edges:
+        # Containment is the module tree, not a dependency direction: a child
+        # using `super::` is normal and must not be read as a cycle.
+        if edge["kind"] in ("uses", "path"):
+            dependencies[edge["from"]].add(edge["to"])
+
+    remaining = set(ids)
+    layers = []
+    unresolved = []
+    while remaining:
+        ready = sorted(
+            module_id for module_id in remaining
+            if dependencies[module_id].isdisjoint(remaining)
+        )
+        if not ready:
+            unresolved = sorted(remaining)
+            break
+        layers.append(ready)
+        remaining.difference_update(ready)
+
+    return layers, unresolved
+
+
+def make_artifact(config):
+    """Scan source and assemble the artifact in memory, for either output mode."""
+    scanned = load_adapter(config["adapter"]).scan(ROOT, config)
+    edges = build_edges(scanned["modules"])
+    layers, unresolved = build_layers(scanned["modules"], edges)
+    return {
+        "schema": "project-map/v1",
+        "adapter": config["adapter"],
+        "entry_points": sorted(config.get("entry_points", [])),
+        "modules": scanned["modules"],
+        "edges": edges,
+        "layers": layers,
+        "unresolved": unresolved,
+        "facts": scanned["facts"],
+    }
+
+
+def uncited_mentions(text, artifact, cited):
+    """Informational: facts or modules the prose names without a citation."""
+    warnings = []
+    for fact in artifact["facts"]:
+        if fact["id"] in cited["fact"]:
+            continue
+        name = fact["id"].rsplit("::", 1)[-1]
+        needles = (fact["value"].strip(), name)
+        if any(len(needle) >= 5 and "\n" not in needle and needle in text for needle in needles):
+            warnings.append(f"fact {fact['id']} appears in the doc but has no citation")
+    for module in artifact["modules"]:
+        if module["id"] not in cited["module"] and f"`{Path(module['path']).stem}.rs`" in text:
+            warnings.append(f"module {module['id']} is named in the doc but has no citation")
+    return warnings
+
+
+def check_doc(path, artifact):
+    """Validate citations against a fresh artifact; report, do not rewrite."""
+    try:
+        text = path.read_text()
+    except OSError as error:
+        raise SystemExit(f"project-map: {path}: {error}") from error
+
+    facts = {fact["id"]: fact for fact in artifact["facts"]}
+    modules = {module["id"] for module in artifact["modules"]}
+    edges = {(edge["from"], edge["to"]) for edge in artifact["edges"]}
+    cited = {"fact": set(), "module": set(), "edge": set()}
+    violations = []
+
+    for match in CITATION.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        kind = match.group("kind")
+        target = match.group("target").strip()
+        if kind not in cited:
+            violations.append(f"{path}:{line}: unknown citation '{kind}'")
+            continue
+        if kind == "fact":
+            name, separator, expected = target.partition("=")
+            fact_id = name.strip()
+            expected = expected.lstrip("=").strip() if separator else ""
+            fact = facts.get(fact_id)
+            if fact is None:
+                violations.append(f"{path}:{line}: fact '{fact_id}' is not in the artifact")
+                continue
+            actual = fact["value"].strip()
+            if expected and expected != actual:
+                violations.append(
+                    f"{path}:{line}: fact '{fact_id}' claims '{expected}', artifact says '{actual}'"
+                )
+            cited["fact"].add(fact_id)
+        elif kind == "module" and target not in modules:
+            violations.append(f"{path}:{line}: module '{target}' is not in the artifact")
+            continue
+        elif kind == "edge":
+            source, separator, destination = target.partition(">")
+            if not separator or (source.strip(), destination.strip()) not in edges:
+                violations.append(f"{path}:{line}: edge '{target}' is not in the artifact")
+                continue
+        if kind != "fact":
+            cited[kind].add(target)
+
+    print(f"checked {sum(len(ids) for ids in cited.values())} citations in {path}")
+    print(
+        f"artifact: {len(modules)} modules, {len(artifact['edges'])} edges "
+        f"({len(edges)} pairs), {len(facts)} facts; "
+        f"cited: {len(cited['module'])} modules, {len(cited['edge'])} edges, {len(cited['fact'])} facts"
+    )
+    warnings = uncited_mentions(text, artifact, cited)
+    if warnings:
+        print(f"uncited mentions (informational, {len(warnings)}):")
+        for warning in warnings[:20]:
+            print(f"  {warning}")
+        if len(warnings) > 20:
+            print(f"  ... and {len(warnings) - 20} more")
+    for violation in violations:
+        print(f"ERROR {violation}", file=sys.stderr)
+    return 1 if violations else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stdout", action="store_true", help="print instead of writing the artifact")
+    parser.add_argument("--out", type=Path, help="override the artifact path from the config")
+    parser.add_argument("--check", action="store_true", help="validate citations in the doc without writing")
+    parser.add_argument("--doc", type=Path, help="doc to check (default from config)")
+    args = parser.parse_args()
+
+    try:
+        config = json.loads(CONFIG_FILE.read_text())
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"project-map: {CONFIG_FILE}: {error}") from error
+
+    artifact = make_artifact(config)
+    text = json.dumps(artifact, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+    if args.check:
+        return check_doc(args.doc or ROOT / config["doc"], artifact)
+
+    if args.stdout:
+        sys.stdout.write(text)
+        return 0
+
+    path = args.out or ROOT / config["artifact"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    print(f"wrote {path.relative_to(ROOT) if path.is_relative_to(ROOT) else path}")
+    print(
+        f"{len(artifact['modules'])} modules, {len(artifact['edges'])} edges, "
+        f"{len(artifact['layers'])} layers, {len(artifact['facts'])} facts, "
+        f"{len(artifact['unresolved'])} unresolved"
+    )
+    kinds = Counter(edge["kind"] for edge in artifact["edges"])
+    print(f"  {kinds['declares']} declares, {kinds['uses']} uses, {kinds['path']} paths")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
