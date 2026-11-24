@@ -7,7 +7,7 @@ I recommend you build your own coding agent — [here is why I use
 mine](https://www.birkey.co/2026-10-24-why-i-use-my-own-coding-agent.html).
 
 **Curious?**
-[Overview](https://www.birkey.co/oneloop/) ·
+[Overview](https://www.birkey.co/OneLoop/) ·
 [Mental model](docs/mental-model.md)
 
 **Want to try?**
