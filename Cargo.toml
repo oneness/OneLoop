@@ -5,6 +5,15 @@ edition = "2024"
 rust-version = "1.98"
 description = "One loop, few tools: a provider-neutral coding agent"
 license = "MIT"
+default-run = "oneloop"
+
+[[bin]]
+name = "oneloop"
+path = "src/main.rs"
+
+[[bin]]
+name = "project-map"
+path = "project-map/main.rs"
 
 [lints.clippy]
 collapsible_match = "deny"
