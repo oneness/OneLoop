@@ -4,7 +4,7 @@ set -euo pipefail
 # Install the released oneloop binary, plus the `ol` alias beside it.
 #
 #   curl --fail --silent --show-error --location \
-#     https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | sh
+#     https://raw.githubusercontent.com/oneness/OneLoop/main/install.sh | bash
 #
 # ONELOOP_VERSION pins a release instead of taking the latest.
 # ONELOOP_BIN installs somewhere other than ~/.local/bin.
