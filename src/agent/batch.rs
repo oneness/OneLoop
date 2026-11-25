@@ -202,7 +202,8 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "note.txt",
-                    "edits": [{"old_str": "foo", "new_str": "bar"}]
+                    "old_str": "foo",
+                    "new_str": "bar"
                 }),
                 parse_error: None,
             },
@@ -211,7 +212,8 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "sub/../note.txt",
-                    "edits": [{"old_str": "foo", "new_str": "baz"}]
+                    "old_str": "foo",
+                    "new_str": "baz"
                 }),
                 parse_error: None,
             },
@@ -241,10 +243,8 @@ mod tests {
                 name: "edit".to_string(),
                 arguments: serde_json::json!({
                     "path": "note.txt",
-                    "edits": [{
-                        "old_str": format!("l{n}\n"),
-                        "new_str": format!("L{n}\n")
-                    }]
+                    "old_str": format!("l{n}\n"),
+                    "new_str": format!("L{n}\n")
                 }),
                 parse_error: None,
             })

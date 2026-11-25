@@ -52,9 +52,11 @@ Use `edit` for one file at a time. Read the file with `read` immediately
 before editing it: the anchor has to come from the lines the read actually
 showed, not from memory.
 
-- **One file per call, one array per file.** Group every hunk for that file
-  into the same `edits` list. Edits apply in order, each against what the
-  previous one wrote, so a later hunk can anchor on an earlier one.
+- **One replacement per call.** Send `path`, `old_str`, `new_str`, and
+  optionally `replace_all`. Several changes to one file are several calls;
+  calls on one file take turns, but their order is not guaranteed — if one
+  change depends on what another wrote, wait for the first result before
+  sending the next.
 - **Never send `old_str` equal to `new_str`.** The tool refuses no-ops.
 - **Prefer one `write` when the whole file is changing.** Many hunks are one
   call to `write`, not many calls to `edit`.

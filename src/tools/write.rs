@@ -122,7 +122,7 @@ mod tests {
     }
 
     /// The call a model makes when it means `edit`: a replacement it expected to
-    /// be applied to the file it named, carried in a field `write` does not name.
+    /// be applied to the file it named, carried in fields `write` does not name.
     /// Written as a whole file, that call would destroy the text it meant to
     /// change, so it is refused by the field instead.
     #[tokio::test]
@@ -135,7 +135,8 @@ mod tests {
             json!({
                 "path": "note.txt",
                 "content": "x",
-                "edits": [{"old_str": "keep", "new_str": "gone"}]
+                "old_str": "keep",
+                "new_str": "gone"
             }),
         )
         .await

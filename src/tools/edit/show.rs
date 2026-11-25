@@ -83,10 +83,9 @@ pub fn candidates(content: &str, numbers: &[usize]) -> Excerpt {
 }
 
 /// The region an edit changed: the lines it replaced, then the lines it wrote.
-/// This is what a fallback receipt is for — an exact anchor needs no evidence,
+/// This is what a fallback report is for — an exact anchor needs no evidence,
 /// but a fallback matched text the model did not send. Unnumbered: the marks say
-/// which side a line is on, and in a call with several edits no one line number
-/// is right for all of them.
+/// which side a line is on.
 pub fn change(original: &str, span: &Span, text: &str) -> String {
     let mut out = Vec::new();
     let removed = removed_lines(original, span);

@@ -1,15 +1,11 @@
-//! The `edit` tool: one file, one or more replacements, one write.
+//! The `edit` tool: one file, one replacement, one write.
 //!
-//! A call names `path` and an ordered `edits` list. Each `old_str` is matched
-//! against the bytes the previous edit wrote, so a batch can change one end of
-//! a file and then anchor on what it wrote at the other. `replace_all` turns a
-//! repeated anchor into one edit over every place it names. The file is written
-//! once, after the last edit landed, so a refusal anywhere leaves it as it was.
-//!
-//! An anchor is matched against the file's own bytes — exact first, then a pass
-//! that ignores trailing whitespace — and refused when it names no place or more
-//! than one, unless `replace_all` was asked for. A refusal is an answer, not a
-//! failure: it carries the words the model needs to retry.
+//! A call names `path`, `old_str`, and `new_str`, and may set `replace_all`.
+//! The anchor is matched against the file's own bytes — exact first, then a pass
+//! that ignores trailing whitespace — and refused when it names no place or,
+//! without `replace_all`, more than one. A refusal is an answer, not a failure:
+//! it carries the words the model needs to retry. The file is written only after
+//! the anchor matched, so a refusal leaves it as it was.
 
 use std::path::Path;
 
@@ -30,7 +26,7 @@ mod refusal;
 mod show;
 mod steps;
 
-/// One call to the one file tool: a path and the edits to apply to it in order.
+/// One call to the one file tool: a path and one replacement.
 pub struct EditTool;
 
 /// The rule the schema states for an anchor and its replacement, written once:
@@ -51,13 +47,6 @@ const NEW_STR_DESCRIPTION: &str = "The complete replacement text. It must keep t
 #[serde(deny_unknown_fields)]
 struct EditInput {
     path: String,
-    edits: Vec<Replacement>,
-}
-
-/// The replacement text, and whether one anchor means one place or all of them.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Replacement {
     old_str: String,
     new_str: String,
     #[serde(default)]
@@ -71,13 +60,12 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> String {
-        "Change part of an existing file with one or more exact search-and-replace \
-         edits, applied in the order given. Each edit is matched against what the \
-         one before it wrote, so a later edit can anchor on what an earlier one \
-         wrote. An edit with `replace_all` rewrites every occurrence of its \
-         anchor; without it the anchor must match one place. If any edit is \
-         refused, nothing is written. Group every hunk in one file into one call; \
-         prefer this tool over `write` for an existing file."
+        "Change part of an existing file with one exact search-and-replace. \
+         `old_str` must match one place, or every place when `replace_all` is \
+         set; otherwise nothing is written. For several changes, send one call \
+         per change; calls naming the same file take turns, but their order is \
+         not promised, so wait for a result before sending a change that \
+         depends on it. Prefer this tool over `write` for an existing file."
             .to_string()
     }
 
@@ -89,38 +77,24 @@ impl Tool for EditTool {
                     "type": "string",
                     "description": PATH_DESCRIPTION
                 },
-                "edits": {
-                    "type": "array",
-                    "description": "Every change for this file, in order. Each edit is \
-                                    matched against what the previous one wrote, so a \
-                                    later hunk can anchor on an earlier one.",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_str": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": OLD_STR_DESCRIPTION
-                            },
-                            "new_str": {
-                                "type": "string",
-                                "description": NEW_STR_DESCRIPTION
-                            },
-                            "replace_all": {
-                                "type": "boolean",
-                                "default": false,
-                                "description": "If true, replace every occurrence of old_str. \
-                                                Defaults to false, which requires old_str to \
-                                                match exactly one place."
-                            }
-                        },
-                        "required": ["old_str", "new_str"],
-                        "additionalProperties": false
-                    }
+                "old_str": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": OLD_STR_DESCRIPTION
+                },
+                "new_str": {
+                    "type": "string",
+                    "description": NEW_STR_DESCRIPTION
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If true, replace every occurrence of old_str. \
+                                    Defaults to false, which requires old_str to \
+                                    match exactly one place."
                 }
             },
-            "required": ["path", "edits"],
+            "required": ["path", "old_str", "new_str"],
             "additionalProperties": false
         })
     }
@@ -160,7 +134,7 @@ fn answered(outcome: Result<String, Fault>) -> Result<ToolResult> {
     }
 }
 
-/// Why a step stopped: a [`Refusal`] is an answer the model can act on and returns
+/// Why the step stopped: a [`Refusal`] is an answer the model can act on and returns
 /// as a tool result, while a failure is the tool's own problem and returns as the
 /// caller's error.
 enum Fault {
@@ -180,62 +154,42 @@ impl From<anyhow::Error> for Fault {
     }
 }
 
-/// One call, as the steps it takes: check the arguments, read the file once,
-/// apply each edit to the running copy, then write that copy once — so a refusal
-/// in the last edit leaves the file as it was.
+/// One call, as the steps it takes: check the arguments, read the file, locate
+/// the anchor, render what landed, then write once — so a refusal leaves the
+/// file as it was.
 async fn edit(input: Value, cwd: &Path) -> Result<String, Fault> {
     let input = parse_input(input)?;
     let path = resolve_path(cwd, &input.path);
 
-    let mut updated = steps::read_text(&path).await?;
-    let mut receipts = Vec::with_capacity(input.edits.len());
-    for (at, edit) in input.edits.iter().enumerate() {
-        // Matched against what the edit before it wrote: that is what applying
-        // them "in order" means.
-        let found = if edit.replace_all {
-            steps::locate_all(&updated, &edit.old_str, &path, at)?
-        } else {
-            steps::locate(&updated, &edit.old_str, &path, at)?
-        };
-        // Rendered now, while the running copy still holds the anchors this edit
-        // matched; after the splice those bytes are gone.
-        receipts.push(steps::receipt(
-            at,
-            &updated,
-            &found,
-            &edit.new_str,
-            edit.replace_all,
-        ));
-        updated = matcher::splice(&updated, &found.spans, &edit.new_str);
-    }
+    let original = steps::read_text(&path).await?;
+    let found = if input.replace_all {
+        steps::locate_all(&original, &input.old_str, &path)?
+    } else {
+        steps::locate(&original, &input.old_str, &path)?
+    };
+    // Rendered before the splice: a fallback quotes the bytes the anchor matched.
+    let report = steps::report(&path, &original, &found, &input.new_str, input.replace_all);
+    let updated = matcher::splice(&original, &found.spans, &input.new_str);
 
     replace_file(&path, &updated).await.map_err(Fault::Broken)?;
 
-    Ok(steps::report(&path, &receipts))
+    Ok(report)
 }
 
 /// The arguments, checked for what a provider may ignore in the schema: an empty
-/// anchor would reach the matcher, where it matches once per byte and is reported
-/// as ambiguous rather than wrong, and a blank path would resolve to the working
-/// directory.
+/// anchor would reach the matcher, where it matches once per byte, and a blank
+/// path would resolve to the working directory.
 fn parse_input(input: Value) -> Result<EditInput, Refusal> {
     let input: EditInput =
         serde_json::from_value(input).map_err(|error| Refusal::bad_input(&error.to_string()))?;
-    if input.edits.is_empty() {
-        return Err(Refusal::no_edits());
-    }
     if input.path.trim().is_empty() {
         return Err(Refusal::no_path());
     }
-    if let Some(at) = input.edits.iter().position(|edit| edit.old_str.is_empty()) {
-        return Err(Refusal::empty_anchor(at));
+    if input.old_str.is_empty() {
+        return Err(Refusal::empty_anchor());
     }
-    if let Some(at) = input
-        .edits
-        .iter()
-        .position(|edit| edit.old_str == edit.new_str)
-    {
-        return Err(Refusal::no_op(at));
+    if input.old_str == input.new_str {
+        return Err(Refusal::no_op());
     }
     Ok(input)
 }
@@ -267,20 +221,26 @@ mod tests {
             .expect("the call must be answered")
     }
 
-    async fn apply(cwd: &Path, edits: Value) -> ToolResult {
-        call(cwd, json!({ "path": "file.txt", "edits": edits })).await
+    /// Most tests name `file.txt`; the ones about `path` build the full call.
+    async fn apply(cwd: &Path, arguments: Value) -> ToolResult {
+        let mut arguments = arguments;
+        arguments
+            .as_object_mut()
+            .expect("edit arguments must be an object")
+            .insert("path".to_string(), json!("file.txt"));
+        call(cwd, arguments).await
     }
 
     /// The helpers below assert the precondition a test assumes — that a call
     /// succeeded or was refused — so each test has one assertion of its own.
-    async fn edit(cwd: &Path, edits: Value) -> String {
-        let result = apply(cwd, edits).await;
+    async fn edit(cwd: &Path, arguments: Value) -> String {
+        let result = apply(cwd, arguments).await;
         assert!(!result.is_error, "{}", result.content);
         result.content
     }
 
-    async fn refusal(cwd: &Path, edits: Value) -> String {
-        let result = apply(cwd, edits).await;
+    async fn refusal(cwd: &Path, arguments: Value) -> String {
+        let result = apply(cwd, arguments).await;
         assert!(
             result.is_error,
             "a refusal must be marked: {}",
@@ -302,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn a_unique_edit_rewrites_the_file() {
         let dir = dir_holding("unique", "alpha\nbeta\n");
-        edit(&dir, json!([{"old_str": "beta", "new_str": "gamma"}])).await;
+        edit(&dir, json!({"old_str": "beta", "new_str": "gamma"})).await;
 
         assert_eq!(body(&dir), "alpha\ngamma\n");
     }
@@ -310,42 +270,37 @@ mod tests {
     #[tokio::test]
     async fn a_replacement_can_change_length_or_delete() {
         let dir = dir_holding("length", "a middle z\n");
-        edit(&dir, json!([{"old_str": " middle", "new_str": ""}])).await;
+        edit(&dir, json!({"old_str": " middle", "new_str": ""})).await;
 
         assert_eq!(body(&dir), "a z\n");
     }
 
-    /// Every receipt names its edit by position, including the only one in a
-    /// call: one tool, one shape, whatever the batch size.
     #[tokio::test]
-    async fn an_exact_edit_is_reported_by_position() {
+    async fn an_exact_edit_is_reported() {
         let dir = dir_holding("report-exact", "alpha\nbeta\ngamma\n");
-        let report = edit(&dir, json!([{"old_str": "beta", "new_str": "replaced"}])).await;
+        let report = edit(&dir, json!({"old_str": "beta", "new_str": "replaced"})).await;
 
         assert_eq!(
             report,
-            format!(
-                "applied 1 edit to {}\nedits[0]: exact",
-                dir.join("file.txt").display()
-            )
+            format!("applied edit to {}: exact", dir.join("file.txt").display())
         );
     }
 
     /// A fallback is worth quoting: it matched text the model did not send, so
-    /// the receipt shows the lines the file really held.
+    /// the result shows the lines the file really held.
     #[tokio::test]
     async fn a_fallback_reports_the_region_it_changed() {
         let dir = dir_holding("report-fallback", "alpha   \nbeta\n");
         let report = edit(
             &dir,
-            json!([{"old_str": "alpha\nbeta", "new_str": "ALPHA\nBETA"}]),
+            json!({"old_str": "alpha\nbeta", "new_str": "ALPHA\nBETA"}),
         )
         .await;
 
         assert_eq!(
             report,
             format!(
-                "applied 1 edit to {}\nedits[0]: trailing whitespace ignored:\n- alpha   \n- beta\n+ ALPHA\n+ BETA",
+                "applied edit to {}: trailing whitespace ignored:\n- alpha   \n- beta\n+ ALPHA\n+ BETA",
                 dir.join("file.txt").display()
             )
         );
@@ -356,7 +311,7 @@ mod tests {
         let dir = dir_holding("trailing", "alpha   \nbeta\n");
         edit(
             &dir,
-            json!([{"old_str": "alpha\nbeta", "new_str": "alpha\nbeta\ngamma"}]),
+            json!({"old_str": "alpha\nbeta", "new_str": "alpha\nbeta\ngamma"}),
         )
         .await;
 
@@ -369,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn a_crlf_file_is_edited_and_stays_crlf() {
         let dir = dir_holding("crlf", "alpha\r\nbeta\r\ngamma\r\n");
-        edit(&dir, json!([{"old_str": "beta", "new_str": "B1\nB2"}])).await;
+        edit(&dir, json!({"old_str": "beta", "new_str": "B1\nB2"})).await;
 
         assert_eq!(body(&dir), "alpha\r\nB1\r\nB2\r\ngamma\r\n");
     }
@@ -379,7 +334,7 @@ mod tests {
         let dir = dir_holding("miss-indent", "fn main() {\n    let x = 1;\n}\n");
         let error = refusal(
             &dir,
-            json!([{"old_str": "  fn main() {\n    let x = 1;\n}", "new_str": "x"}]),
+            json!({"old_str": "  fn main() {\n    let x = 1;\n}", "new_str": "x"}),
         )
         .await;
 
@@ -392,10 +347,10 @@ mod tests {
         let dir = dir_holding("miss-breaks", content);
         let error = refusal(
             &dir,
-            json!([{
+            json!({
                 "old_str": "The answer is printed, then recorded as reference\nmaterial.",
                 "new_str": "x"
-            }]),
+            }),
         )
         .await;
 
@@ -408,10 +363,10 @@ mod tests {
         let dir = dir_holding("miss-breaks-copy", content);
         let error = refusal(
             &dir,
-            json!([{
+            json!({
                 "old_str": "The answer is printed, then recorded as reference\nmaterial.",
                 "new_str": "x"
-            }]),
+            }),
         )
         .await;
 
@@ -421,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_anchor_says_nothing_was_written() {
         let dir = dir_holding("untouched-refusal", "alpha\nbeta\n");
-        let error = refusal(&dir, json!([{"old_str": "omega", "new_str": "x"}])).await;
+        let error = refusal(&dir, json!({"old_str": "omega", "new_str": "x"})).await;
 
         assert!(error.contains("nothing was written"), "{error}");
     }
@@ -429,7 +384,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_anchor_leaves_the_file_untouched() {
         let dir = dir_holding("untouched", "alpha\nbeta\n");
-        refusal(&dir, json!([{"old_str": "omega", "new_str": "x"}])).await;
+        refusal(&dir, json!({"old_str": "omega", "new_str": "x"})).await;
 
         assert_eq!(body(&dir), "alpha\nbeta\n");
     }
@@ -437,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn an_ambiguous_edit_names_the_first_candidate() {
         let dir = dir_holding("ambiguous-first", "same\nother\nsame\n");
-        let error = refusal(&dir, json!([{"old_str": "same", "new_str": "x"}])).await;
+        let error = refusal(&dir, json!({"old_str": "same", "new_str": "x"})).await;
 
         assert!(error.contains("   1 | same"), "{error}");
     }
@@ -445,7 +400,7 @@ mod tests {
     #[tokio::test]
     async fn an_ambiguous_edit_names_the_last_candidate() {
         let dir = dir_holding("ambiguous-last", "same\nother\nsame\n");
-        let error = refusal(&dir, json!([{"old_str": "same", "new_str": "x"}])).await;
+        let error = refusal(&dir, json!({"old_str": "same", "new_str": "x"})).await;
 
         assert!(error.contains("   3 | same"), "{error}");
     }
@@ -453,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn a_self_overlapping_anchor_is_refused_without_writing() {
         let dir = dir_holding("self-overlap", "aaa\n");
-        let error = refusal(&dir, json!([{"old_str": "aa", "new_str": "x"}])).await;
+        let error = refusal(&dir, json!({"old_str": "aa", "new_str": "x"})).await;
 
         assert!(error.contains("2 places"), "{error}");
     }
@@ -461,13 +416,7 @@ mod tests {
     #[tokio::test]
     async fn a_no_op_edit_is_refused() {
         let dir = dir_holding("no-op", "alpha\n");
-        let error = refusal(
-            &dir,
-            json!([
-                {"old_str": "alpha", "new_str": "alpha"}
-            ]),
-        )
-        .await;
+        let error = refusal(&dir, json!({"old_str": "alpha", "new_str": "alpha"})).await;
 
         assert!(
             error.contains("old_str and new_str are identical"),
@@ -478,32 +427,18 @@ mod tests {
     #[tokio::test]
     async fn a_no_op_edit_leaves_the_file_untouched() {
         let dir = dir_holding("no-op-untouched", "alpha\n");
-        refusal(
-            &dir,
-            json!([
-                {"old_str": "alpha", "new_str": "BETA"},
-                {"old_str": "x", "new_str": "x"}
-            ]),
-        )
-        .await;
+        refusal(&dir, json!({"old_str": "alpha", "new_str": "alpha"})).await;
 
         assert_eq!(body(&dir), "alpha\n");
     }
 
     #[tokio::test]
-    async fn an_empty_anchor_is_refused_by_position() {
+    async fn an_empty_anchor_is_refused() {
         let dir = dir_holding("empty-anchor", "a\n");
-        let error = refusal(
-            &dir,
-            json!([
-                {"old_str": "a", "new_str": "A"},
-                {"old_str": "", "new_str": "x"}
-            ]),
-        )
-        .await;
+        let error = refusal(&dir, json!({"old_str": "", "new_str": "x"})).await;
 
         assert!(
-            error.contains("edits[1].old_str must not be empty (nothing was written)"),
+            error.contains("old_str must not be empty (nothing was written)"),
             "{error}"
         );
     }
@@ -511,14 +446,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_anchor_leaves_the_file_untouched() {
         let dir = dir_holding("empty-anchor-untouched", "a\n");
-        refusal(
-            &dir,
-            json!([
-                {"old_str": "a", "new_str": "A"},
-                {"old_str": "", "new_str": "x"}
-            ]),
-        )
-        .await;
+        refusal(&dir, json!({"old_str": "", "new_str": "x"})).await;
 
         assert_eq!(body(&dir), "a\n");
     }
@@ -530,7 +458,8 @@ mod tests {
             &dir,
             json!({
                 "path": "  ",
-                "edits": [{"old_str": "alpha", "new_str": "beta"}]
+                "old_str": "alpha",
+                "new_str": "beta"
             }),
         )
         .await;
@@ -545,7 +474,8 @@ mod tests {
             &dir,
             json!({
                 "path": "  ",
-                "edits": [{"old_str": "alpha", "new_str": "beta"}]
+                "old_str": "alpha",
+                "new_str": "beta"
             }),
         )
         .await;
@@ -556,7 +486,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_file_is_refused_by_name() {
         let dir = crate::config::test_dir("edit-missing-file", None);
-        let error = refusal(&dir, json!([{"old_str": "a", "new_str": "b"}])).await;
+        let error = refusal(&dir, json!({"old_str": "a", "new_str": "b"})).await;
 
         assert!(error.contains("file does not exist"), "{error}");
     }
@@ -565,7 +495,7 @@ mod tests {
     async fn a_file_that_is_not_text_is_refused_by_name() {
         let dir = crate::config::test_dir("edit-binary", None);
         std::fs::write(dir.join("file.txt"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
-        let error = refusal(&dir, json!([{"old_str": "a", "new_str": "b"}])).await;
+        let error = refusal(&dir, json!({"old_str": "a", "new_str": "b"})).await;
 
         assert!(error.contains("not a UTF-8 text file"), "{error}");
     }
@@ -576,7 +506,7 @@ mod tests {
         std::fs::create_dir(dir.join("file.txt")).unwrap();
         let error = refusal_call(
             &dir,
-            json!({"path": "file.txt", "edits": [{"old_str": "a", "new_str": "b"}]}),
+            json!({"path": "file.txt", "old_str": "a", "new_str": "b"}),
         )
         .await;
 
@@ -598,7 +528,7 @@ mod tests {
 
         let error = EditTool
             .execute(
-                json!({"path": "file.txt", "edits": [{"old_str": "a", "new_str": "b"}]}),
+                json!({"path": "file.txt", "old_str": "a", "new_str": "b"}),
                 &ctx,
             )
             .await
@@ -611,44 +541,31 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    #[tokio::test]
-    async fn malformed_arguments_are_refused_with_the_shape_expected() {
-        let dir = dir_holding("bad-input", "content\n");
-        let error = refusal_call(
-            &dir,
-            json!({"path": "file.txt", "edits": [{"old_str": "content"}]}),
-        )
-        .await;
-
-        assert!(error.contains("invalid edit input"), "{}", error);
-    }
-
-    /// A malformed edit is refused by the field it left out, because that is the
+    /// A malformed call is refused by the field it left out, because that is the
     /// one thing the model has to add before the call can work.
     #[tokio::test]
-    async fn a_malformed_edit_is_refused_by_the_field_it_left_out() {
-        let dir = dir_holding("bad-input-shape", "content\n");
-        let error = refusal_call(
-            &dir,
-            json!({"path": "file.txt", "edits": [{"old_str": "content"}]}),
-        )
-        .await;
+    async fn a_malformed_call_is_refused_by_the_field_it_left_out() {
+        let dir = dir_holding("bad-input", "content\n");
+        let error = refusal_call(&dir, json!({"path": "file.txt", "old_str": "content"})).await;
 
         assert!(error.contains("missing field `new_str`"), "{}", error);
     }
 
-    /// A call still carrying the shape of the old single-edit tool is refused by
-    /// the fields it should replace with `edits`, not quietly read as no work.
+    /// The array shape is gone: a call still carrying it is refused by the field
+    /// it should replace with the flat arguments.
     #[tokio::test]
-    async fn a_single_edit_shape_is_refused_with_the_new_shape() {
+    async fn an_array_of_edits_is_refused_with_the_flat_shape() {
         let dir = dir_holding("old-shape", "alpha\n");
         let error = refusal_call(
             &dir,
-            json!({"path": "file.txt", "old_str": "alpha", "new_str": "beta"}),
+            json!({
+                "path": "file.txt",
+                "edits": [{"old_str": "alpha", "new_str": "beta"}]
+            }),
         )
         .await;
 
-        assert!(error.contains("expected `path` or `edits`"), "{}", error);
+        assert!(error.contains("unknown field `edits`"), "{}", error);
     }
 
     #[tokio::test]
@@ -659,20 +576,9 @@ mod tests {
             json!({
                 "path": "file.txt",
                 "old_str": "alpha",
-                "edits": [{"old_str": "alpha", "new_str": "beta"}]
+                "new_str": "beta",
+                "new_text": "beta"
             }),
-        )
-        .await;
-
-        assert!(error.contains("unknown field `old_str`"), "{}", error);
-    }
-
-    #[tokio::test]
-    async fn an_unknown_field_inside_an_edit_is_refused() {
-        let dir = dir_holding("unknown-edit-field", "alpha\n");
-        let error = refusal(
-            &dir,
-            json!([{"old_str": "alpha", "new_str": "beta", "new_text": "beta"}]),
         )
         .await;
 
@@ -680,160 +586,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_edit_lands() {
-        let dir = dir_holding("all", "a\nb\nc\n");
-        edit(
-            &dir,
-            json!([
-                {"old_str": "a\n", "new_str": "A\n"},
-                {"old_str": "c\n", "new_str": "C\n"}
-            ]),
-        )
-        .await;
-
-        assert_eq!(body(&dir), "A\nb\nC\n");
-    }
-
-    #[tokio::test]
-    async fn a_batch_report_counts_every_edit() {
-        let dir = dir_holding("batch-count", "a\nb\nc\n");
-        let report = edit(
-            &dir,
-            json!([
-                {"old_str": "a\n", "new_str": "A\n"},
-                {"old_str": "c\n", "new_str": "C\n"}
-            ]),
-        )
-        .await;
-
-        assert!(report.starts_with("applied 2 edits to "), "{report}");
-    }
-
-    /// The order in the array is the order they apply in, so one edit can anchor
-    /// on what the one before it wrote — which separate calls do not guarantee.
-    #[tokio::test]
-    async fn a_later_edit_sees_what_an_earlier_one_wrote() {
-        let dir = dir_holding("order", "A\n");
-        edit(
-            &dir,
-            json!([
-                {"old_str": "A", "new_str": "B"},
-                {"old_str": "B", "new_str": "C"}
-            ]),
-        )
-        .await;
-
-        assert_eq!(body(&dir), "C\n");
-    }
-
-    /// A refusal in the middle writes nothing: the copy the edits build is only
-    /// written once, after the last one landed.
-    #[tokio::test]
-    async fn a_refusal_in_the_middle_writes_nothing() {
-        let dir = dir_holding("refusal-middle", "a\nb\n");
-        refusal(
-            &dir,
-            json!([
-                {"old_str": "a\n", "new_str": "A\n"},
-                {"old_str": "missing", "new_str": "x"},
-                {"old_str": "b\n", "new_str": "B\n"}
-            ]),
-        )
-        .await;
-
-        assert_eq!(body(&dir), "a\nb\n");
-    }
-
-    #[tokio::test]
-    async fn a_refusal_names_the_edit_that_missed() {
-        let dir = dir_holding("refusal-position", "a\nb\n");
-        let error = refusal(
-            &dir,
-            json!([
-                {"old_str": "a\n", "new_str": "A\n"},
-                {"old_str": "missing", "new_str": "x"}
-            ]),
-        )
-        .await;
-
-        assert!(error.starts_with("edits[1]: "), "{error}");
-    }
-
-    #[tokio::test]
-    async fn an_empty_batch_is_refused() {
-        let dir = dir_holding("empty-batch", "a\n");
-        let error = refusal(&dir, json!([])).await;
-
-        assert!(error.contains("at least one replacement"), "{error}");
-    }
-
-    /// A fallback in the middle still quotes what it matched: the receipt is
-    /// built before the splice removed those bytes.
-    #[tokio::test]
-    async fn a_fallback_quotes_the_text_that_edit_saw() {
-        let dir = dir_holding("fallback-middle", "alpha   \nbeta\n");
-        let report = edit(
-            &dir,
-            json!([
-                {"old_str": "alph", "new_str": "ALPH"},
-                {"old_str": "ALPHa\nbeta", "new_str": "ALPHA\nBETA"}
-            ]),
-        )
-        .await;
-
-        assert!(report.contains("- ALPHa   "), "{report}");
-    }
-
-    #[tokio::test]
-    async fn a_receipt_names_the_first_position_it_was_sent_at() {
-        let dir = dir_holding("receipt-first", "a\nb\n");
-        let report = edit(
-            &dir,
-            json!([
-                {"old_str": "a", "new_str": "A"},
-                {"old_str": "b", "new_str": "B"}
-            ]),
-        )
-        .await;
-
-        assert!(report.contains("edits[0]: exact"), "{report}");
-    }
-
-    #[tokio::test]
-    async fn a_receipt_names_the_last_position_it_was_sent_at() {
-        let dir = dir_holding("receipt-last", "a\nb\n");
-        let report = edit(
-            &dir,
-            json!([
-                {"old_str": "a", "new_str": "A"},
-                {"old_str": "b", "new_str": "B"}
-            ]),
-        )
-        .await;
-
-        assert!(report.contains("edits[1]: exact"), "{report}");
-    }
-
-    /// Past the receipt budget the rest is counted, and named as applied.
-    #[tokio::test]
-    async fn receipts_past_the_budget_are_counted_as_edits() {
-        let lines = (0..30).map(|n| format!("l{n}\n")).collect::<String>();
-        let dir = dir_holding("receipt-budget", &lines);
-        let edits = (0..30)
-            .map(|n| json!({"old_str": format!("l{n}\n"), "new_str": format!("L{n}\n")}))
-            .collect::<Vec<_>>();
-
-        let report = edit(&dir, json!(edits)).await;
-
-        assert!(report.ends_with("… and 6 more edits applied"), "{report}");
-    }
-
-    #[tokio::test]
     async fn replace_all_rewrites_every_occurrence() {
         let dir = dir_holding("replace-all", "a\nb\na\nb\n");
         edit(
             &dir,
-            json!([{"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}]),
+            json!({"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}),
         )
         .await;
 
@@ -845,11 +602,17 @@ mod tests {
         let dir = dir_holding("replace-all-report", "a\nb\na\nb\n");
         let report = edit(
             &dir,
-            json!([{"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}]),
+            json!({"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}),
         )
         .await;
 
-        assert!(report.contains("edits[0]: exact in 2 places"), "{report}");
+        assert_eq!(
+            report,
+            format!(
+                "applied edit to {}: exact in 2 places",
+                dir.join("file.txt").display()
+            )
+        );
     }
 
     #[tokio::test]
@@ -857,14 +620,14 @@ mod tests {
         let dir = dir_holding("replace-all-one", "alpha\nbeta\ngamma\n");
         let report = edit(
             &dir,
-            json!([{"old_str": "beta", "new_str": "B", "replace_all": true}]),
+            json!({"old_str": "beta", "new_str": "B", "replace_all": true}),
         )
         .await;
 
         assert_eq!(
             report,
             format!(
-                "applied 1 edit to {}\nedits[0]: exact in 1 place",
+                "applied edit to {}: exact in 1 place",
                 dir.join("file.txt").display()
             )
         );
@@ -875,16 +638,16 @@ mod tests {
         let dir = dir_holding("replace-all-fallback-one", "alpha   \nbeta\n");
         let report = edit(
             &dir,
-            json!([{
+            json!({
                 "old_str": "alpha\nbeta",
                 "new_str": "A\nB",
                 "replace_all": true
-            }]),
+            }),
         )
         .await;
 
         assert!(
-            report.contains("edits[0]: trailing whitespace ignored in 1 place:"),
+            report.contains("trailing whitespace ignored in 1 place:"),
             "{report}"
         );
     }
@@ -896,7 +659,7 @@ mod tests {
         let dir = dir_holding("replace-all-fallback", "alpha   \nalpha   \n");
         edit(
             &dir,
-            json!([{"old_str": "alpha\nalpha", "new_str": "A", "replace_all": true}]),
+            json!({"old_str": "alpha\nalpha", "new_str": "A", "replace_all": true}),
         )
         .await;
 
@@ -911,7 +674,11 @@ mod tests {
         );
         let report = edit(
             &dir,
-            json!([{"old_str": "alpha\nbeta", "new_str": "A\nB", "replace_all": true}]),
+            json!({
+                "old_str": "alpha\nbeta",
+                "new_str": "A\nB",
+                "replace_all": true
+            }),
         )
         .await;
 
@@ -923,26 +690,11 @@ mod tests {
         let dir = dir_holding("replace-all-crlf", "a\r\nb\r\na\r\nb\r\n");
         edit(
             &dir,
-            json!([{"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}]),
+            json!({"old_str": "a\nb", "new_str": "A\nB", "replace_all": true}),
         )
         .await;
 
         assert_eq!(body(&dir), "A\r\nB\r\nA\r\nB\r\n");
-    }
-
-    #[tokio::test]
-    async fn a_later_replace_all_sees_what_an_earlier_one_wrote() {
-        let dir = dir_holding("replace-all-order", "a\nb\na\nb\n");
-        edit(
-            &dir,
-            json!([
-                {"old_str": "a", "new_str": "A", "replace_all": true},
-                {"old_str": "A", "new_str": "B", "replace_all": true}
-            ]),
-        )
-        .await;
-
-        assert_eq!(body(&dir), "B\nb\nB\nb\n");
     }
 
     /// Without the flag, the same repeated anchor is still the ambiguity this
@@ -950,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn a_repeated_anchor_is_ambiguous_without_replace_all() {
         let dir = dir_holding("replace-all-default", "a\na\n");
-        let error = refusal(&dir, json!([{"old_str": "a", "new_str": "b"}])).await;
+        let error = refusal(&dir, json!({"old_str": "a", "new_str": "b"})).await;
 
         assert!(error.contains("matches 2 places"), "{error}");
     }
@@ -960,7 +712,7 @@ mod tests {
         let dir = dir_holding("replace-all-miss", "alpha\nbeta\n");
         refusal(
             &dir,
-            json!([{"old_str": "missing", "new_str": "x", "replace_all": true}]),
+            json!({"old_str": "missing", "new_str": "x", "replace_all": true}),
         )
         .await;
 
@@ -972,7 +724,7 @@ mod tests {
         let dir = dir_holding("replace-all-overlap", "aaa\n");
         let error = refusal(
             &dir,
-            json!([{"old_str": "aa", "new_str": "x", "replace_all": true}]),
+            json!({"old_str": "aa", "new_str": "x", "replace_all": true}),
         )
         .await;
 
@@ -987,7 +739,7 @@ mod tests {
         let dir = dir_holding("replace-all-overlap-fallback", "aaaa\naa\n");
         let error = refusal(
             &dir,
-            json!([{"old_str": "aa", "new_str": "X", "replace_all": true}]),
+            json!({"old_str": "aa", "new_str": "X", "replace_all": true}),
         )
         .await;
 
@@ -1000,7 +752,7 @@ mod tests {
         let dir = dir_holding("replace-all-overlap-advice", "aaaa\naa\n");
         let error = refusal(
             &dir,
-            json!([{"old_str": "aa", "new_str": "X", "replace_all": true}]),
+            json!({"old_str": "aa", "new_str": "X", "replace_all": true}),
         )
         .await;
 
@@ -1015,7 +767,7 @@ mod tests {
         let dir = dir_holding("replace-all-overlap-untouched", "aaaa\naa\n");
         refusal(
             &dir,
-            json!([{"old_str": "aa", "new_str": "X", "replace_all": true}]),
+            json!({"old_str": "aa", "new_str": "X", "replace_all": true}),
         )
         .await;
 
@@ -1035,34 +787,22 @@ mod tests {
                         "type": "string",
                         "description": PATH_DESCRIPTION
                     },
-                    "edits": {
-                        "type": "array",
-                        "description": "Every change for this file, in order. Each edit is matched against what the previous one wrote, so a later hunk can anchor on an earlier one.",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "old_str": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "description": OLD_STR_DESCRIPTION
-                                },
-                                "new_str": {
-                                    "type": "string",
-                                    "description": NEW_STR_DESCRIPTION
-                                },
-                                "replace_all": {
-                                    "type": "boolean",
-                                    "default": false,
-                                    "description": "If true, replace every occurrence of old_str. Defaults to false, which requires old_str to match exactly one place."
-                                }
-                            },
-                            "required": ["old_str", "new_str"],
-                            "additionalProperties": false
-                        }
+                    "old_str": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": OLD_STR_DESCRIPTION
+                    },
+                    "new_str": {
+                        "type": "string",
+                        "description": NEW_STR_DESCRIPTION
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "If true, replace every occurrence of old_str. Defaults to false, which requires old_str to match exactly one place."
                     }
                 },
-                "required": ["path", "edits"],
+                "required": ["path", "old_str", "new_str"],
                 "additionalProperties": false
             })
         );

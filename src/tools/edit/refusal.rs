@@ -9,11 +9,6 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct Refusal(String);
 
-/// The prefix a refusal uses to name the edit it answered: `edits[2]: `.
-fn at_prefix(at: usize) -> String {
-    format!("edits[{at}]: ")
-}
-
 impl Refusal {
     /// The arguments did not decode, so the call named no work. The shape is
     /// spelled out because a provider that ignored the schema still owes the
@@ -21,31 +16,23 @@ impl Refusal {
     /// answered a call — that nothing was written.
     pub fn bad_input(reason: &str) -> Self {
         Self(format!(
-            "invalid edit input; expected {{ path: string, edits: [{{ old_str: \
-             non-empty string, new_str: string }}] }} (nothing was written)\n{reason}"
+            "invalid edit input; expected {{ path: string, old_str: \
+             non-empty string, new_str: string }} (nothing was written)\n{reason}"
         ))
     }
 
-    /// `edits` was empty, which names no work.
-    pub fn no_edits() -> Self {
-        Self("edits must contain at least one replacement (nothing was written)".to_string())
-    }
-
-    /// The anchor was empty, which names no place in any file. Named by position,
-    /// and told, like every other refusal that answered a call, that nothing was
-    /// written.
-    pub fn empty_anchor(at: usize) -> Self {
-        Self(format!(
-            "edits[{at}].old_str must not be empty (nothing was written)"
-        ))
+    /// The anchor was empty, which names no place in any file.
+    pub fn empty_anchor() -> Self {
+        Self("old_str must not be empty (nothing was written)".to_string())
     }
 
     /// The replacement equals the anchor, which names no change at all.
-    pub fn no_op(at: usize) -> Self {
-        Self(format!(
-            "edits[{at}]: old_str and new_str are identical, so there is nothing \
-             to change (nothing was written)"
-        ))
+    pub fn no_op() -> Self {
+        Self(
+            "old_str and new_str are identical, so there is nothing to change \
+             (nothing was written)"
+                .to_string(),
+        )
     }
 
     /// The path is blank, which resolves to no file at all.
@@ -81,10 +68,9 @@ impl Refusal {
 
     /// The anchor matched nothing. The hint names the lines that almost carried
     /// it, so the retry is a rewrite rather than a re-read.
-    pub fn miss(at: usize, path: &Path, hint: &str) -> Self {
+    pub fn miss(path: &Path, hint: &str) -> Self {
         Self(format!(
-            "{}old_str not found in file: {} (nothing was written)\n{hint}",
-            at_prefix(at),
+            "old_str not found in file: {} (nothing was written)\n{hint}",
             path.display()
         ))
     }
@@ -93,7 +79,6 @@ impl Refusal {
     /// counts matches and the excerpt shows the lines they start on, which is
     /// why the two can disagree.
     pub fn ambiguous(
-        at: usize,
         path: &Path,
         matcher: &str,
         places: usize,
@@ -101,7 +86,6 @@ impl Refusal {
         hidden: usize,
     ) -> Self {
         Self::ambiguous_with(
-            at,
             path,
             matcher,
             places,
@@ -115,7 +99,6 @@ impl Refusal {
     /// writes from them. A longer anchor is still the fix, but the goal is
     /// occurrences that do not overlap, not a single place.
     pub fn overlapping(
-        at: usize,
         path: &Path,
         matcher: &str,
         places: usize,
@@ -123,7 +106,6 @@ impl Refusal {
         hidden: usize,
     ) -> Self {
         Self::ambiguous_with(
-            at,
             path,
             matcher,
             places,
@@ -135,7 +117,6 @@ impl Refusal {
     }
 
     fn ambiguous_with(
-        at: usize,
         path: &Path,
         matcher: &str,
         places: usize,
@@ -144,9 +125,8 @@ impl Refusal {
         advice: &str,
     ) -> Self {
         let mut message = format!(
-            "{}old_str matches {places} places in file: {} under {matcher} (nothing \
+            "old_str matches {places} places in file: {} under {matcher} (nothing \
              was written)\n{excerpt}",
-            at_prefix(at),
             path.display()
         );
         if hidden > 0 {
@@ -179,8 +159,8 @@ mod tests {
     #[test]
     fn a_miss_names_the_path_and_the_absence_of_a_write() {
         assert_eq!(
-            Refusal::miss(0, file(), "look at line 4").to_string(),
-            "edits[0]: old_str not found in file: /repo/file.rs (nothing was written)\n\
+            Refusal::miss(file(), "look at line 4").to_string(),
+            "old_str not found in file: /repo/file.rs (nothing was written)\n\
              look at line 4"
         );
     }
@@ -189,7 +169,7 @@ mod tests {
     /// disagree; the tail counts the lines the excerpt left out.
     #[test]
     fn an_ambiguous_refusal_counts_the_lines_it_did_not_show() {
-        let text = Refusal::ambiguous(0, file(), "exact", 7, "   1 | x", 3).to_string();
+        let text = Refusal::ambiguous(file(), "exact", 7, "   1 | x", 3).to_string();
         assert!(text.contains("matches 7 places"), "{text}");
         assert!(text.contains("… and 3 more lines not shown"), "{text}");
     }
@@ -197,19 +177,19 @@ mod tests {
     /// One hidden line reads as a line, because the sentence is quoted back.
     #[test]
     fn a_single_hidden_line_is_not_pluralised() {
-        let text = Refusal::ambiguous(0, file(), "exact", 2, "   1 | x", 1).to_string();
+        let text = Refusal::ambiguous(file(), "exact", 2, "   1 | x", 1).to_string();
         assert!(text.contains("… and 1 more line not shown"), "{text}");
     }
 
     #[test]
     fn an_ambiguous_anchor_is_told_to_name_one_place() {
-        let text = Refusal::ambiguous(0, file(), "exact", 2, "   1 | x", 0).to_string();
+        let text = Refusal::ambiguous(file(), "exact", 2, "   1 | x", 0).to_string();
         assert!(text.contains("so it names one place"), "{text}");
     }
 
     #[test]
     fn an_overlapping_anchor_is_told_to_separate_its_occurrences() {
-        let text = Refusal::overlapping(0, file(), "exact", 4, "   1 | x", 0).to_string();
+        let text = Refusal::overlapping(file(), "exact", 4, "   1 | x", 0).to_string();
         assert!(
             text.contains("so its occurrences no longer overlap"),
             "{text}"
@@ -220,22 +200,8 @@ mod tests {
     #[test]
     fn a_bad_input_names_the_shape_it_expected() {
         let text = Refusal::bad_input("missing field `old_str`").to_string();
-        assert!(text.contains("expected { path: string, edits:"), "{text}");
+        assert!(text.contains("expected { path: string, old_str:"), "{text}");
         assert!(text.contains("missing field `old_str`"), "{text}");
-    }
-
-    /// The position is what tells the model which edit to fix, so it goes in
-    /// front of the sentence.
-    #[test]
-    fn a_position_prefixes_the_sentence() {
-        assert_eq!(
-            Refusal::miss(2, file(), "look").to_string(),
-            "edits[2]: old_str not found in file: /repo/file.rs (nothing was written)\nlook"
-        );
-        assert_eq!(
-            Refusal::empty_anchor(1).to_string(),
-            "edits[1].old_str must not be empty (nothing was written)"
-        );
     }
 
     /// An empty anchor and a blank path read differently because the fix for one
@@ -243,7 +209,7 @@ mod tests {
     #[test]
     fn an_empty_anchor_and_a_blank_path_read_differently() {
         assert!(
-            Refusal::empty_anchor(0)
+            Refusal::empty_anchor()
                 .to_string()
                 .contains("old_str must not be empty")
         );
@@ -253,7 +219,7 @@ mod tests {
                 .contains("path must name a file")
         );
         assert!(
-            Refusal::empty_anchor(1)
+            Refusal::empty_anchor()
                 .to_string()
                 .contains("nothing was written")
         );

@@ -349,12 +349,13 @@
     <div class="tool-grid">
       <div class="tool-item"><code>read</code> <span>File contents</span></div>
       <div class="tool-item"><code>write</code> <span>Create or overwrite</span></div>
-      <div class="tool-item"><code>edit</code> <span>One or more edits, one file, in order</span></div>
+      <div class="tool-item"><code>edit</code> <span>One exact replacement, one file</span></div>
       <div class="tool-item"><code>bash</code> <span>Shell commands</span></div>
       <div class="tool-item"><code>elisp</code> <span>Live Emacs state</span></div>
       <div class="tool-item"><code>skill</code> <span>Load a playbook</span></div>
     </div>
-    <p class="big" style="font-size:16px; margin-top:20px;">The <code>skill</code> tool joins the other five only when a skill file exists, so a repository with none runs with five.</p>
+    <p class="big" style="font-size:16px; margin-top:20px;">Several changes to one file are several calls; calls on the same file take turns so no write is lost.</p>
+    <p class="big" style="font-size:16px; margin-top:16px;">The <code>skill</code> tool joins the other five only when a skill file exists, so a repository with none runs with five.</p>
   </div>
 </section>
 
