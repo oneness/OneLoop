@@ -124,16 +124,19 @@ pub fn note(message: &str) {
     eprintln!("{}", line(DIM, "", message));
 }
 
-/// How long a step took, as a trace line says it: `430ms`, `1.2s`, `12s`,
-/// `2m 05s`.
+/// How long a step took, as a trace line says it: `812µs`, `430ms`, `1.2s`,
+/// `12s`, `2m 05s`.
 ///
-/// Under a second, milliseconds: `0.0s` told the reader nothing about a call
-/// that finished in 430 milliseconds. At and above a second, a tenth up to ten
-/// seconds, whole seconds up to a minute, minutes beyond — `134s` is a number
-/// nobody can picture. One helper, so a duration reads the same everywhere.
+/// Under a millisecond, microseconds: `0ms` told the reader nothing about a
+/// call that took a few hundred microseconds. Under a second, milliseconds —
+/// `0.0s` was no better. At and above a second, a tenth up to ten seconds,
+/// whole seconds up to a minute, minutes beyond — `134s` is a number nobody
+/// can picture. One helper, so a duration reads the same everywhere.
 pub fn elapsed(took: Duration) -> String {
     let seconds = took.as_secs();
-    if seconds == 0 {
+    if seconds == 0 && took.as_millis() == 0 {
+        format!("{}µs", took.as_micros())
+    } else if seconds == 0 {
         format!("{}ms", took.as_millis())
     } else if seconds < 10 {
         format!("{:.1}s", took.as_secs_f64())
@@ -512,10 +515,12 @@ mod tests {
         }
     }
 
-    /// A sub-second duration is in milliseconds, where seconds to a tenth
-    /// would print `0.0s`; from a second up the old spellings hold.
+    /// Below a millisecond the duration is in microseconds, so a fast call
+    /// never prints `0ms`; from there up, the coarser spellings hold.
     #[test]
-    fn a_duration_is_milliseconds_then_seconds_then_minutes() {
+    fn a_duration_is_microseconds_then_milliseconds_then_seconds() {
+        assert_eq!(elapsed(Duration::from_micros(812)), "812µs");
+        assert_eq!(elapsed(Duration::from_millis(1)), "1ms");
         assert_eq!(elapsed(Duration::from_millis(430)), "430ms");
         assert_eq!(elapsed(Duration::from_millis(999)), "999ms");
         assert_eq!(elapsed(Duration::from_secs(1)), "1.0s");

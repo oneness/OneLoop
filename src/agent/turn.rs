@@ -359,6 +359,12 @@ impl Agent {
                 .push_tool_call(tc.id.clone(), tc.name.clone(), tc.arguments.clone())?;
         }
 
+        // A batch of several calls is one request from the model, not several
+        // turns: say so once, above the lines the calls will print for themselves.
+        if tool_calls.len() > 1 {
+            output::step(&format!("{} tool calls in one batch", tool_calls.len()));
+        }
+
         let spinner = SpinnerGuard::new("running tools...");
         // A command that takes a minute must say what it is while it takes it, but
         // only where the spinner is silent and only once the batch has run long

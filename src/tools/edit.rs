@@ -62,10 +62,11 @@ impl Tool for EditTool {
     fn description(&self) -> String {
         "Change part of an existing file with one exact search-and-replace. \
          `old_str` must match one place, or every place when `replace_all` is \
-         set; otherwise nothing is written. For several changes, send one call \
-         per change; calls naming the same file take turns, but their order is \
-         not promised, so wait for a result before sending a change that \
-         depends on it. Prefer this tool over `write` for an existing file."
+         set; otherwise nothing is written. Several changes to one file may be \
+         sent in one message; calls naming the same file apply in the order \
+         sent, each against what the previous one wrote. Wait for a result only \
+         when you need it to write the next anchor. Prefer this tool over \
+         `write` for an existing file."
             .to_string()
     }
 

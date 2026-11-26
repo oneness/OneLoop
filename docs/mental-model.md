@@ -34,8 +34,8 @@ at the next prompt boundary.
        | context full          v                               v
        v          +------------------------+   +------------------------+
 +------+-------+  | batch -> tools         |   | providers -> models    |
-| compact      |  | all at once, per-file  |   | transport, config,     |
-| rotate now,  |  | locks                  |   | retry                  |
+| compact      |  | parallel, but one      |   | transport, config,     |
+| rotate now,  |  | file at a time         |   | retry                  |
 | summarize in |  +-----------+------------+   +-----------+------------+
 | background   |              |                            |
 +------+-------+   results go back to turn <----------------+

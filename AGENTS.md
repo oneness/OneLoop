@@ -53,10 +53,9 @@ before editing it: the anchor has to come from the lines the read actually
 showed, not from memory.
 
 - **One replacement per call.** Send `path`, `old_str`, `new_str`, and
-  optionally `replace_all`. Several changes to one file are several calls;
-  calls on one file take turns, but their order is not guaranteed — if one
-  change depends on what another wrote, wait for the first result before
-  sending the next.
+  optionally `replace_all`. Several changes to one file may go in one message;
+  calls on one file apply in the order sent, each against what the previous
+  one wrote. Wait for a result only when you need it to write the next anchor.
 - **Never send `old_str` equal to `new_str`.** The tool refuses no-ops.
 - **Prefer one `write` when the whole file is changing.** Many hunks are one
   call to `write`, not many calls to `edit`.
