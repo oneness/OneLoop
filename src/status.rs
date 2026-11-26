@@ -2,18 +2,15 @@
 //! stream. The spinner stays silent in comint; these reports replace it
 //! as the busy heartbeat.
 //!
-//! Three facts, three writers. The *title* is the registry's active alias and
+//! Two facts, two writers. The *title* is the registry's active alias and
 //! is announced from `ModelRegistry` the moment it changes — nowhere else, so
 //! it cannot drift from the model requests actually use. The *state* is busy
-//! or idle and belongs to a turn, so a [`TurnStatus`] guard owns it. The
-//! *work* is what a busy process is busy with, which the mode line can only
-//! word as `computing...` unless the stretch that does it says so: a
-//! [`Compacting`] guard names it for exactly as long as it runs. Every report
-//! repeats the title, so the mode line keeps naming the model through idle as
-//! well as working.
+//! or idle and belongs to a turn, so a [`TurnStatus`] guard owns it. Every
+//! report repeats the title, so the mode line keeps naming the model through
+//! idle as well as working.
 //!
-//! [`State`] holds the three facts and renders them; the free functions below
-//! are the locking, terminal-aware shell around it, which is what keeps the
+//! [`State`] holds both facts and renders them; the free functions below are
+//! the locking, terminal-aware shell around it, which is what keeps the
 //! rendering testable without a terminal or a lock.
 
 use std::sync::Mutex;
@@ -33,38 +30,23 @@ const STATUS_SEQUENCE: u16 = 7501;
 /// removes the record. `app` is required on every report because a report
 /// replaces its record whole. `title` carries the current model alias — the
 /// only place the alias belongs, since `id` addresses a record rather than
-/// naming a value. `msg` says what a `working` process is working *on*, one
-/// line, base64 like the title, and stays absent when there is nothing to
-/// add: `working` on its own is the whole truth of a turn.
+/// naming a value.
 ///
 /// What the fields say is this function's to decide; the framing around them,
 /// `ESC ] 7501 ;` and the ST terminator, is [`output::osc`]'s.
-fn report(state: &str, title: &str, msg: Option<&str>) -> String {
-    let msg = match msg {
-        Some(msg) => format!(":msg={}", STANDARD.encode(msg)),
-        None => String::new(),
-    };
-    let body = format!(
-        "state={state}:app=oneloop:title={}{msg}",
-        STANDARD.encode(title)
-    );
+fn report(state: &str, title: &str) -> String {
+    let body = format!("state={state}:app=oneloop:title={}", STANDARD.encode(title));
     output::osc(STATUS_SEQUENCE, &body)
 }
 
-/// What `msg` says while a conversation is being summarized: the word the mode
-/// line puts where it would otherwise say `computing...`.
-const COMPACTING: &str = "compacting";
-
-/// What the mode line shows: the model it names, whether a turn runs, what a
-/// running stretch is doing when it is worth naming, and whether some other
-/// worker has borrowed the title for the duration of a turn (see
-/// [`TurnStatus::named`]).
+/// What the mode line shows: the model it names, whether a turn runs, and
+/// whether some other worker has borrowed the title for the duration of a
+/// turn (see [`TurnStatus::named`]).
 #[derive(Default)]
 struct State {
     title: String,
     busy: bool,
     borrowed_title: Option<String>,
-    msg: Option<&'static str>,
 }
 
 impl State {
@@ -73,7 +55,7 @@ impl State {
     fn render(&self) -> String {
         let verb = if self.busy { "working" } else { "idle" };
         let title = self.borrowed_title.as_deref().unwrap_or(&self.title);
-        report(verb, title, self.msg)
+        report(verb, title)
     }
 
     /// Point the title at `alias`; true when it actually moved. Repeated for
@@ -96,25 +78,6 @@ impl State {
         self.busy = false;
         self.borrowed_title = None;
     }
-
-    /// Name what the process is working on, and report it busy. Returns
-    /// whether a turn was already running: an overflow compacts *inside* a
-    /// turn, and that turn goes on working afterwards.
-    fn begin_compaction(&mut self) -> bool {
-        let turn = self.busy;
-        self.busy = true;
-        self.msg = Some(COMPACTING);
-        turn
-    }
-
-    /// Take back what [`begin_compaction`](Self::begin_compaction) said —
-    /// including the busy state, but only when no turn was running to own it.
-    fn end_compaction(&mut self, turn: bool) {
-        self.msg = None;
-        if !turn {
-            self.end_turn();
-        }
-    }
 }
 
 /// One process has one terminal, so one instance; the `Mutex` is for the two
@@ -126,7 +89,6 @@ static STATE: Mutex<State> = Mutex::new(State {
     title: String::new(),
     busy: false,
     borrowed_title: None,
-    msg: None,
 });
 
 /// Send the record. Outside comint no one reads it, and a report would just
@@ -192,42 +154,6 @@ impl Drop for TurnStatus {
     }
 }
 
-/// Names a compaction on the status line for as long as it lives, so the mode
-/// line says `compacting...` where a turn would say `computing...`. A no-op
-/// outside comint, like every report: there the `▸ compacting...` line on the
-/// terminal is what says it.
-///
-/// A guard rather than two reports because a summarizer request has more exits
-/// than it has returns: `Drop` runs on all of them, so a failed compaction
-/// cannot leave the mode line naming work that stopped.
-pub(crate) struct Compacting {
-    /// Whether a turn was already running when this began. `/compact` at the
-    /// prompt starts idle and ends idle; an overflow compacts inside a turn
-    /// that is still working afterwards, so only the first of the two owns the
-    /// busy state it set.
-    turn: bool,
-}
-
-impl Compacting {
-    pub fn new() -> Self {
-        let Ok(mut state) = STATE.lock() else {
-            return Self { turn: false };
-        };
-        let turn = state.begin_compaction();
-        emit(&state);
-        Self { turn }
-    }
-}
-
-impl Drop for Compacting {
-    fn drop(&mut self) {
-        if let Ok(mut state) = STATE.lock() {
-            state.end_compaction(self.turn);
-            emit(&state);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,23 +162,13 @@ mod tests {
     /// first, base64 `title`, and the ST terminator.
     #[test]
     fn report_is_a_well_formed_osc_7501_sequence() {
-        let busy = report("working", "qwen", None);
+        let busy = report("working", "qwen");
         assert_eq!(
             busy,
             "\x1b]7501;state=working:app=oneloop:title=cXdlbg==\x1b\\"
         );
         assert!(busy.starts_with("\x1b]7501;"));
         assert!(busy.ends_with("\x1b\\"));
-    }
-
-    /// Work worth naming rides in `msg`, base64 like the title, so a mode line
-    /// can show `compacting...` in place of its own word for being busy.
-    #[test]
-    fn a_report_names_the_work_in_a_base64_msg() {
-        assert_eq!(
-            report("working", "qwen", Some(COMPACTING)),
-            "\x1b]7501;state=working:app=oneloop:title=cXdlbg==:msg=Y29tcGFjdGluZw==\x1b\\"
-        );
     }
 
     /// A title is base64 across its bytes, so a non-ASCII alias survives the
@@ -315,42 +231,5 @@ mod tests {
         state.end_turn();
         assert!(state.render().contains(&STANDARD.encode("qwen")));
         assert!(state.borrowed_title.is_none());
-    }
-
-    /// `/compact` at the prompt is the whole of the work: it begins busy,
-    /// names itself, and leaves the process idle again.
-    #[test]
-    fn a_compaction_from_the_prompt_begins_and_ends_idle() {
-        let mut state = State::default();
-        state.set_title("qwen");
-        let turn = state.begin_compaction();
-        assert!(state.render().contains("state=working"));
-        assert!(state.render().contains(":msg=Y29tcGFjdGluZw=="));
-        state.end_compaction(turn);
-        assert!(state.render().contains("state=idle"));
-        assert!(!state.render().contains("msg="));
-    }
-
-    /// An overflow compacts inside a turn, and that turn is still working when
-    /// the compaction ends — so the busy state was the turn's to begin with and
-    /// stays its own.
-    #[test]
-    fn a_compaction_inside_a_turn_leaves_the_turn_busy() {
-        let mut state = State::default();
-        state.set_title("qwen");
-        state.begin_turn(None);
-        let turn = state.begin_compaction();
-        state.end_compaction(turn);
-        assert!(state.render().contains("state=working"));
-        assert!(!state.render().contains("msg="));
-    }
-
-    /// An idle report names no work: `state=idle` cannot leave a `msg` behind,
-    /// or a mode line would go on saying `compacting...` at rest.
-    #[test]
-    fn an_idle_report_names_no_work() {
-        let mut state = State::default();
-        state.set_title("qwen");
-        assert!(!state.render().contains("msg="));
     }
 }

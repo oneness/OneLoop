@@ -68,6 +68,7 @@ fn percent_remaining(used: usize, context_window: u64) -> u8 {
 }
 
 /// Append-only metrics log, one JSON line per event.
+#[derive(Clone)]
 pub struct Metrics {
     /// `None` when metrics are off — a one-shot run leaves no trace.
     path: Option<PathBuf>,

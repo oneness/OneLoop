@@ -1,26 +1,27 @@
-//! Compaction: a conversation replaced by a shorter one.
+//! Compaction: a conversation handed off to a file, off the turn's path.
 //!
 //! The summarizer is a function, not an agent: text in, text out, no tools and
-//! no session. What a function cannot do is decide how much text it can carry,
-//! so the decisions that used to be a model's strategy live here — render,
-//! chunk, reduce. That is the gain: the same summary by the same steps every
-//! time, and every step reachable from a test without a provider.
+//! no session. When the server says the context is full, the session rotates
+//! immediately — the user can go on talking — and the old conversation is
+//! summarized in the background into a dated handoff file. Reading that file
+//! is the user's choice, not the loop's.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::json;
 
 use super::Agent;
-use super::metrics;
-use super::spinner::SpinnerGuard;
+use super::metrics::{self, Metrics};
 use super::turn::SUMMARIZE;
 use crate::messages::{Message, UserMessage};
+use crate::models::{FallbackRequests, ModelRegistry, RetryMode};
 use crate::output;
 use crate::prompt;
 use crate::providers::ProviderRequest;
-use crate::status;
 
 /// A payload longer than this is named rather than quoted: a tool result is
 /// usually a file the next conversation will never reread, and a call's
@@ -33,209 +34,192 @@ const MAX_ROUNDS: usize = 3;
 
 /// A conversation as the ledger measures it: how many messages, and roughly
 /// what they cost. The two move apart — one message can be a file read — so a
-/// compaction records both.
+/// handoff records both.
 struct Size {
     messages: usize,
     tokens: usize,
 }
 
+/// Everything the background summarizer needs, and nothing it must borrow
+/// from the live agent. The session has already rotated by the time this
+/// exists, so the user can keep talking while it works.
+pub(crate) struct HandoffJob {
+    messages: Vec<Message>,
+    system_prompt_chars: usize,
+    session_id: String,
+    errors_log: Option<PathBuf>,
+    metrics: Metrics,
+    models: Arc<ModelRegistry>,
+    /// Pinned at overflow: a `/model` while the job runs must not change which
+    /// model summarizes the old conversation.
+    model: String,
+    context_window: Option<u64>,
+    history: PathBuf,
+    handoff_path: PathBuf,
+}
+
 impl Agent {
-    /// Replaces this conversation with a summary of itself, so the next request
-    /// is small however long this one was. The old file stays on disk, and the
-    /// briefing names it — unless this conversation was never written, which a
-    /// one-shot's is not.
-    pub async fn compact(&mut self) -> Result<()> {
-        if self.session.messages().is_empty() {
-            bail!("nothing to compact: this conversation is empty");
-        }
-        // Named when it starts and again when it ends: the summarizer is a
-        // request, and a wait with nothing on screen cannot be told from a hang.
-        output::running("compacting...");
-        // The mode line has no spinner and no trace, so it says `compacting` where
-        // a turn says `computing...`. Held across the whole operation, because the
-        // name stays true while the session is replaced underneath it.
-        let _compacting = status::Compacting::new();
-
-        // Measured around the failure too: the `?`s inside would otherwise return
-        // past any line written after them, and what a compaction spent before
-        // giving up is the first thing to look at.
-        let started = Instant::now();
-        let before = self.size();
-        let mut requests = 0;
-        let outcome = self.replace_with_summary(&mut requests, started).await;
-        let after = self.size();
-        self.log_compact(started, before, after, requests, outcome.is_ok());
-
-        outcome
-    }
-
-    /// The body of a compaction — summarize, rotate, brief — split out from
-    /// [`Self::compact`] so the measurement around it survives an early return.
-    async fn replace_with_summary(&mut self, requests: &mut usize, started: Instant) -> Result<()> {
-        // A written conversation leaves a file to name. An ephemeral one leaves
-        // nothing: naming the path it would have used would point the next
-        // conversation at the project's own transcript, which is someone else's.
-        let history = self
-            .session
-            .root()
-            .map(|_| self.session.path().to_path_buf());
-        let summary = self
-            .summarize(render(self.session.messages()), requests)
-            .await?;
-
-        // Nothing above this line touched the session, so a summary that failed
-        // leaves the conversation exactly as it was, and the old advice still
-        // holds: `/clear`, or a larger window.
-        let path = self.clear_session()?;
-        self.session
-            .push_user(briefing(&summary, history.as_deref()))?;
-        // A conversation that was never written has no new file to announce,
-        // but it still finished: the line says so either way. How long it took
-        // is spelled by the one helper every other duration uses.
-        let took = output::elapsed(started.elapsed());
-        let done = if history.is_some() {
-            format!("compacting done · {took} — new session: {}", path.display())
-        } else {
-            format!("compacting done · {took}")
-        };
-        output::tick(&done);
-        Ok(())
-    }
-
-    /// The conversation as the ledger measures it, on either side of a
-    /// compaction: the count, and what it costs by the same estimate the
-    /// `api_call` lines carry.
-    fn size(&self) -> Size {
-        let messages = self.session.messages();
-        Size {
-            messages: messages.len(),
-            tokens: metrics::estimate_tokens(messages, self.system_prompt_chars()),
-        }
-    }
-
-    /// One `compact` line: what the operation cost, and what it replaced.
+    /// Ends a full conversation and starts a fresh one, returning the work
+    /// the background task still has to do. Nothing here calls a model.
     ///
-    /// The summarizer's requests are `api_call` lines with a `summarize`
-    /// purpose. This is what no single request can report — the render, the
-    /// rounds, the session swap and the sizes on either side — so a compaction
-    /// that took a minute can be told from one that took a minute because it
-    /// had three parts to carry.
-    fn log_compact(
-        &self,
-        started: Instant,
-        before: Size,
-        after: Size,
-        requests: usize,
-        success: bool,
-    ) {
-        self.metrics.log(
-            "compact",
-            json!({
-                "duration_ms": started.elapsed().as_millis(),
-                // Above one only when the conversation had to be cut into
-                // parts, which is the difference between a compaction that was
-                // slow and one that had a lot to carry.
-                "requests": requests,
-                "messages_before": before.messages,
-                "messages_after": after.messages,
-                "tokens_before": before.tokens,
-                "tokens_after": after.tokens,
-                "success": success,
-            }),
-        );
+    /// `None` means there was no file to hand off from — a one-shot keeps no
+    /// session, so it simply stops instead of writing a trace nobody asked for.
+    pub(crate) fn begin_handoff(&mut self) -> Result<Option<HandoffJob>> {
+        if self.session.messages().is_empty() {
+            bail!("nothing to hand off: this conversation is empty");
+        }
+        if self.session.root().is_none() {
+            return Ok(None);
+        }
+
+        let history = self.session.path().to_path_buf();
+        let handoff_path = handoff_path(&history);
+        let messages = self.session.messages().to_vec();
+        let job = HandoffJob {
+            messages,
+            system_prompt_chars: self.system_prompt_chars(),
+            session_id: self.session.id(),
+            errors_log: self.errors_log.clone(),
+            metrics: self.metrics.clone(),
+            models: Arc::clone(&self.models),
+            model: self.models.active().alias.clone(),
+            context_window: self.models.active().context_window,
+            history,
+            handoff_path: handoff_path.clone(),
+        };
+
+        // Rotate before saying anything: the next prompt belongs to the new
+        // file, and the old one is now fixed for the summarizer to read.
+        self.clear_session()?;
+        output::step(&format!(
+            "context full — this message was not answered; fresh session ready, \
+             handoff being written: {}",
+            handoff_path.display()
+        ));
+
+        Ok(Some(job))
+    }
+}
+
+impl HandoffJob {
+    /// The conversation this handoff summarizes, named in a failure notice
+    /// because it stays on disk whether or not the summary succeeds.
+    pub(crate) fn transcript(&self) -> &Path {
+        &self.history
     }
 
-    async fn summarize(&self, mut text: String, requests: &mut usize) -> Result<String> {
-        let budget = chunk_budget(self.models.active().context_window);
+    /// Summarizes the captured conversation and writes the handoff file.
+    /// Returns the path so the caller can name it in the completion notice.
+    pub(crate) async fn write(self, fallbacks: &FallbackRequests) -> Result<PathBuf> {
+        let started = Instant::now();
+        let before = Size {
+            messages: self.messages.len(),
+            tokens: metrics::estimate_tokens(&self.messages, self.system_prompt_chars),
+        };
+        let mut requests = 0;
+        let summary = match self.summarize(&mut requests, fallbacks).await {
+            Ok(summary) => summary,
+            Err(e) => {
+                log_compact(&self.metrics, started, before, requests, false);
+                return Err(e);
+            }
+        };
 
-        // A rendered conversation usually fits in one request, rendering being
-        // where the compression happens. The rounds exist for the ones that do not:
-        // each hands over summaries, so the next round's input is a fraction.
+        let body = format!("# Handoff\n\n{}", briefing(&summary, Some(&self.history)));
+        write_handoff(
+            &self.handoff_path,
+            &body,
+            &self.metrics,
+            started,
+            before,
+            requests,
+        )
+    }
+
+    async fn summarize(
+        &self,
+        requests: &mut usize,
+        fallbacks: &FallbackRequests,
+    ) -> Result<String> {
+        let budget = chunk_budget(self.context_window);
+        let mut text = render(&self.messages);
+
         for _ in 0..MAX_ROUNDS {
             let parts = chunk(&text, budget);
             if parts.len() <= 1 {
                 *requests += 1;
-                return self.summarize_one(text.trim()).await;
+                return self.summarize_one(text.trim(), fallbacks).await;
             }
 
-            output::step(&format!("compacting: {} parts", parts.len()));
             let mut summaries = Vec::with_capacity(parts.len());
             for (index, part) in parts.iter().enumerate() {
-                output::step(&format!("  part {}/{}", index + 1, parts.len()));
                 let framed = format!("{}{part}", part_frame(index + 1, parts.len()));
-                // Counted before the request, so a part that failed is still a
-                // request the compaction spent.
                 *requests += 1;
-                summaries.push(self.summarize_one(&framed).await?);
+                summaries.push(self.summarize_one(&framed, fallbacks).await?);
             }
             text = summaries.join("\n\n");
         }
 
         bail!(
             "the conversation did not compress into one request after {MAX_ROUNDS} passes; \
-             start a new conversation (/clear) or switch to a model with a larger window"
+             switch to a model with a larger window or start a new conversation"
         )
     }
 
-    /// One request, one summary — the model the user is paying for, with the
-    /// retry and fallback every other request gets, and the ledger line that
-    /// makes what a compaction costs visible beside the turns it replaces.
-    async fn summarize_one(&self, text: &str) -> Result<String> {
-        let spinner = SpinnerGuard::new("summarizing...");
-        // The model this is aimed at; a fallback may answer instead, and the
-        // ledger names whichever did.
-        let requested_model = self.models.active().alias.clone();
+    /// One request, one summary. Quiet by construction: retries say nothing,
+    /// because this runs while the REPL owns stdin. A fallback is still the
+    /// user's choice — `fallbacks` lets the REPL put the picker on screen at
+    /// the next prompt boundary. The ledger names whatever answered.
+    async fn summarize_one(&self, text: &str, fallbacks: &FallbackRequests) -> Result<String> {
+        let requested_model = self.model.clone();
         let messages = vec![Message::User(UserMessage {
             content: text.to_string(),
         })];
         let tokens_estimated = metrics::estimate_tokens(&messages, prompt::SUMMARIZER.len());
         let request = ProviderRequest {
             system_prompt: Some(prompt::SUMMARIZER.to_string()),
-            session_id: self.session.id(),
+            session_id: self.session_id.clone(),
             messages,
-            // A summarizer with tools would have to be trusted to stop using
-            // them, and the one thing it must not do is go looking for more.
-            // The empty list is the limit; nothing in the prompt enforces it.
             tools: Vec::new(),
             errors_log: self.errors_log.clone(),
         };
 
         let api_start = Instant::now();
-        let response = match self
+        let (used_model, response) = match self
             .models
             .complete_with_retry(
-                None,
+                Some(&self.model),
                 request,
-                Some(spinner.stop_callback()),
-                Some(spinner.start_callback("summarizing...")),
+                None,
+                None,
+                RetryMode::Silent,
+                Some(fallbacks),
             )
             .await
         {
-            Ok((used_model, response)) => {
-                self.log_api_call(
-                    &used_model,
-                    api_start,
-                    tokens_estimated,
-                    response.input_tokens,
-                    true,
-                    SUMMARIZE,
-                );
-                response
-            }
+            Ok(answered) => answered,
             Err(e) => {
-                spinner.stop();
-                self.log_api_call(
+                log_api_call(
+                    &self.metrics,
+                    &self.models,
                     &requested_model,
                     api_start,
                     tokens_estimated,
                     None,
                     false,
-                    SUMMARIZE,
                 );
                 return Err(e);
             }
         };
-        spinner.stop();
+        log_api_call(
+            &self.metrics,
+            &self.models,
+            &used_model,
+            api_start,
+            tokens_estimated,
+            response.input_tokens,
+            true,
+        );
 
         let summary = response.content.trim().to_string();
         if summary.is_empty() {
@@ -243,6 +227,80 @@ impl Agent {
         }
         Ok(summary)
     }
+}
+
+/// Puts the handoff beside the transcript and costs the whole operation,
+/// success or failure. Split from [`HandoffJob::write`] so the file itself can
+/// be tested without a provider to produce the summary.
+fn write_handoff(
+    path: &Path,
+    body: &str,
+    metrics: &Metrics,
+    started: Instant,
+    before: Size,
+    requests: usize,
+) -> Result<PathBuf> {
+    if let Err(e) = fs::write(path, body)
+        .with_context(|| format!("failed to write handoff file: {}", path.display()))
+    {
+        log_compact(metrics, started, before, requests, false);
+        return Err(e);
+    }
+    log_compact(metrics, started, before, requests, true);
+    Ok(path.to_path_buf())
+}
+
+/// One `compact` line: what the background operation cost, and the size of
+/// the conversation it took away. There is no "after" size: the session had
+/// already rotated when this is written, and the handoff is a file rather
+/// than a conversation. The requests are `api_call` lines with a `summarize`
+/// purpose.
+fn log_compact(metrics: &Metrics, started: Instant, before: Size, requests: usize, success: bool) {
+    metrics.log(
+        "compact",
+        json!({
+            "duration_ms": started.elapsed().as_millis(),
+            "requests": requests,
+            "messages_before": before.messages,
+            "tokens_before": before.tokens,
+            "success": success,
+        }),
+    );
+}
+
+/// One `api_call` line per summarizer request, in the same ledger as turns.
+fn log_api_call(
+    metrics: &Metrics,
+    models: &ModelRegistry,
+    model: &str,
+    started: Instant,
+    tokens_estimated: usize,
+    input_tokens: Option<u64>,
+    success: bool,
+) {
+    metrics.log(
+        "api_call",
+        json!({
+            "model": model,
+            "model_id": models.get(model)
+                .map_or_else(|_| "?".to_string(), |m| m.id.clone()),
+            "purpose": SUMMARIZE,
+            "duration_ms": started.elapsed().as_millis(),
+            "tokens_estimated": tokens_estimated,
+            "input_tokens": input_tokens,
+            "success": success,
+        }),
+    );
+}
+
+/// The handoff beside the transcript it summarizes: `2026-04-20.jsonl`
+/// becomes `2026-04-20-handoff.md`, and a rotated one keeps its suffix.
+fn handoff_path(session_path: &Path) -> PathBuf {
+    let stem = session_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session");
+    session_path.with_file_name(format!("{stem}-handoff.md"))
 }
 
 /// What a part of a cut conversation says about itself, above its own text. It
@@ -372,14 +430,9 @@ fn chunk(text: &str, budget: usize) -> Vec<String> {
     parts
 }
 
-/// What the new conversation opens with: the summary, then — when there is one
-/// — where the rest of it is. The pointer is written here rather than by the
-/// model, so it cannot be paraphrased into a path that does not resolve.
-///
-/// A conversation that was never written has no transcript to point at, and
-/// saying nothing is worse than saying so: an agent handed a path-shaped hole
-/// will go looking for the project's own session, which is someone else's
-/// conversation.
+/// What the handoff opens with: the summary, then — when there is one — where
+/// the rest of it is. The pointer is written here rather than by the model, so
+/// it cannot be paraphrased into a path that does not resolve.
 fn briefing(summary: &str, history: Option<&Path>) -> String {
     let Some(history) = history else {
         return format!(
@@ -499,12 +552,12 @@ mod tests {
     fn a_short_tool_result_is_kept_and_a_failure_is_marked() {
         let rendered = render(&[Message::ToolResult(ToolResultMessage {
             tool_call_id: "call-1".to_string(),
-            tool_name: "bash".to_string(),
+            tool_name: "read".to_string(),
             content: "no such file".to_string(),
             is_error: true,
         })]);
 
-        assert!(rendered.contains("## Tool result: bash (failed)"));
+        assert!(rendered.contains("## Tool result: read (failed)"));
         assert!(rendered.contains("no such file"));
     }
 
@@ -586,6 +639,16 @@ mod tests {
         assert!(!briefing.contains(".oneloop"), "{briefing}");
     }
 
+    /// The handoff keeps the session's date and rotation suffix, so two
+    /// handoffs on the same day cannot overwrite one another.
+    #[test]
+    fn a_handoff_is_named_after_its_session() {
+        assert_eq!(
+            handoff_path(Path::new("/p/.oneloop/sessions/2026-04-20-002.jsonl")),
+            Path::new("/p/.oneloop/sessions/2026-04-20-002-handoff.md")
+        );
+    }
+
     /// Half the window, because the answer has to fit beside its own input.
     #[test]
     fn the_budget_is_half_the_declared_window() {
@@ -626,16 +689,16 @@ mod tests {
         Size { messages, tokens }
     }
 
-    /// A compaction's cost is not the sum of its requests: it also renders the
-    /// conversation, cuts it if it has to, and swaps the session. The whole
-    /// span is what tells a compaction that was slow from one that was long.
+    /// A handoff's cost is not the sum of its requests: it also renders the
+    /// conversation and rotates the session. The whole span is what tells a
+    /// handoff that was slow from one that was long.
     #[test]
-    fn a_compaction_records_how_long_the_whole_operation_took() {
+    fn a_handoff_records_how_long_the_whole_operation_took() {
         let dir = project_dir("compact-timing");
         let agent =
             Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
 
-        agent.log_compact(Instant::now(), size(9, 1_206_482), size(1, 3_610), 1, true);
+        log_compact(&agent.metrics, Instant::now(), size(9, 1_206_482), 1, true);
 
         let body = ledger(&dir);
         assert!(
@@ -645,55 +708,99 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The sizes on either side are the point of the line: a summary that did
-    /// not shrink the conversation is exactly what a reader needs to see.
+    /// The size of the conversation is the point of the line: what a reader
+    /// needs is how much the handoff took out of the window. There is no
+    /// "after" size, because the new session starts empty.
     #[test]
-    fn a_compaction_records_what_it_replaced() {
+    fn a_handoff_records_what_it_took_away() {
         let dir = project_dir("compact-replaced");
         let agent =
             Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
 
-        agent.log_compact(Instant::now(), size(9, 1_206_482), size(1, 3_610), 1, true);
+        log_compact(&agent.metrics, Instant::now(), size(9, 1_206_482), 1, true);
 
         let body = ledger(&dir);
         assert!(body.contains(r#""messages_before":9"#), "{body}");
-        assert!(body.contains(r#""messages_after":1"#), "{body}");
         assert!(body.contains(r#""tokens_before":1206482"#), "{body}");
-        assert!(body.contains(r#""tokens_after":3610"#), "{body}");
+        assert!(!body.contains("messages_after"), "{body}");
+        assert!(!body.contains("tokens_after"), "{body}");
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Counted, not scraped: the parts a compaction had to carry are what make
+    /// Counted, not scraped: the parts a handoff had to carry are what make
     /// one slow, and the ledger has to say so on the same line as the duration.
     #[test]
-    fn a_compaction_records_how_many_requests_it_made() {
+    fn a_handoff_records_how_many_requests_it_made() {
         let dir = project_dir("compact-requests");
         let agent =
             Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
 
-        agent.log_compact(Instant::now(), size(9, 100), size(1, 10), 3, true);
+        log_compact(&agent.metrics, Instant::now(), size(9, 100), 3, true);
 
         let body = ledger(&dir);
         assert!(body.contains(r#""requests":3"#), "{body}");
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The measured size is the same estimate the `api_call` lines carry, so a
-    /// compaction's before and after can be read beside the requests it
-    /// replaced rather than against a different unit.
+    /// A handoff rotates away from the conversation it summarizes, so the
+    /// next prompt starts in an empty file.
     #[test]
-    fn a_size_counts_the_messages_and_estimates_their_tokens() {
-        let dir = project_dir("compact-size");
+    fn beginning_a_handoff_leaves_a_fresh_session() {
+        let dir = project_dir("handoff-rotation");
         let mut agent =
             Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
-        agent.session.push_user("a".repeat(300)).unwrap();
+        agent
+            .session
+            .push_user("a full conversation".to_string())
+            .unwrap();
+        let original = agent.session.path().to_path_buf();
 
-        let measured = agent.size();
+        let job = agent.begin_handoff().unwrap().unwrap();
+
+        assert_eq!(job.history, original);
+        assert_ne!(agent.session.path(), original);
+        assert!(agent.session.messages().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The summarizer works on the conversation that overflowed, with the
+    /// model that was active when it did — a later `/model` must not change
+    /// either one.
+    #[test]
+    fn a_handoff_pins_the_model_and_the_old_transcript() {
+        let dir = project_dir("handoff-pinned");
+        let mut agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+        agent
+            .session
+            .push_user("a full conversation".to_string())
+            .unwrap();
+        let model = agent.models.active().alias.clone();
+        let history = agent.session.path().to_path_buf();
+
+        let job = agent.begin_handoff().unwrap().unwrap();
 
         assert_eq!(
-            (measured.messages, measured.tokens),
-            (1, (agent.system_prompt_chars() + 300) / 3)
+            (job.model.as_str(), job.history.as_path()),
+            (model.as_str(), history.as_path())
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The write is the whole point of a handoff: the summary has to land in
+    /// the file beside the transcript, and the ledger has to say it succeeded.
+    #[test]
+    fn a_handoff_is_written_beside_the_transcript_it_summarizes() {
+        let dir = project_dir("handoff-written");
+        let agent =
+            Agent::from_spec(AgentSpec::coding(&dir).unwrap(), Arc::new(registry())).unwrap();
+        let path = handoff_path(agent.session.path());
+        let body = "# Handoff\n\nA summary of the conversation.";
+
+        write_handoff(&path, body, &agent.metrics, Instant::now(), size(9, 100), 1).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), body);
+        assert!(ledger(&dir).contains(r#""success":true"#));
         let _ = fs::remove_dir_all(&dir);
     }
 }

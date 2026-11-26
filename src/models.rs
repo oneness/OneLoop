@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::auth::{self, Auth};
 use crate::catalog::{self, Api, Catalog, ProviderEntry};
@@ -18,6 +19,26 @@ use crate::providers::{Credentials, Model, Provider};
 use crate::status;
 
 mod retry;
+
+/// Whether a retry narrates itself on the terminal. A turn is allowed to
+/// print and offer a fallback itself; a background handoff is not, because it
+/// runs while the REPL owns stdin. It still lets the user choose a fallback —
+/// the request travels to the REPL, which runs the picker at a prompt boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryMode {
+    Verbose,
+    Silent,
+}
+
+/// A background retry asking the user which model should answer instead.
+/// `reply` is the answer; dropping the request cancels the retry.
+pub(crate) struct FallbackRequest {
+    pub(crate) aliases: Vec<String>,
+    pub(crate) reply: oneshot::Sender<String>,
+}
+
+/// Where background retries ask for a model choice.
+pub(crate) type FallbackRequests = mpsc::UnboundedSender<FallbackRequest>;
 
 pub struct ModelRegistry {
     models: Vec<Model>,
@@ -172,6 +193,20 @@ impl ModelRegistry {
     pub async fn pick_any(&self) -> Result<String> {
         let all: Vec<&Model> = self.models.iter().collect();
         self.pick(&all).await
+    }
+
+    /// Offer the models a background retry named, using the same picker. The
+    /// REPL calls this at a prompt boundary, so the menu and its answer have
+    /// stdin to themselves.
+    pub(crate) async fn pick_from(&self, aliases: &[String]) -> Result<String> {
+        let candidates: Vec<&Model> = aliases
+            .iter()
+            .filter_map(|alias| self.get(alias).ok())
+            .collect();
+        if candidates.is_empty() {
+            bail!("none of the fallback models is configured any more");
+        }
+        self.pick(&candidates).await
     }
 
     /// A numbered menu grouped by provider. Returns the chosen alias;

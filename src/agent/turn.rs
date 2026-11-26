@@ -9,15 +9,17 @@
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::json;
 
 use super::Agent;
 use super::batch::{run, span};
+use super::compact::HandoffJob;
 use super::metrics::estimate_tokens;
 use super::spinner::SpinnerGuard;
 use super::trace::format_tool_call;
 use crate::messages::ToolCall;
+use crate::models::RetryMode;
 use crate::output;
 use crate::providers::{ProviderRequest, ProviderResponse, is_context_overflow};
 use crate::status::TurnStatus;
@@ -29,10 +31,10 @@ const FALLBACK_SENTENCE: &str =
     "I wasn't able to generate a response. Please try again or rephrase.";
 
 /// What a request was for, as its `api_call` line says it. Two words only
-/// because there are two kinds of request: a turn, and the compaction that
-/// replaces a conversation with a summary of itself. The ledger adds both up
-/// together — the cost is the same kind of cost — so this is the one thing
-/// that separates them.
+/// because there are two kinds of request: a turn, and the background
+/// summarizer that writes a handoff. The ledger adds both up together — the
+/// cost is the same kind of cost — so this is the one thing that separates
+/// them.
 pub(super) const TURN: &str = "turn";
 pub(super) const SUMMARIZE: &str = "summarize";
 
@@ -114,8 +116,16 @@ enum Attempt {
     Refused,
 }
 
+/// How a turn ended. An overflow already rotated the session before this
+/// returned, so the caller can put the user back at the prompt at once and
+/// decide where the handoff work runs.
+pub(crate) enum TurnOutcome {
+    Finished,
+    Handoff(HandoffJob),
+}
+
 impl Agent {
-    pub async fn run_once(&mut self, prompt: String) -> Result<()> {
+    pub async fn run_once(&mut self, prompt: String) -> Result<TurnOutcome> {
         self.run_once_with_model(prompt, None).await
     }
 
@@ -125,7 +135,11 @@ impl Agent {
     /// `model` is a caller's choice for this turn — `/model <alias>; …`. Which
     /// model the agent works as otherwise was settled when it was built, in the
     /// registry, so there is no second preference to consult here.
-    pub async fn run_once_with_model(&mut self, prompt: String, model: Option<&str>) -> Result<()> {
+    pub async fn run_once_with_model(
+        &mut self,
+        prompt: String,
+        model: Option<&str>,
+    ) -> Result<TurnOutcome> {
         // Validated before the prompt is written down: a session must not
         // gain a prompt that never ran.
         if let Some(alias) = model {
@@ -134,10 +148,10 @@ impl Agent {
         // A single busy→idle pulse for the buffer's mode line, held for the
         // whole turn loop including tools. Drop covers every exit path.
         let _turn_status = TurnStatus::new();
-        // Kept for a compaction: the request that ran into the limit is the one
-        // the conversation has to be handed back to, and rotating the session
-        // takes it off the transcript.
-        self.session.push_user(prompt.clone())?;
+        // The prompt belongs to this transcript. If the server says it is
+        // full, this message goes into the handoff with the rest of it; the
+        // fresh session starts with the user's next prompt instead.
+        self.session.push_user(prompt)?;
 
         // None until a request completes; a fallback answer pins the loop to
         // whichever model actually replied.
@@ -146,50 +160,23 @@ impl Agent {
         // to wonder about — not once per request, which would print the same line
         // for every round trip in it.
         let mut announced = false;
-        // One compaction per turn. A second overflow is one whose own shortest
-        // form does not fit, and a summary of a summary is not smaller.
-        let mut compacted = false;
 
-        // Exits and no fuse: a run that never converges cannot grind on for ever,
-        // because the append-only transcript outgrows the window and the server
-        // refuses — and a run in the REPL can always be stopped with Ctrl+C.
+        // An overflow ends the turn: the session is rotated before this
+        // returns, so the user can put the next prompt into a fresh one while
+        // the old conversation is summarized in the background.
         loop {
             let response = match self.request(&mut active_model, &mut announced).await? {
                 Attempt::Answered(response) => response,
 
-                Attempt::Overflow if !compacted => {
-                    compacted = true;
-                    self.compact()
-                        .await
-                        .context("the conversation overflowed and could not be compacted")?;
-                    // The summary cleared the history, not the request that ran
-                    // into the limit: without it the turn would end having
-                    // answered nothing.
-                    self.session.push_user(prompt.clone())?;
-
-                    // The summary is short and the prompt is not, so a pair that
-                    // still does not fit is over the window on the prompt alone.
-                    // The estimate is a gauge, hence "does not appear to".
-                    if self.remaining_context() == Some(0) {
-                        output::note(
-                            "this message does not appear to fit the model's window on its \
-                             own — shorten it, or switch to a model with a larger one",
-                        );
-                        break;
-                    }
-                    continue;
-                }
-
-                // A compaction has already run: this is the second overflow, and
-                // `/compact` is not offered because a summary of a summary is not
-                // smaller. What is left is a fresh conversation or a bigger window.
                 Attempt::Overflow => {
-                    output::note(
-                        "the conversation still does not fit after a compaction — \
-                         use /clear to start fresh, or switch to a model with a larger \
-                         context window",
-                    );
-                    break;
+                    let Some(job) = self.begin_handoff()? else {
+                        output::note(
+                            "context full — this message was not answered; this run keeps no \
+                             session, so start a new run",
+                        );
+                        return Ok(TurnOutcome::Finished);
+                    };
+                    return Ok(TurnOutcome::Handoff(job));
                 }
 
                 Attempt::Refused => break,
@@ -204,7 +191,7 @@ impl Agent {
             self.execute_tool_calls(response.tool_calls).await?;
         }
 
-        Ok(())
+        Ok(TurnOutcome::Finished)
     }
 
     /// One request: assembly, retry and fallback, and the metric that records
@@ -255,6 +242,8 @@ impl Agent {
                 request,
                 Some(spinner.stop_callback()),
                 Some(spinner.start_callback("computing...")),
+                RetryMode::Verbose,
+                None,
             ),
         )
         .await

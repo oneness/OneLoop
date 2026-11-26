@@ -392,17 +392,16 @@
 <section class="slide">
   <div class="box">
     <div class="label">reliability</div>
-    <h2>Compaction</h2>
-    <p class="big">When the conversation stops fitting, it is summarized<br>and the request that ran into the limit is retried.</p>
+    <h2>Handoff</h2>
+    <p class="big">When the server says the context is full, the turn ends.<br>The session rotates at once; the old one is summarized in the background.</p>
     <div class="mono" style="margin-top: 24px; font-size: 15px; text-align: left;">
       render    → tool results named, not quoted; a failure keeps both ends<br>
       chunk     → half the window, between lines, each part saying which one<br>
-      summarize → text in, briefing out. No tools, no session<br>
-      replace   → a briefing, and the old transcript's path
+      summarize → text in, handoff out. No tools, no session, no retry chatter<br>
+      write     → &lt;date&gt;-handoff.md beside the transcript it summarizes
     </div>
-    <p class="big" style="margin-top: 20px; font-size: 16px;">The transcript is never deleted — only moved out of the window.<br>The briefing names the file, and the agent can go back and read it.<br>A one-shot writes no transcript, and its briefing says so instead.</p>
-    <p class="big" style="margin-top: 16px; font-size: 16px;">A turn gets one compaction. A conversation whose own shortest<br>form does not fit is told so, rather than summarized again.</p>
-    <p class="big" style="margin-top: 16px; font-size: 18px; color: var(--text);"><strong>/compact</strong> runs the same thing on demand.</p>
+    <p class="big" style="margin-top: 20px; font-size: 16px;">The transcript is never deleted — only moved out of the window.<br>The handoff names it, and the model can read it if you ask.<br>A one-shot writes no transcript, so it reports the overflow and stops.</p>
+    <p class="big" style="margin-top: 16px; font-size: 16px;">That message is not answered — resend it in the fresh session.<br>When the handoff is ready, a small line says where it landed.<br>If its model keeps failing, you pick another at the next prompt.<br>If it fails, the notice names the transcript that is still there.</p>
   </div>
 </section>
 

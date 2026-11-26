@@ -11,17 +11,29 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Editor, Helper};
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
-use crate::agent::Agent;
 use crate::agent::spec::AgentSpec;
+use crate::agent::{Agent, HandoffJob, TurnOutcome};
 use crate::config;
-use crate::models::ModelRegistry;
+use crate::models::{FallbackRequest, FallbackRequests, ModelRegistry};
 use crate::output;
 use crate::tools::bash;
 
 /// A `!` command runs for the user, with Ctrl+C in reach, so it gets a longer
 /// leash than a tool call's 30 seconds.
 const BASH_TIMEOUT_SECS: u64 = 300;
+
+/// What a background handoff reports back to the REPL. The transcript travels
+/// with the result: on failure it is the only file the user still has.
+struct HandoffNotice {
+    transcript: PathBuf,
+    result: Result<PathBuf>,
+}
+
+/// Where background handoffs report back to the REPL.
+type HandoffNotices = mpsc::UnboundedSender<HandoffNotice>;
 
 /// How the process was asked to run. The one-shot variant is stateless by
 /// definition: it exists only because a prompt was given on the command line
@@ -185,7 +197,6 @@ const SECOND_OPINION_COMMANDS: &[SecondOpinionCommand] = &[
 enum Command<'a> {
     Help,
     Clear,
-    Compact,
     SecondOpinion {
         backend: SecondOpinion,
         mode: AskMode,
@@ -227,7 +238,6 @@ fn parse_command(line: &str) -> Option<Command<'_>> {
     match name {
         "help" if argument.is_none() => Some(Command::Help),
         "clear" if argument.is_none() => Some(Command::Clear),
-        "compact" if argument.is_none() => Some(Command::Compact),
         "model" => Some(Command::Model(argument)),
         _ => None,
     }
@@ -285,12 +295,6 @@ fn parse_prefixed_command(input: &str) -> Option<(&str, Command<'_>)> {
         .and_then(prompt_after_separator)
         .map(|prompt| (prompt, Command::Clear))
         .or_else(|| {
-            input
-                .strip_prefix("/compact")
-                .and_then(prompt_after_separator)
-                .map(|prompt| (prompt, Command::Compact))
-        })
-        .or_else(|| {
             let remainder = input.strip_prefix("/model")?;
             let remainder = remainder.strip_prefix(char::is_whitespace)?.trim_start();
             let (alias, prompt) = remainder.split_once(';')?;
@@ -327,7 +331,7 @@ fn executable_available(name: &str) -> bool {
 
 fn help_commands(mut available: impl FnMut(SecondOpinion) -> bool) -> String {
     let mut commands = String::from(
-        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first, with or without a prompt\n                      /model <alias>; <prompt> — switch once that model answers\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n\x1b[1m/compact\x1b[22m            : Replace the conversation with a summary of itself\n                      /compact; <prompt> — summarize, then send the prompt\n",
+        "\x1b[1m/help\x1b[22m               : Show this help\n\x1b[1m/model [alias]\x1b[22m      : Choose a model or switch directly to an alias\n                      the config is reread first, with or without a prompt\n                      /model <alias>; <prompt> — switch once that model answers\n\x1b[1m/clear\x1b[22m              : Reset context and start a fresh session\n                      /clear; <prompt> — reset, then send the prompt\n",
     );
     for command in SECOND_OPINION_COMMANDS {
         if available(command.backend) {
@@ -375,13 +379,6 @@ async fn run_command(agent: &mut Agent, command: Command<'_>) -> bool {
                 output::step(&format!("cleared context, new session: {}", path.display()));
                 true
             }
-            Err(e) => {
-                output::fail(&format!("{e:#}"));
-                false
-            }
-        },
-        Command::Compact => match agent.compact().await {
-            Ok(()) => true,
             Err(e) => {
                 output::fail(&format!("{e:#}"));
                 false
@@ -584,7 +581,11 @@ impl App {
                 // A one-shot run must not be silent about which model it is
                 // spending on.
                 output::step(&format!("{}", agent.models().active()));
-                agent.run_once(prompt).await
+                // A one-shot is ephemeral: `begin_handoff` never yields a job,
+                // so the overflow was reported inside the turn and there is
+                // no background work left to finish here.
+                let _ = agent.run_once(prompt).await?;
+                Ok(())
             }
         }
     }
@@ -603,6 +604,64 @@ fn assemble(cwd: &Path, run: &Run) -> Result<AgentSpec> {
     })
 }
 
+/// Reports a finished handoff where the user will see it, without writing
+/// into a line they are still typing.
+fn report_handoff(notice: HandoffNotice) {
+    match &notice.result {
+        Ok(path) => output::tick(&format!("handoff ready: {}", path.display())),
+        Err(e) => output::fail(&handoff_failure(&notice, e)),
+    }
+}
+
+/// Both the reason and the transcript belong in a failure line: summarization
+/// failed, but the conversation itself was never deleted. A function so the
+/// wording is reachable from a test without a terminal.
+fn handoff_failure(notice: &HandoffNotice, error: &anyhow::Error) -> String {
+    format!(
+        "handoff failed: {error:#}; the conversation is still at {}",
+        notice.transcript.display()
+    )
+}
+
+/// Runs the summarizer off the turn's path. The channel, not the terminal,
+/// carries the outcome; the REPL prints it at the next prompt boundary. The
+/// handle stays here so exit waits for a handoff already under way instead of
+/// cancelling it mid-write.
+fn spawn_handoff(
+    job: HandoffJob,
+    notices: &HandoffNotices,
+    fallbacks: &FallbackRequests,
+    running: &mut JoinSet<()>,
+) {
+    let tx = notices.clone();
+    let fallbacks = fallbacks.clone();
+    let transcript = job.transcript().to_path_buf();
+    running.spawn(async move {
+        let _ = tx.send(HandoffNotice {
+            transcript,
+            result: job.write(&fallbacks).await,
+        });
+    });
+}
+
+/// Ask the user which model should answer a background retry. This runs at a
+/// prompt boundary: the picker reads stdin, which the line editor owns for
+/// the rest of the loop.
+async fn answer_fallback(agent: &Agent, request: FallbackRequest) {
+    output::head("Model Unavailable");
+    output::note("the handoff's model is not responding. Pick another:");
+    match agent.models().pick_from(&request.aliases).await {
+        Ok(alias) => {
+            let _ = request.reply.send(alias);
+        }
+        Err(e) => {
+            // The waiting handoff sees the closed reply and reports the
+            // failure at a later boundary.
+            output::fail(&format!("{e:#}"));
+        }
+    }
+}
+
 /// The interactive REPL: read a line, run it, repeat until input closes.
 async fn run_interactive(agent: &mut Agent) -> Result<()> {
     // The banner is OneLoop talking about itself, so it goes where the rest
@@ -617,8 +676,21 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
     // buffer and locks up the prompt on long pastes.
     let mut editor = Editor::<ReplHelper, DefaultHistory>::new()?;
     editor.set_helper(Some(ReplHelper));
+    let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel();
+    let (fallback_tx, mut fallback_rx) = mpsc::unbounded_channel();
+    let mut running = JoinSet::new();
 
     loop {
+        // A background handoff may need the user to pick a model. Both the
+        // picker and the notices go here, before `readline`, so neither writes
+        // into a draft the user is typing and stdin is free for the picker.
+        while let Ok(request) = fallback_rx.try_recv() {
+            answer_fallback(agent, request).await;
+        }
+        while let Ok(notice) = handoff_rx.try_recv() {
+            report_handoff(notice);
+        }
+
         // Re-read per turn: `/clear` empties the session and `/model`
         // switches windows, so the gauge is fresh every time it is shown.
         let gauge = agent.remaining_context();
@@ -639,7 +711,15 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
         let ParsedInput { prompt, command } = parse_input(&line);
         if let Some((alias, prompt)) = model_prompt(command.as_ref(), prompt) {
             reread_models(agent);
-            run_interactive_turn(agent, prompt, Some(alias)).await;
+            run_interactive_turn(
+                agent,
+                prompt,
+                Some(alias),
+                &handoff_tx,
+                &fallback_tx,
+                &mut running,
+            )
+            .await;
             eprintln!();
             continue;
         }
@@ -654,8 +734,17 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
             continue;
         };
 
-        run_interactive_turn(agent, prompt, None).await;
+        run_interactive_turn(agent, prompt, None, &handoff_tx, &fallback_tx, &mut running).await;
         eprintln!();
+    }
+
+    // Leaving the REPL must not cut a summarizer short. Close the choice
+    // channel first, so a handoff waiting on the picker is released rather
+    // than deadlocking the join; it will report the failure as usual.
+    drop(fallback_rx);
+    running.join_all().await;
+    while let Ok(notice) = handoff_rx.try_recv() {
+        report_handoff(notice);
     }
 
     Ok(())
@@ -663,16 +752,26 @@ async fn run_interactive(agent: &mut Agent) -> Result<()> {
 
 /// Errors are reported, never propagated — a failed turn must not end the
 /// REPL.
-async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>) {
+async fn run_interactive_turn(
+    agent: &mut Agent,
+    line: &str,
+    model: Option<&str>,
+    notices: &HandoffNotices,
+    fallbacks: &FallbackRequests,
+    running: &mut JoinSet<()>,
+) {
     // Ctrl+C drops the run future mid-flight.
     let mut interrupted = false;
     let turn_start = std::time::Instant::now();
     tokio::select! {
-        result = agent.run_once_with_model(line.to_string(), model) => {
-            if let Err(e) = result {
-                output::fail(&format!("{e:#}"));
-            }
-        }
+        // A completed turn wins over a Ctrl+C that became ready in the same
+        // poll, so a job it already produced is never dropped on the floor.
+        biased;
+        result = agent.run_once_with_model(line.to_string(), model) => match result {
+            Ok(TurnOutcome::Handoff(job)) => spawn_handoff(job, notices, fallbacks, running),
+            Ok(TurnOutcome::Finished) => {}
+            Err(e) => output::fail(&format!("{e:#}")),
+        },
         _ = tokio::signal::ctrl_c() => {
             interrupted = true;
             output::stopped("stopped");
@@ -696,10 +795,11 @@ async fn run_interactive_turn(agent: &mut Agent, line: &str, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{
-        AskMode, Command, SECOND_OPINION_COMMANDS, SecondOpinion, help_commands,
-        interactive_prompt, parse_command, parse_input,
+        AskMode, Command, HandoffNotice, SECOND_OPINION_COMMANDS, SecondOpinion, handoff_failure,
+        help_commands, interactive_prompt, parse_command, parse_input,
     };
     use crate::agent::spec::SessionPolicy;
+    use std::path::PathBuf;
 
     /// The run mode is the only thing that decides whether a conversation is
     /// written, and a prompt on the command line is not part of one.
@@ -936,18 +1036,32 @@ mod tests {
         assert!(matches!(parse_command("/clear"), Some(Command::Clear)));
     }
 
+    /// A failed summary leaves the transcript intact, so the notice has to
+    /// name it as well as the reason it could not be summarized.
     #[test]
-    fn compact_is_a_command_without_arguments() {
-        assert!(matches!(parse_command("/compact"), Some(Command::Compact)));
-        assert!(parse_command("/compact now").is_none());
+    fn a_failed_handoff_names_the_transcript_it_left_behind() {
+        let transcript = PathBuf::from("/p/.oneloop/sessions/2026-04-20.jsonl");
+        let notice = HandoffNotice {
+            transcript: transcript.clone(),
+            result: Err(anyhow::anyhow!("model unavailable")),
+        };
+
+        let line = handoff_failure(&notice, &anyhow::anyhow!("model unavailable"));
+
+        assert!(line.contains(&transcript.display().to_string()), "{line}");
+        assert!(line.contains("model unavailable"), "{line}");
     }
 
     #[test]
-    fn prefixed_compact_carries_the_prompt_it_was_given() {
-        let parsed = parse_input("/compact; explain the parser");
-
-        assert!(matches!(parsed.command, Some(Command::Compact)));
-        assert_eq!(parsed.prompt, Some("explain the parser"));
+    fn compact_is_no_longer_a_command() {
+        // Compaction only follows a context-full response, never a user's
+        // slash command: an unknown /word is an ordinary prompt.
+        assert!(parse_command("/compact").is_none());
+        assert!(
+            parse_input("/compact; explain the parser")
+                .command
+                .is_none()
+        );
     }
 
     #[test]

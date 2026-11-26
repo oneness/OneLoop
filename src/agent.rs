@@ -8,6 +8,9 @@ mod spinner;
 mod trace;
 mod turn;
 
+pub(crate) use compact::HandoffJob;
+pub(crate) use turn::TurnOutcome;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -148,8 +151,8 @@ impl Agent {
     }
 
     /// Rotates to a new file; the old one stays on disk. Returns the new
-    /// session's path, so the caller can say which one it got: `/clear` cleared
-    /// and `/compact` summarized, and only the caller knows which word is true.
+    /// session's path, so the caller can say which one it got: `/clear` starts
+    /// fresh and an overflow hands the old one off, but both land here.
     pub fn clear_session(&mut self) -> Result<PathBuf> {
         self.session = self.session.rotate()?;
         self.metrics = metrics::Metrics::for_session(&self.session)?;
