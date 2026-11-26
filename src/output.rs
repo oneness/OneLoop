@@ -124,22 +124,23 @@ pub fn note(message: &str) {
     eprintln!("{}", line(DIM, "", message));
 }
 
-/// How long a step took, as a trace line says it: `0.4s`, `12s`, `2m 05s`.
+/// How long a step took, as a trace line says it: `430ms`, `1.2s`, `12s`,
+/// `2m 05s`.
 ///
-/// A tenth below ten seconds, where a tool call is worth reading to a tenth;
-/// whole seconds above it, where the digit stops being something a reader acts
-/// on. Minutes are spelled as minutes, because `134s` is a number nobody can
-/// picture. One helper, so a duration is spelled one way wherever it appears.
+/// Under a second, milliseconds: `0.0s` told the reader nothing about a call
+/// that finished in 430 milliseconds. At and above a second, a tenth up to ten
+/// seconds, whole seconds up to a minute, minutes beyond — `134s` is a number
+/// nobody can picture. One helper, so a duration reads the same everywhere.
 pub fn elapsed(took: Duration) -> String {
-    let seconds = took.as_secs_f64();
-    if seconds < 10.0 {
-        format!("{seconds:.1}s")
-    } else if seconds < 60.0 {
-        // Truncated, not rounded: rounding would let 59.6s print as `60s`,
-        // one line before the same duration prints as `1m 00s`.
-        format!("{}s", took.as_secs())
+    let seconds = took.as_secs();
+    if seconds == 0 {
+        format!("{}ms", took.as_millis())
+    } else if seconds < 10 {
+        format!("{:.1}s", took.as_secs_f64())
+    } else if seconds < 60 {
+        format!("{seconds}s")
     } else {
-        format!("{}m {:02}s", took.as_secs() / 60, took.as_secs() % 60)
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
     }
 }
 
@@ -511,11 +512,13 @@ mod tests {
         }
     }
 
-    /// A duration is spelled one way wherever one is shown: a tenth for the
-    /// range a call is worth reading to a tenth in, whole seconds above.
+    /// A sub-second duration is in milliseconds, where seconds to a tenth
+    /// would print `0.0s`; from a second up the old spellings hold.
     #[test]
-    fn a_duration_is_a_tenth_a_second_or_a_minute_and_a_half() {
-        assert_eq!(elapsed(Duration::from_millis(430)), "0.4s");
+    fn a_duration_is_milliseconds_then_seconds_then_minutes() {
+        assert_eq!(elapsed(Duration::from_millis(430)), "430ms");
+        assert_eq!(elapsed(Duration::from_millis(999)), "999ms");
+        assert_eq!(elapsed(Duration::from_secs(1)), "1.0s");
         assert_eq!(elapsed(Duration::from_millis(12_400)), "12s");
         assert_eq!(elapsed(Duration::from_secs(125)), "2m 05s");
         assert_eq!(elapsed(Duration::from_millis(59_600)), "59s");
