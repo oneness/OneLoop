@@ -8,12 +8,13 @@ set -euo pipefail
 # To use a hosted model for one run:  ONELOOP_MODEL=flash ol "..."
 
 export ONELOOP_ORIGINAL_DIR="$(pwd)"
-cd "$(dirname "$(readlink -f "$0")")"
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
 
+cd $BIN_DIR
 binary="./target/release/oneloop"
 if [[ -x "$binary" ]] \
   && ! find src Cargo.toml Cargo.lock flake.nix flake.lock -newer "$binary" -print -quit | grep -q .; then
-  echo using "$binary"
+  echo using newer "$binary"
   exec "$binary" "$@"
 fi
 
