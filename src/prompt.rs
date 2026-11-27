@@ -26,13 +26,32 @@ pub fn instructions(cwd: &Path) -> Vec<Instruction> {
 /// project was given.
 pub fn system_prompt(cwd: &Path, tool_names: &[&str], instructions: &[Instruction]) -> String {
     let environment = environment_block(cwd);
-    let mut sections = vec![engineering_block(), environment.as_str()];
+    let mut sections = vec![
+        tool_calls_block(),
+        engineering_block(),
+        environment.as_str(),
+    ];
     sections.extend(
         instructions
             .iter()
             .map(|instruction| instruction.body.as_str()),
     );
     format!("{}\n\n{}", tool_preamble(tool_names), sections.join("\n\n"))
+}
+
+/// How to send tool calls, in every repo including one without `AGENTS.md`.
+/// The rule is one the model acts on, so it is an instruction rather than a
+/// tenet: send everything already known in one response, and the calls that
+/// name one file will land in the order sent — so there is no reason to wait
+/// for a result between them.
+fn tool_calls_block() -> &'static str {
+    "\
+## Tool calls
+
+- Send every tool call you already know in **one response**, not one per turn.
+- Several changes to one file: one call per change, sent together in that file's \
+  order. They apply in the order sent, each against what the previous one wrote.
+- Wait for a result only when you need what it says to write the next call."
 }
 
 /// The standards that hold in any repository. A checkout without an `AGENTS.md`
@@ -202,7 +221,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Three sections and two separators: a prompt with an emptied slot would
+    /// Four sections and three separators: a prompt with an emptied slot would
     /// carry a doubled blank line where nothing was written.
     #[test]
     fn the_prompt_has_no_emptied_section() {
@@ -211,13 +230,27 @@ mod tests {
         let prompt = system_prompt(&dir, &["read"], &[]);
 
         let expected = format!(
-            "{}\n\n{}\n\n{}",
+            "{}\n\n{}\n\n{}\n\n{}",
             tool_preamble(&["read"]),
+            tool_calls_block(),
             engineering_block(),
             environment_block(&dir)
         );
         assert_eq!(prompt, expected);
         assert!(!prompt.contains("\n\n\n"), "{prompt}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A checkout without `AGENTS.md` still knows how to send tool calls: the
+    /// batching rule travels with the binary, not with the project.
+    #[test]
+    fn a_prompt_without_instructions_carries_the_batching_rule() {
+        let dir = temp_dir("no-agents");
+
+        let prompt = system_prompt(&dir, &["edit"], &[]);
+
+        assert!(prompt.contains("one response"));
+        assert!(prompt.contains("They apply in the order sent"));
         let _ = fs::remove_dir_all(&dir);
     }
 

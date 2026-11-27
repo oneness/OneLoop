@@ -13,9 +13,10 @@ cd "$(dirname "$(readlink -f "$0")")"
 binary="./target/release/oneloop"
 if [[ -x "$binary" ]] \
   && ! find src Cargo.toml Cargo.lock flake.nix flake.lock -newer "$binary" -print -quit | grep -q .; then
+  echo using "$binary"
   exec "$binary" "$@"
 fi
 
 export ONELOOP_QUIET="true"
-
+echo Using cargo run
 exec nix develop -c cargo run --quiet -- "$@"
